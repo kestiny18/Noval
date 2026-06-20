@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "noval"
+version = "0.1.0"
+description = "一个与场景解耦的通用 Agent 小核心"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "kestiny" }]
+keywords = ["agent", "llm", "tool-calling", "deepseek", "openai"]
+dependencies = ["openai>=1.0"]
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[project.urls]
+Homepage = "https://github.com/kestiny18/Noval"
+Issues = "https://github.com/kestiny18/Noval/issues"
+
+[project.scripts]
+noval = "noval.agent:run_cli"
+
+[tool.setuptools]
+packages = ["noval"]

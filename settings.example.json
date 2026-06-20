@@ -1,0 +1,9 @@
+{
+  "model": "deepseek-v4-pro",
+  "base_url": "https://api.deepseek.com",
+  "api_key_env": "DEEPSEEK_API_KEY",
+  "max_steps": 25,
+  "max_tool_output_chars": 8000,
+  "auto_approve": ["read", "write"],
+  "system_prompt": "你是 Noval，一个能调用工具的通用助手。需要外部信息或执行操作时主动使用提供的工具；不要臆造工具不存在的结果。"
+}
