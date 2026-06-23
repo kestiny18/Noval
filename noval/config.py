@@ -18,14 +18,12 @@ DEFAULTS: Dict[str, Any] = {
     "model": "deepseek-v4-pro",
     "base_url": "https://api.deepseek.com",
     "api_key_env": "DEEPSEEK_API_KEY",        # 从该环境变量读取 key
-    "max_steps": 25,                          # 单轮用户输入内，工具循环的最大步数
+    "max_steps": 40,                          # 单轮用户输入内，工具循环的最大步数(build/调试类任务费步数)
     "max_tool_output_chars": 8000,            # 工具输出超过此长度即截断
     "auto_approve": ["read", "write"],        # 这些风险级别免确认；其余(dangerous)需确认
-    "system_prompt": (
-        "你是 Noval，一个能调用工具的通用助手。"
-        "需要外部信息或执行操作时主动使用提供的工具；不要臆造工具不存在的结果。"
-    ),
 }
+# 注：system_prompt 不在这里——它是 agent 的行为定义(属代码)，不是「全局稳定偏好」，
+# 故不开放给 settings.json 覆盖。见 noval/agent.py 的 DEFAULT_SYSTEM_PROMPT。
 
 
 def settings_path() -> Path:
@@ -40,7 +38,6 @@ class Config:
     max_steps: int
     max_tool_output_chars: int
     auto_approve: List[str]
-    system_prompt: str
     api_key: str = ""          # 可选：直接写在 ~/.noval/settings.json 里（该文件不在仓库内）
     raw: Dict[str, Any] = field(default_factory=dict)
 
@@ -49,15 +46,16 @@ class Config:
         merged = dict(DEFAULTS)
         p = path or settings_path()
         if p.exists():
-            user = json.loads(p.read_text(encoding="utf-8"))
+            try:
+                user = json.loads(p.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as e:
+                raise SystemExit(f"settings.json 不是合法 JSON: {e}")  # 漏逗号等不该是难看的 traceback
             merged.update(user)  # 顶层覆盖；当前配置无深层嵌套，浅合并足够
 
         # 校验：错配置要给出清晰报错，而不是静默跑歪
         # （例如 auto_approve 写成字符串 "read" → list() 会拆成 ['r','e','a','d']）
         if not isinstance(merged["auto_approve"], list):
             raise SystemExit('settings.json: auto_approve 必须是数组，如 ["read", "write"]')
-        if not isinstance(merged["system_prompt"], str):
-            raise SystemExit("settings.json: system_prompt 必须是字符串")
         for key in ("max_steps", "max_tool_output_chars"):
             try:
                 merged[key] = int(merged[key])
@@ -71,7 +69,6 @@ class Config:
             max_steps=merged["max_steps"],
             max_tool_output_chars=merged["max_tool_output_chars"],
             auto_approve=list(merged["auto_approve"]),
-            system_prompt=merged["system_prompt"],
             api_key=merged.get("api_key", ""),
             raw=merged,
         )

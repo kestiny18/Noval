@@ -50,6 +50,27 @@ class ToolResult:
 
 
 # ---------------------------------------------------------------------------
+# 执行上下文：框架注入给「声明了 ctx: Context 首参」的工具，不进 schema
+# ---------------------------------------------------------------------------
+@dataclass
+class ReadRecord:
+    """一次文件读取的记录，供 write/edit 做「改前须先 read」+ staleness 校验。"""
+    mtime: float
+    content: str          # 归一化(\r\n→\n)后的全文，仅 full read 有意义
+    is_partial: bool      # 带 offset/limit 的局部读 → True，不满足「先 read」要求
+
+
+@dataclass
+class Context:
+    """per-invocation 的执行上下文。workdir 决定相对路径与子进程 cwd；
+    read_state 是跨工具调用共享的文件读取状态机（read-tracker）；
+    approved_keys 记录本会话「总是允许」过的工具，避免重复确认。"""
+    workdir: Path
+    read_state: Dict[str, ReadRecord] = field(default_factory=dict)
+    approved_keys: set = field(default_factory=set)
+
+
+# ---------------------------------------------------------------------------
 # 工具定义：注册表里存的就是它
 # ---------------------------------------------------------------------------
 @dataclass
@@ -59,8 +80,11 @@ class Tool:
     parameters: Dict[str, Any]   # JSON Schema（自动从函数签名生成）
     func: Callable
     risk: Risk = Risk.READ
-    # 仅对「跑子进程」的工具有意义；纯 Python 函数无法被安全强杀（见 DESIGN.md 决策4）
-    timeout: Optional[float] = None
+    # 工具是否声明了 ctx: Context 首参（由框架注入，不进 schema）
+    wants_context: bool = False
+    # 可选：按参数动态评估风险（如 run_bash 把只读命令降级为 READ）。
+    # 风险在「这次调用」里，不总在「工具」上——返回值覆盖静态 risk。
+    risk_assessor: Optional[Callable[[Dict[str, Any]], Risk]] = None
 
 
 # ---------------------------------------------------------------------------
@@ -133,6 +157,8 @@ def _build_schema(func: Callable, param_descriptions: Dict[str, str]) -> Dict[st
         if pname == "self":
             continue
         py_type = hints.get(pname, str)
+        if py_type is Context:          # 框架注入的上下文，不暴露给模型
+            continue
         prop: Dict[str, Any] = _type_schema(py_type)
         if pname in param_descriptions:
             prop["description"] = param_descriptions[pname]
@@ -143,6 +169,15 @@ def _build_schema(func: Callable, param_descriptions: Dict[str, str]) -> Dict[st
     return {"type": "object", "properties": props, "required": required}
 
 
+def _wants_context(func: Callable) -> bool:
+    """工具是否把第一个参数声明为 ctx: Context（据此决定是否注入）。"""
+    params = list(inspect.signature(func).parameters.values())
+    if not params:
+        return False
+    hints = get_type_hints(func)
+    return hints.get(params[0].name) is Context
+
+
 # ---------------------------------------------------------------------------
 # @tool 装饰器：加工具的唯一入口
 # ---------------------------------------------------------------------------
@@ -151,8 +186,8 @@ def tool(
     *,
     name: Optional[str] = None,
     param_descriptions: Optional[Dict[str, str]] = None,
-    timeout: Optional[float] = None,
     override: bool = False,
+    risk_assessor: Optional[Callable[[Dict[str, Any]], Risk]] = None,
 ) -> Callable:
     """把一个普通函数注册成工具。
 
@@ -176,7 +211,8 @@ def tool(
             parameters=_build_schema(func, param_descriptions or {}),
             func=func,
             risk=risk,
-            timeout=timeout,
+            wants_context=_wants_context(func),
+            risk_assessor=risk_assessor,
         )
         if t.name in _REGISTRY and not override:
             raise ValueError(
@@ -187,17 +223,4 @@ def tool(
     return decorator
 
 
-# ===========================================================================
-# 内置工具
-# ===========================================================================
-@tool(risk=Risk.READ, param_descriptions={"path": "要读取的文件路径"})
-def read_file(path: str) -> str:
-    """读取指定路径的文件内容。用于查看文件，不要用于目录。"""
-    p = Path(path)
-    # 领域错误：我们比框架更清楚「为什么失败」，主动给出可纠错的提示
-    if not p.exists():
-        raise ToolError(f"file '{path}' not found")
-    if p.is_dir():
-        raise ToolError(f"'{path}' is a directory, not a file; 用列目录的工具代替")
-    # 其余失败（编码错误、权限不足等）交给框架统一兜——这里不写 try/except
-    return p.read_text(encoding="utf-8")
+# 内置工具实现在 noval/builtins.py（与框架分文件）。

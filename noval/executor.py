@@ -21,8 +21,17 @@ from .tools import Tool, ToolError, ToolResult, all_tools, get_tool
 
 log = logging.getLogger("noval.executor")
 
-# 确认门回调：框架问「要不要执行这个工具」，由调用方（CLI/测试）决定怎么答
-Approver = Callable[[Tool, Dict[str, Any]], bool]
+# 确认门回调：框架问「要不要执行这个工具」，由调用方（CLI/测试）决定怎么答。
+# 返回 True/"yes" 允许一次；"always" 本会话总是允许该工具；其余拒绝。
+Approver = Callable[[Tool, Dict[str, Any]], object]
+
+
+def _normalize_decision(raw: object) -> str:
+    if raw == "always":
+        return "always"
+    if raw is True or raw == "yes":
+        return "yes"
+    return "no"
 
 
 def _truncate(text: str, limit: int) -> tuple[str, bool]:
@@ -55,12 +64,20 @@ def execute_tool_call(
     raw_arguments: str,
     config: Config,
     approver: Optional[Approver] = None,
+    context: Optional["Context"] = None,
 ) -> ToolResult:
     """执行单次工具调用，永远返回 ToolResult（绝不抛异常给上层）。"""
     started = time.perf_counter()
+    t = {"exec_start": None}  # 真正执行的起点；在确认门之后才设，避免把「等用户点 y」算进耗时
 
     def finish(content: str, *, is_error: bool = False, truncated: bool = False, **meta: Any) -> ToolResult:
-        meta.update(tool=name, duration_ms=round((time.perf_counter() - started) * 1000, 1))
+        now = time.perf_counter()
+        ref = t["exec_start"] if t["exec_start"] is not None else started
+        meta.update(tool=name, duration_ms=round((now - ref) * 1000, 1))
+        if t["exec_start"] is not None:  # 确认等待时间单独记，不污染执行耗时
+            wait = round((t["exec_start"] - started) * 1000, 1)
+            if wait >= 1.0:
+                meta["approval_wait_ms"] = wait
         log.info("tool=%s is_error=%s truncated=%s dur=%sms",
                  name, is_error, truncated, meta["duration_ms"])
         return ToolResult(content=content, is_error=is_error, truncated=truncated, meta=meta)
@@ -85,21 +102,33 @@ def execute_tool_call(
         return finish(f"Error: {err}", is_error=True)
 
     # 4. 确认门（横切关注点，不在工具内部）
-    if config.needs_confirmation(tool.risk):
-        approved = approver(tool, args) if approver else False  # 无 approver 时默认拒绝(安全)
-        if not approved:
-            return finish(f"Error: 用户拒绝执行工具 '{name}'。", is_error=True)
+    #    风险可由工具按本次参数动态评估（如 run_bash 把只读命令降级为 READ → 免确认）。
+    effective_risk = tool.risk_assessor(args) if tool.risk_assessor else tool.risk
+    if config.needs_confirmation(effective_risk):
+        remembered = context is not None and tool.name in context.approved_keys
+        if not remembered:
+            decision = _normalize_decision(approver(tool, args) if approver else "no")
+            if decision == "always" and context is not None:
+                context.approved_keys.add(tool.name)  # 本会话起不再就该工具发问
+            if decision == "no":
+                return finish(f"Error: 用户拒绝执行工具 '{name}'。", is_error=True)
+
+    # 上下文注入：声明了 ctx: Context 的工具，由框架把 context 作为首个位置参传入
+    if tool.wants_context and context is None:
+        return finish(f"Error: 工具 '{name}' 需要执行上下文，但调用方未提供 context", is_error=True)
+    extra = (context,) if tool.wants_context else ()
+    t["exec_start"] = time.perf_counter()  # 确认门已过，从这里开始计真正的执行耗时
 
     # 5a. 先做签名绑定校验：把「参数对不上签名」与「工具内部抛 TypeError」区分开，
     #     否则工具体内的 TypeError 会被误报成「参数错误」，把模型带去改本来正确的参数。
     try:
-        inspect.signature(tool.func).bind(**args)
+        inspect.signature(tool.func).bind(*extra, **args)
     except TypeError as e:
         return finish(f"Error: 参数与工具签名不匹配: {e}", is_error=True)
 
     # 5b. 执行：统一 try/except —— 任何失败都转成模型可纠错的结果，而不是让程序崩
     try:
-        raw = tool.func(**args)
+        raw = tool.func(*extra, **args)
     except ToolError as e:                       # 工具主动抛出的领域错误（信息最丰富）
         return finish(f"Error: {e}", is_error=True)
     except Exception as e:                         # 兜底：任何未预期异常（含工具内部 TypeError）

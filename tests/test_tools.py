@@ -1,36 +1,46 @@
-"""工具层测试：自动 schema 生成 + 工具契约。"""
+"""工具框架层测试：自动 schema、Context 注入识别、重名/override。"""
 from typing import List, Optional
 
 import pytest
 
-from noval.tools import Risk, ToolError, get_tool, read_file, tool
+from noval.tools import Context, Risk, get_tool, tool
 
 
-def test_read_file_schema_auto_generated():
-    t = get_tool("read_file")
-    assert t is not None
-    assert t.parameters["type"] == "object"
-    assert t.parameters["properties"]["path"]["type"] == "string"   # 从 path: str 推导
-    assert t.parameters["required"] == ["path"]                      # 无默认值 → required
-    assert t.risk is Risk.READ
-
-
-def test_required_inferred_from_defaults():
-    @tool(name="_demo_defaults")
+def test_schema_auto_generated_and_required_from_defaults():
+    @tool(name="_demo")
     def f(a: str, b: int = 3) -> str:
         """demo"""
         return f"{a}{b}"
 
-    t = get_tool("_demo_defaults")
-    assert t.parameters["required"] == ["a"]          # b 有默认值，不是必填
-    assert t.parameters["properties"]["b"]["type"] == "integer"
+    t = get_tool("_demo")
+    assert t.parameters["properties"]["a"]["type"] == "string"
+    assert t.parameters["properties"]["b"]["type"] == "integer"   # int → integer
+    assert t.parameters["required"] == ["a"]                        # b 有默认值，非必填
+
+
+def test_context_param_excluded_from_schema():
+    @tool(name="_ctx_tool")
+    def f(ctx: Context, path: str) -> str:
+        """needs ctx"""
+        return path
+
+    t = get_tool("_ctx_tool")
+    assert t.wants_context is True
+    assert "ctx" not in t.parameters["properties"]                  # 框架注入，不暴露给模型
+    assert list(t.parameters["properties"].keys()) == ["path"]
+    assert t.parameters["required"] == ["path"]
 
 
 def test_duplicate_registration_rejected():
+    @tool(name="_dup")
+    def a() -> str:
+        """a"""
+        return ""
+
     with pytest.raises(ValueError):
-        @tool(name="read_file")
-        def dup() -> str:
-            """dup"""
+        @tool(name="_dup")
+        def b() -> str:
+            """b"""
             return ""
 
 
@@ -40,7 +50,7 @@ def test_override_allows_intentional_replacement():
         """a"""
         return "a"
 
-    @tool(name="_ov", override=True)         # 显式覆盖 → 放行
+    @tool(name="_ov", override=True)
     def b() -> str:
         """b"""
         return "b"
@@ -48,26 +58,13 @@ def test_override_allows_intentional_replacement():
     assert get_tool("_ov").func() == "b"
 
 
-def test_read_file_raises_domain_errors(tmp_path):
-    with pytest.raises(ToolError):
-        read_file(str(tmp_path / "nope.txt"))         # 不存在 → 领域错误
-    with pytest.raises(ToolError):
-        read_file(str(tmp_path))                       # 是目录 → 领域错误
-
-
-def test_read_file_happy_path(tmp_path):
-    f = tmp_path / "a.txt"
-    f.write_text("hello", encoding="utf-8")
-    assert read_file(str(f)) == "hello"                # 装饰器返回原函数，可直接调用
-
-
 def test_schema_handles_generics():
     @tool(name="_generics")
     def f(tags: List[str], note: Optional[str] = None) -> str:
-        """泛型参数 schema 测试"""
+        """generics"""
         return ""
 
     props = get_tool("_generics").parameters
     assert props["properties"]["tags"] == {"type": "array", "items": {"type": "string"}}
-    assert props["properties"]["note"] == {"type": "string"}   # Optional 解包成底层类型
-    assert props["required"] == ["tags"]                        # note 有默认值，非必填
+    assert props["properties"]["note"] == {"type": "string"}        # Optional 解包
+    assert props["required"] == ["tags"]

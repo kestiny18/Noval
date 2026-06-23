@@ -39,7 +39,8 @@
 - **错误信息必须「可被模型纠正」**：禁止裸 `"Error"`；要带出能让模型下一步修正的具体信息。
 - **截断**：长输出做 head+tail 截断，中间省略处标注「还剩 N 行，可用更精确的方式缩小范围」。阈值走配置。
 - **timeout 只对子进程类工具承诺**：纯 Python 函数无法安全强杀，不假装给它们超时（详见 DESIGN.md）。
-- **确认门**：每个工具声明 `Risk`（READ/WRITE/DANGEROUS），是否拦截由 `~/.noval/settings.json` 配置决定，不在工具内写 `input()`。
+- **确认门**：每个工具声明 `Risk`（READ/WRITE/DANGEROUS），是否拦截由 `~/.noval/settings.json` 配置决定，不在工具内写 `input()`。风险可按参数动态评估（`risk_assessor`，如 run_bash 把只读命令降级为 READ 免确认）；确认为三态：允许一次 / 本会话总是允许（`Context.approved_keys`）/ 拒绝。
+- **项目记忆**：启动时读 workdir 的 `AGENTS.md`（开放标准，回退 `CLAUDE.md`），用 `<project_instructions>` 包安全边界后注入 system prompt；**只读不写**。system 顺序按稳定性：人设 → 环境 → 项目记忆（见 DESIGN 决策 14）。
 - **可观测性**：禁止 `print(整个 response)`。每次工具调用记结构化 trace（tool / args / 耗时 / is_error / truncated）。
 - **可测试性**：`LLMClient` 必须能被 mock，使整条 agent 循环可在不联网、不烧钱的情况下测试。
 - **循环安全**：agent 循环必须有 `max_steps` 上限，达到上限优雅停止。
@@ -47,7 +48,7 @@
 
 ## 配置
 
-- 路径：`~/.noval/settings.json`，只放**全局稳定偏好**（model / 阈值 / auto_approve 等）。
+- 路径：`~/.noval/settings.json`，只放**全局稳定偏好**（model / 阈值 / auto_approve 等）。agent 人设 `system_prompt` 属**代码**（`agent.DEFAULT_SYSTEM_PROMPT`），不进 settings.json。
 - 加载策略：内置默认值 ← 文件覆盖。文件缺失要能用默认值正常启动；错类型要清晰报错，不静默跑歪。
 - **per-invocation 状态不进 settings.json**：工作目录由 `--workdir` 显式参数决定，否则用 `os.getcwd()`，挂在 Agent 实例上（多进程各管各的，互不覆盖）。
 - **工具重名默认 raise**（fail-fast，注册表即模型的感官，不静默覆盖）；有意覆盖须 `@tool(override=True)`。
@@ -62,9 +63,13 @@
 noval/
   config.py     # 读 ~/.noval/settings.json + 默认值合并
   client.py     # LLMClient 接口 + DeepSeek/OpenAI 适配器   [接缝1]
-  tools.py      # ToolResult / ToolError / @tool 注册表 + 内置工具   [接缝2]
-  executor.py   # 执行管道                                  [接缝3]
+  tools.py      # 框架：ToolResult/ToolError/Context/@tool 注册表   [接缝2]
+  builtins.py   # 内置工具实现（read/write/edit/bash/ls/grep/glob）
+  executor.py   # 执行管道（含 Context 注入）                 [接缝3]
   agent.py      # 对话循环(含 max_steps) + CLI 入口
 ```
 
-工具达到 ~8 个之前不要把 `tools.py` 拆成一文件一工具。
+- `tools.py` 是框架，`builtins.py` 是工具实现，二者分离（`__init__.py` 导入 builtins 触发注册）。
+- 工具数到 ~8 个之前不要把 `builtins.py` 再拆成一文件一工具。
+- **Context 注入**：工具首参声明 `ctx: Context` 即可拿到 workdir + read-tracker，该参数不进 schema。
+- **文件工具状态机**：改前须先 read、检测外部改动；三工具共用 `_resolve` 保证路径 key 一致（见 DESIGN.md 决策 10/11）。

@@ -69,13 +69,35 @@ python -m noval --workdir C:/path/to/your/project
 ## 跑测试
 ```bash
 pip install pytest        # 测试才需要，运行本体不需要
-python -m pytest          # 应输出 20 passed
+python -m pytest          # 应输出 69 passed, 2 skipped
 ```
 
 ## 常见问题
 - **`ModuleNotFoundError: No module named 'noval'`** → 没在项目根目录 `Noval/` 下运行。
 - **退出并提示「未找到 API key」** → 第 4 步的环境变量没设，或新开了终端导致变量丢失（环境变量只在当前终端会话有效）。
 - **`openai` 找不到** → 第 3 步没装依赖，或虚拟环境没激活。
+
+## 内置工具
+
+| 工具 | 风险 | 说明 |
+|------|------|------|
+| `read_file` | READ | 带行号读取，支持 offset/limit 翻页 |
+| `list_directory` | READ | 列目录 |
+| `glob` | READ | 文件名模式查找（按修改时间排序） |
+| `grep` | READ | 内容正则搜索（files/content/count 三种模式，排除 .git） |
+| `write_file` | WRITE | 写文件；改已存在文件须先 read |
+| `edit_file` | WRITE | 精确字符串替换（唯一匹配或 replace_all） |
+| `run_bash` | DANGEROUS | 在 workdir 下执行命令（默认需确认） |
+
+文件工具共享一套「read-tracker」状态机：改前须先读、检测文件被外部改动。设计见 [DESIGN.md](DESIGN.md) 决策 10/11。
+
+## 项目记忆（AGENTS.md）
+
+在项目根目录放一个 `AGENTS.md`（[开放标准](https://agents.md/)，纯 Markdown），写上构建/测试命令、代码规范、约定等，Noval 启动时会自动读取并注入上下文（没有 `AGENTS.md` 则回退读 `CLAUDE.md`）。
+
+- 它是**项目级约定**，不会覆盖 Noval 的安全行为（如危险命令确认门）。
+- **启动读一次快照**——改了 `AGENTS.md` 需重启生效。
+- 内容要精炼、高信号（自动生成的冗长 context 反而有害）。Noval **只读不写**它。
 
 ## 贡献 & 许可证
 
