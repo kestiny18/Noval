@@ -1,7 +1,7 @@
 """内置工具集。
 
-文件工具保持轻量，横切关注点由框架统一处理。
-三个文件工具共享 read-tracker 状态机：
+文件工具共享一套状态机，横切关注点由框架统一处理，因此每个工具只保留领域逻辑。
+最值钱的部分是三个文件工具共享的状态机（read-tracker）：
   - read_file 把 {mtime, content, is_partial} 写进 ctx.read_state
   - write_file / edit_file 改前校验：必须先 read 过（full read）+ 自上次 read 后没被外部改动
   - 写盘后回写 read_state，让紧接着的 edit 不被自己误判 stale
@@ -98,7 +98,7 @@ def _require_fresh_read(ctx: Context, p: Path) -> None:
         )
     # staleness：磁盘 mtime 比上次 read 新 → 可能被用户/linter 改过
     if p.stat().st_mtime > rec.mtime:
-        # 云同步或杀毒软件可能只改 mtime，回退比对内容以避免误报。
+        # Windows 上云同步/安全软件可能只改 mtime；回退比对内容以避免误报
         if _read_text(p) != rec.content:
             raise ToolError(
                 f"file '{p.name}' 自上次 read 后被改动过（用户或 linter）。请重新 read 再写。"

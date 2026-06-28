@@ -21,6 +21,8 @@ DEFAULTS: Dict[str, Any] = {
     "max_steps": 40,                          # 单轮用户输入内，工具循环的最大步数(build/调试类任务费步数)
     "max_tool_output_chars": 8000,            # 工具输出超过此长度即截断
     "auto_approve": ["read", "write"],        # 这些风险级别免确认；其余(dangerous)需确认
+    "persist_sessions": True,                 # 会话落盘：默认开启，可在 settings.json 关闭
+    "sessions_dir": "",                       # 空=~/.noval/sessions；可改到别的全局目录
 }
 # 注：system_prompt 不在这里——它是 agent 的行为定义(属代码)，不是「全局稳定偏好」，
 # 故不开放给 settings.json 覆盖。见 noval/agent.py 的 DEFAULT_SYSTEM_PROMPT。
@@ -28,6 +30,10 @@ DEFAULTS: Dict[str, Any] = {
 
 def settings_path() -> Path:
     return Path.home() / ".noval" / "settings.json"
+
+
+def default_sessions_dir() -> Path:
+    return Path.home() / ".noval" / "sessions"
 
 
 @dataclass
@@ -39,6 +45,8 @@ class Config:
     max_tool_output_chars: int
     auto_approve: List[str]
     api_key: str = ""          # 可选：直接写在 ~/.noval/settings.json 里（该文件不在仓库内）
+    persist_sessions: bool = True
+    sessions_dir_setting: str = ""
     raw: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -56,6 +64,10 @@ class Config:
         # （例如 auto_approve 写成字符串 "read" → list() 会拆成 ['r','e','a','d']）
         if not isinstance(merged["auto_approve"], list):
             raise SystemExit('settings.json: auto_approve 必须是数组，如 ["read", "write"]')
+        if not isinstance(merged["persist_sessions"], bool):
+            raise SystemExit("settings.json: persist_sessions 必须是布尔值 true/false")
+        if not isinstance(merged["sessions_dir"], str):
+            raise SystemExit('settings.json: sessions_dir 必须是字符串路径，如 "D:/noval-sessions"')
         for key in ("max_steps", "max_tool_output_chars"):
             try:
                 merged[key] = int(merged[key])
@@ -70,8 +82,16 @@ class Config:
             max_tool_output_chars=merged["max_tool_output_chars"],
             auto_approve=list(merged["auto_approve"]),
             api_key=merged.get("api_key", ""),
+            persist_sessions=merged["persist_sessions"],
+            sessions_dir_setting=merged["sessions_dir"],
             raw=merged,
         )
+
+    def sessions_dir(self) -> Path:
+        """会话持久化根目录。默认在用户主目录下，避免污染项目仓库。"""
+        if not self.sessions_dir_setting.strip():
+            return default_sessions_dir()
+        return Path(self.sessions_dir_setting).expanduser()
 
     def resolve_api_key(self) -> str:
         """解析 api_key，优先级：settings.json 里的 api_key → 环境变量 → 报错。

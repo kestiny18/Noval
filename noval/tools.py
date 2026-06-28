@@ -200,8 +200,8 @@ def tool(
     description 取自函数 docstring；schema 自动从签名生成。
     返回原函数本身（不包装），因此工具仍可像普通函数一样被直接调用/测试。
 
-    重名默认 raise（fail-fast）：注册表定义了模型可调用的能力，静默覆盖会让
-    工具名对应的实现取决于 import 顺序，是更隐蔽的故障。确为有意覆盖
+    重名默认 raise（fail-fast）：注册表定义了模型的「感官」，静默覆盖会让
+    模型可见的工具实现会取决于 import 顺序，是更隐蔽的故障。确为有意覆盖
     （插件替换内置工具等）时显式传 override=True。
     """
     def decorator(func: Callable) -> Callable:

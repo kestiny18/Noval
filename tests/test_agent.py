@@ -5,10 +5,12 @@ from datetime import datetime
 from pathlib import Path
 
 from noval.agent import (
-    Agent, _to_bash_path, detect_environment, load_project_memory,
+    Agent, _choose_resume_session, _format_turn, _supports_color, _to_bash_path,
+    _turn_prefix, detect_environment, load_project_memory,
 )
 from noval.client import LLMResponse, MockClient, ToolCall, mock_text, mock_tool_call
 from noval.config import Config
+from noval.session import SessionMeta
 
 
 def _multi_tool_call(calls):
@@ -183,3 +185,141 @@ def test_max_steps_guard_summarizes():
     assert "进度小结" in reply                       # 返回模型的现场总结，而非固定句
     # 最后一次请求是「无工具」的总结调用
     assert client.seen_messages[-1][-1]["content"].startswith("已达到最大工具调用步数")
+
+
+# --- 会话持久化接缝 -------------------------------------------------------
+class _MemoryStore:
+    def __init__(self):
+        self.saved = []
+
+    def append(self, msg):
+        self.saved.append(dict(msg))
+
+    def load(self):
+        return list(self.saved)
+
+
+class _BrokenStore:
+    def append(self, msg):
+        raise OSError("disk full")
+
+    def load(self):
+        return []
+
+
+def test_agent_persists_only_non_system_messages():
+    store = _MemoryStore()
+    client = MockClient([mock_text("hello")])
+    agent = Agent(client, cfg(), store=store, env_context="<environment>E</environment>")
+
+    assert agent.send("hi") == "hello"
+
+    assert [m["role"] for m in store.saved] == ["user", "assistant"]
+    assert "hi" in store.saved[0]["content"]
+    assert store.saved[1]["content"] == "hello"
+
+
+def test_resume_messages_loaded_without_rewriting_store():
+    history = [
+        {"role": "user", "content": "<context>当前时间: old</context>\n\nold question"},
+        {"role": "assistant", "content": "old answer"},
+    ]
+    store = _MemoryStore()
+    client = MockClient([mock_text("new answer")])
+    agent = Agent(client, cfg(), store=store, resume_messages=history)
+
+    assert [m["role"] for m in agent.messages] == ["system", "user", "assistant"]
+    assert store.saved == []
+
+    assert agent.send("new question") == "new answer"
+    assert [m["role"] for m in store.saved] == ["user", "assistant"]
+    first_request = client.seen_messages[0]
+    assert [m["role"] for m in first_request] == ["system", "user", "assistant", "user"]
+    assert "old question" in first_request[1]["content"]
+    assert "new question" in first_request[-1]["content"]
+
+
+def test_resume_self_heals_pending_tool_call_and_persists_placeholder():
+    history = [{
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [{
+            "id": "call-1",
+            "type": "function",
+            "function": {"name": "read_file", "arguments": "{}"},
+        }],
+    }]
+    store = _MemoryStore()
+
+    agent = Agent(MockClient([mock_text("unused")]), cfg(), store=store, resume_messages=history)
+
+    assert agent.messages[-1] == {
+        "role": "tool",
+        "tool_call_id": "call-1",
+        "content": "（已中断，未执行）",
+    }
+    assert store.saved == [agent.messages[-1]]
+
+
+def test_persistence_failure_does_not_break_send():
+    client = MockClient([mock_text("still works")])
+    agent = Agent(client, cfg(), store=_BrokenStore())
+
+    assert agent.send("hi") == "still works"
+
+
+def _meta(session_id, title="t"):
+    return SessionMeta(
+        session_id=session_id,
+        created_at="2026-01-01T00:00:00+00:00",
+        last_active="2026-01-01T00:00:00+00:00",
+        title=title,
+        message_count=2,
+        model="m",
+    )
+
+
+def test_choose_resume_session_defaults_to_latest(monkeypatch):
+    monkeypatch.setattr("builtins.input", lambda prompt: "")
+    assert _choose_resume_session([_meta("a"), _meta("b")]) == "a"
+
+
+def test_choose_resume_session_accepts_number_prefix_and_new(monkeypatch):
+    sessions = [_meta("20260623-aaa"), _meta("20260624-bbb")]
+
+    monkeypatch.setattr("builtins.input", lambda prompt: "2")
+    assert _choose_resume_session(sessions) == "20260624-bbb"
+
+    monkeypatch.setattr("builtins.input", lambda prompt: "20260623")
+    assert _choose_resume_session(sessions) == "20260623-aaa"
+
+    monkeypatch.setattr("builtins.input", lambda prompt: "n")
+    assert _choose_resume_session(sessions) is None
+
+
+# --- CLI 轻量排版 ---------------------------------------------------------
+def test_turn_prefixes_align_labels():
+    assert _turn_prefix("You") == "You   > "
+    assert _turn_prefix("Noval") == "Noval > "
+
+
+def test_format_turn_aligns_multiline_content():
+    assert _format_turn("Noval", "第一行\n第二行\n\n第四行") == (
+        "Noval > 第一行\n"
+        "        第二行\n"
+        "        \n"
+        "        第四行"
+    )
+
+
+def test_no_color_disables_ansi(monkeypatch):
+    class TTY:
+        def isatty(self):
+            return True
+
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.delenv("TERM", raising=False)
+    assert _supports_color(TTY()) is True
+
+    monkeypatch.setenv("NO_COLOR", "1")
+    assert _supports_color(TTY()) is False

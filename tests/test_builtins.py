@@ -142,7 +142,7 @@ def test_staleness_blocks_write(tmp_path):
 
 
 def test_staleness_false_positive_allows_when_content_same(tmp_path):
-    # mtime 被推后但内容没变时，内容回退比对应放行。
+    # mtime 被推后但内容没变时，内容回退比对应放行
     f = tmp_path / "s.txt"
     f.write_text("same", encoding="utf-8")
     c = ctx(tmp_path)

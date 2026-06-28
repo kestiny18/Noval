@@ -11,6 +11,7 @@ import platform
 import re
 import shutil
 import subprocess
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -18,6 +19,7 @@ from typing import Any, Dict, List, Optional
 from .client import LLMClient, tool_message
 from .config import Config
 from .executor import Approver, execute_tool_call
+from .session import JsonlSessionStore, SessionMeta, SessionStore, list_sessions
 from .tools import Context, Tool, all_tools
 
 log = logging.getLogger("noval.agent")
@@ -144,11 +146,14 @@ class Agent:
         env_context: Optional[str] = None,
         project_memory: Optional[str] = None,
         system_prompt: Optional[str] = None,
+        store: Optional[SessionStore] = None,
+        resume_messages: Optional[List[Dict[str, Any]]] = None,
     ):
         self.client = client
         self.config = config
         self.tools = tools if tools is not None else all_tools()
         self.approver = approver
+        self.store = store
         # workdir 是 per-invocation 状态：本次启动各自决定，不存进全局 settings.json
         self.workdir = Path(workdir).resolve() if workdir else Path.cwd()
         # 执行上下文：workdir + 跨工具调用共享的 read-tracker，注入给需要的工具
@@ -160,7 +165,21 @@ class Agent:
         prompt = system_prompt if system_prompt is not None else DEFAULT_SYSTEM_PROMPT
         parts = [p for p in (prompt, env_context, project_memory) if p]
         if parts:
-            self.messages.append({"role": "system", "content": "\n\n".join(parts)})
+            self._append_message({"role": "system", "content": "\n\n".join(parts)}, persist=False)
+        for msg in resume_messages or []:
+            self._append_message(msg, persist=False)
+        if resume_messages:
+            self._answer_pending_tool_calls()
+
+    def _append_message(self, msg: Dict[str, Any], *, persist: bool = True) -> None:
+        """追加到内存历史；非 system 消息按需落盘。持久化失败只降级记录日志，不掀翻会话。"""
+        self.messages.append(msg)
+        if not persist or msg.get("role") == "system" or self.store is None:
+            return
+        try:
+            self.store.append(msg)
+        except Exception:
+            log.warning("会话持久化写入失败，已降级为仅内存会话", exc_info=True)
 
     def send(self, user_input: str) -> str:
         """处理一条用户输入，跑完工具循环，返回最终助手文本。"""
@@ -168,7 +187,7 @@ class Agent:
         # 与时间无关、跨天/跨重启不破缓存；历史里的时间戳是冻结的，不破后续前缀；
         # 且每轮刷新「现在」，长会话跨午夜也正确。
         stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S (%A)")
-        self.messages.append({
+        self._append_message({
             "role": "user",
             "content": f"<context>当前时间: {stamp}</context>\n\n{user_input}",
         })
@@ -176,7 +195,7 @@ class Agent:
         try:
             for _ in range(self.config.max_steps):
                 resp = self.client.complete(self.messages, self.tools)
-                self.messages.append(resp.assistant_message)
+                self._append_message(resp.assistant_message)
 
                 if not resp.tool_calls:                       # 没有工具调用 → 最终回复
                     return resp.content or ""
@@ -187,17 +206,17 @@ class Agent:
                     result = execute_tool_call(
                         call.name, call.arguments, self.config, self.approver, self.context
                     )
-                    self.messages.append(tool_message(call.id, result.content))
+                    self._append_message(tool_message(call.id, result.content))
         except KeyboardInterrupt:
             # Ctrl+C 中断「当前任务」而非「整个会话」：补齐未回填的 tool 响应让历史合法，
             # 再返回提示。否则下一轮请求会因「有 tool_call 没 tool 响应」被 API 拒绝。
             self._answer_pending_tool_calls()
             return "（已中断当前任务，会话保留。）"
 
-        # 触顶不该干巴巴一句"已停止"——模型此刻攒了一肚子现场信息(查到了什么、卡在哪)，
-        # 让它最后总结一次再停，把"白撞的 N 步"变成一份可用的现场报告。
+        # 触顶时模型已积累现场信息（查到了什么、卡在哪）；让它最后总结一次再停，
+        # 把已执行的步骤整理成一份可用的现场报告。
         log.warning("达到 max_steps=%s，让模型总结现场后停止", self.config.max_steps)
-        self.messages.append({
+        self._append_message({
             "role": "user",
             "content": (
                 "已达到最大工具调用步数，现在不能再调用工具了。请基于目前已掌握的信息，"
@@ -205,7 +224,7 @@ class Agent:
             ),
         })
         resp = self.client.complete(self.messages, [])  # 不给工具 → 强制产出文本总结
-        self.messages.append(resp.assistant_message)
+        self._append_message(resp.assistant_message)
         return resp.content or "（已达到最大工具调用步数，已停止。）"
 
     def _answer_pending_tool_calls(self) -> None:
@@ -223,12 +242,49 @@ class Agent:
                     if m.get("role") == "tool"}
         for tc in self.messages[last]["tool_calls"]:
             if tc["id"] not in answered:
-                self.messages.append(tool_message(tc["id"], "（已中断，未执行）"))
+                self._append_message(tool_message(tc["id"], "（已中断，未执行）"))
 
 
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+_TURN_LABEL_WIDTH = 6
+_TURN_COLORS = {"You": "\033[1;36m", "Noval": "\033[1;32m"}
+_ANSI_RESET = "\033[0m"
+
+
+def _supports_color(stream=None) -> bool:
+    """只在交互式终端启用 ANSI；NO_COLOR/TERM=dumb/重定向时保持纯文本。"""
+    stream = stream or sys.stdout
+    return (
+        os.environ.get("NO_COLOR") is None
+        and os.environ.get("TERM") != "dumb"
+        and bool(getattr(stream, "isatty", lambda: False)())
+    )
+
+
+def _turn_prefix(label: str, use_color: bool = False) -> str:
+    visible = f"{label:<{_TURN_LABEL_WIDTH}}> "
+    color = _TURN_COLORS.get(label)
+    if use_color and color:
+        return f"{color}{visible[:-1]}{_ANSI_RESET} "
+    return visible
+
+
+def _format_turn(label: str, text: str, use_color: bool = False) -> str:
+    """格式化一轮输出；多行正文与第一行正文对齐，不把 ANSI 长度算进缩进。"""
+    plain_prefix = _turn_prefix(label)
+    lines = str(text).splitlines() or [""]
+    continuation = " " * len(plain_prefix)
+    rendered = [_turn_prefix(label, use_color) + lines[0]]
+    rendered.extend(continuation + line for line in lines[1:])
+    return "\n".join(rendered)
+
+
+def _print_turn(label: str, text: str) -> None:
+    print(_format_turn(label, text, use_color=_supports_color()))
+
+
 def _cli_approver(tool: Tool, args: Dict[str, Any]) -> str:
     print(f"\n⚠️  工具 '{tool.name}' (风险: {tool.risk.value}) 请求执行")
     print(f"    参数: {args}")
@@ -242,6 +298,29 @@ def setup_logging(level: int = logging.INFO) -> None:
     logging.basicConfig(level=level, format="%(levelname)s %(name)s: %(message)s")
 
 
+def _choose_resume_session(sessions: List[SessionMeta]) -> Optional[str]:
+    """CLI 选择器：返回 session_id；None 表示开新会话。"""
+    if not sessions:
+        return None
+    shown = sessions[:20]
+    print("\n可恢复的会话：")
+    for i, s in enumerate(shown, 1):
+        print(f"  {i}. {s.title}  [{s.session_id}]  {s.last_active}  {s.message_count} 条")
+    ans = input("选择编号/session id（回车=最近，n=新会话）: ").strip()
+    if not ans:
+        return shown[0].session_id
+    if ans.lower() in ("n", "new"):
+        return None
+    if ans.isdigit():
+        idx = int(ans)
+        if 1 <= idx <= len(shown):
+            return shown[idx - 1].session_id
+    matches = [s.session_id for s in sessions if s.session_id.startswith(ans)]
+    if len(matches) == 1:
+        return matches[0]
+    raise SystemExit(f"无效的会话选择: {ans}")
+
+
 def run_cli(argv: Optional[List[str]] = None) -> None:
     import argparse
 
@@ -249,6 +328,13 @@ def run_cli(argv: Optional[List[str]] = None) -> None:
 
     parser = argparse.ArgumentParser(prog="noval")
     parser.add_argument("--workdir", help="工作目录；不指定则用当前启动目录(os.getcwd)")
+    parser.add_argument(
+        "--resume",
+        nargs="?",
+        const="",
+        metavar="SESSION_ID",
+        help="恢复当前 workdir 的历史会话；不填 SESSION_ID 时进入选择器",
+    )
     args = parser.parse_args(argv)
 
     # workdir 解析：显式 --workdir 优先，否则用启动目录
@@ -260,19 +346,48 @@ def run_cli(argv: Optional[List[str]] = None) -> None:
     setup_logging()
     log.info("workdir = %s", workdir)
     config = Config.load()
+    store: Optional[SessionStore] = None
+    resume_messages: Optional[List[Dict[str, Any]]] = None
+    resumed_session_id: Optional[str] = None
+    if args.resume is not None and not config.persist_sessions:
+        raise SystemExit("--resume 需要 settings.json 中 persist_sessions=true")
+    if config.persist_sessions:
+        sessions_dir = config.sessions_dir()
+        if args.resume is None:
+            store = JsonlSessionStore.create(sessions_dir, workdir, config.model)
+        else:
+            sid = args.resume.strip()
+            if not sid:
+                sid = _choose_resume_session(list_sessions(sessions_dir, workdir)) or ""
+            if sid:
+                try:
+                    store = JsonlSessionStore.open(sessions_dir, workdir, sid, config.model)
+                except (FileNotFoundError, ValueError) as e:
+                    raise SystemExit(str(e))
+                resume_messages = store.load()
+                resumed_session_id = sid
+            else:
+                print("没有选择可恢复会话，已开启新会话。")
+                store = JsonlSessionStore.create(sessions_dir, workdir, config.model)
     env_context = detect_environment(workdir)      # 启动时探测一次
     project_memory = load_project_memory(workdir)  # 读 AGENTS.md / CLAUDE.md 一次
     client = OpenAICompatibleClient(config.base_url, config.resolve_api_key(), config.model)
     agent = Agent(client, config, approver=_cli_approver, workdir=str(workdir),
-                  env_context=env_context, project_memory=project_memory)
+                  env_context=env_context, project_memory=project_memory,
+                  store=store, resume_messages=resume_messages)
 
     print(f"Noval 已就绪 (workdir: {workdir})。输入 'exit' 退出。")
+    if resumed_session_id:
+        print(f"✓ 已恢复会话 {resumed_session_id}（{len(resume_messages or [])} 条历史消息）")
+    elif store is not None:
+        print(f"✓ 会话持久化已开启（session: {getattr(store, 'session_id', 'unknown')}）")
     if project_memory:
         print("✓ 已加载项目记忆 (AGENTS.md / CLAUDE.md)")
     print(env_context)  # 让你也看到探测结果
     while True:
         try:
-            user_input = input("You: ")
+            print()
+            user_input = input(_turn_prefix("You", use_color=_supports_color()))
         except (EOFError, KeyboardInterrupt):
             print()
             break
@@ -285,10 +400,12 @@ def run_cli(argv: Optional[List[str]] = None) -> None:
             reply = agent.send(user_input)
         except Exception as e:
             log.exception("处理输入时出错")
-            print(f"Noval: [出错 {type(e).__name__}: {e}]（会话已保留，可继续输入）")
+            print()
+            _print_turn("Noval", f"[出错 {type(e).__name__}: {e}]（会话已保留，可继续输入）")
             continue
-        print(f"Noval: {reply}")
-    print("再见！")
+        print()
+        _print_turn("Noval", reply)
+    print("\n再见！")
 
 
 if __name__ == "__main__":
