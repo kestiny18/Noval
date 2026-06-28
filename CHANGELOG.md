@@ -15,6 +15,10 @@
 - 恢复时重建 system 上下文，并修复悬空 tool call。
 - `persist_sessions` / `sessions_dir` 配置。
 
+### Fixed
+
+- Windows 终端的输入提示符先完成 ANSI 输出与刷新，再读取 stdin，避免出现无法输入或不回显。
+
 ### Security
 
 - 会话 id 限制为安全文件名字符，避免路径逃逸。

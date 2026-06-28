@@ -285,6 +285,12 @@ def _print_turn(label: str, text: str) -> None:
     print(_format_turn(label, text, use_color=_supports_color()))
 
 
+def _read_turn(label: str) -> str:
+    """先完整写出提示符再读取，避免 ANSI prompt 干扰 Windows 控制台输入。"""
+    print(_turn_prefix(label, use_color=_supports_color()), end="", flush=True)
+    return input()
+
+
 def _cli_approver(tool: Tool, args: Dict[str, Any]) -> str:
     print(f"\n⚠️  工具 '{tool.name}' (风险: {tool.risk.value}) 请求执行")
     print(f"    参数: {args}")
@@ -387,7 +393,7 @@ def run_cli(argv: Optional[List[str]] = None) -> None:
     while True:
         try:
             print()
-            user_input = input(_turn_prefix("You", use_color=_supports_color()))
+            user_input = _read_turn("You")
         except (EOFError, KeyboardInterrupt):
             print()
             break

@@ -5,8 +5,8 @@ from datetime import datetime
 from pathlib import Path
 
 from noval.agent import (
-    Agent, _choose_resume_session, _format_turn, _supports_color, _to_bash_path,
-    _turn_prefix, detect_environment, load_project_memory,
+    Agent, _choose_resume_session, _format_turn, _read_turn, _supports_color,
+    _to_bash_path, _turn_prefix, detect_environment, load_project_memory,
 )
 from noval.client import LLMResponse, MockClient, ToolCall, mock_text, mock_tool_call
 from noval.config import Config
@@ -310,6 +310,21 @@ def test_format_turn_aligns_multiline_content():
         "        \n"
         "        第四行"
     )
+
+
+def test_read_turn_writes_colored_prompt_before_input(monkeypatch, capsys):
+    seen_before_input = []
+
+    monkeypatch.setattr("noval.agent._supports_color", lambda: True)
+
+    def fake_input():
+        seen_before_input.append(capsys.readouterr().out)
+        return "hello"
+
+    monkeypatch.setattr("builtins.input", fake_input)
+
+    assert _read_turn("You") == "hello"
+    assert seen_before_input == [_turn_prefix("You", use_color=True)]
 
 
 def test_no_color_disables_ansi(monkeypatch):
