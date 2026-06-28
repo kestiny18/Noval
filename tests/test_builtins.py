@@ -3,7 +3,6 @@ import os
 import shutil
 import subprocess
 import sys
-from pathlib import Path
 
 import pytest
 
@@ -228,9 +227,8 @@ def test_run_bash_echo(tmp_path):
 
 def test_run_bash_cwd_is_workdir(tmp_path):
     (tmp_path / "marker.txt").write_text("x", encoding="utf-8")
-    command = "pwd" if shutil.which("bash") else "cd"
-    actual = Path(run_bash(ctx(tmp_path), command).strip()).resolve()
-    assert actual == tmp_path.resolve()
+    command = "ls marker.txt" if shutil.which("bash") else "dir /b marker.txt"
+    assert run_bash(ctx(tmp_path), command).strip() == "marker.txt"
 
 
 def test_run_bash_timeout(tmp_path):
