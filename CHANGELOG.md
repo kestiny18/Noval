@@ -17,7 +17,8 @@
 
 ### Fixed
 
-- Windows 终端的输入提示符先完成 ANSI 输出与刷新，再读取 stdin，避免出现无法输入或不回显。
+- CLI 将 ANSI 提示符输出与 `input()` 读取分离，避免 readline 对控制序列的兼容差异。
+- shell 环境探测与 `run_bash` 使用非交互 stdin，避免子进程改变调用终端的输入模式。
 
 ### Security
 

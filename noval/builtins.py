@@ -421,13 +421,14 @@ def _bash_risk(args: dict) -> Risk:
 })
 def run_bash(ctx: Context, command: str, timeout: int = 120) -> str:
     """在 workdir 下执行 shell 命令，返回合并的 stdout+stderr。
-    超时会真正终止子进程。属危险操作，受确认门管控。"""
+    命令非交互执行，超时会真正终止子进程。属危险操作，受确认门管控。"""
     bash = shutil.which("bash")
     argv = [bash, "-c", command] if bash else command
     try:
         proc = subprocess.run(
             argv,
             cwd=str(ctx.workdir),
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             encoding="utf-8",

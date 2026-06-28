@@ -1,12 +1,14 @@
 """agent 循环测试：用 MockClient 跑完整条「工具调用 → 回填 → 最终回复」闭环，离线零成本。"""
 import json
 import os
+import subprocess
 from datetime import datetime
 from pathlib import Path
 
 from noval.agent import (
-    Agent, _choose_resume_session, _format_turn, _read_turn, _supports_color,
-    _to_bash_path, _turn_prefix, detect_environment, load_project_memory,
+    Agent, _choose_resume_session, _detect_bash, _format_turn, _read_turn,
+    _supports_color, _to_bash_path, _turn_prefix, detect_environment,
+    load_project_memory,
 )
 from noval.client import LLMResponse, MockClient, ToolCall, mock_text, mock_tool_call
 from noval.config import Config
@@ -100,6 +102,21 @@ def test_to_bash_path():
     assert _to_bash_path("C:\\Users\\x", "WSL") == "/mnt/c/Users/x"
     assert _to_bash_path("E:/Work/y", "Git Bash") == "/e/Work/y"
     assert _to_bash_path("/already/unix", "WSL") is None        # 非 Windows 路径不转
+
+
+def test_detect_bash_does_not_inherit_stdin(monkeypatch):
+    seen = {}
+
+    monkeypatch.setattr("noval.agent.shutil.which", lambda name: "bash")
+
+    def fake_run(*args, **kwargs):
+        seen.update(kwargs)
+        return subprocess.CompletedProcess(args[0], 0, stdout="MINGW64_NT", stderr="")
+
+    monkeypatch.setattr("noval.agent.subprocess.run", fake_run)
+
+    assert _detect_bash()[0] == "Git Bash"
+    assert seen["stdin"] is subprocess.DEVNULL
 
 
 def test_detect_environment_has_basics(tmp_path):

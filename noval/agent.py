@@ -55,8 +55,15 @@ def _detect_bash() -> Optional[tuple]:
     if not bash:
         return None
     try:
-        out = subprocess.run([bash, "-c", "uname -s -r"], capture_output=True,
-                             text=True, encoding="utf-8", errors="replace", timeout=5)
+        out = subprocess.run(
+            [bash, "-c", "uname -s -r"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+        )
         uname = (out.stdout or "").strip()
     except Exception:
         return ("bash", "", "")

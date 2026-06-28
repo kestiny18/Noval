@@ -225,6 +225,19 @@ def test_run_bash_echo(tmp_path):
     assert "hello" in run_bash(ctx(tmp_path), "echo hello")
 
 
+def test_run_bash_does_not_inherit_stdin(monkeypatch, tmp_path):
+    seen = {}
+
+    def fake_run(*args, **kwargs):
+        seen.update(kwargs)
+        return subprocess.CompletedProcess(args[0], 0, stdout="ok", stderr="")
+
+    monkeypatch.setattr("noval.builtins.subprocess.run", fake_run)
+
+    assert run_bash(ctx(tmp_path), "echo ok") == "ok"
+    assert seen["stdin"] is subprocess.DEVNULL
+
+
 def test_run_bash_cwd_is_workdir(tmp_path):
     (tmp_path / "marker.txt").write_text("x", encoding="utf-8")
     command = "ls marker.txt" if shutil.which("bash") else "dir /b marker.txt"
