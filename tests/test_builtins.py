@@ -1,6 +1,9 @@
 """内置工具行为测试 + 文件工具状态机（read-tracker / staleness）。"""
 import os
 import shutil
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -9,8 +12,6 @@ from noval.builtins import (
     run_bash, write_file,
 )
 from noval.tools import Context, Risk, ToolError
-
-needs_bash = pytest.mark.skipif(shutil.which("bash") is None, reason="bash 不在 PATH")
 
 
 def ctx(tmp_path):
@@ -225,16 +226,19 @@ def test_run_bash_echo(tmp_path):
     assert "hello" in run_bash(ctx(tmp_path), "echo hello")
 
 
-@needs_bash
 def test_run_bash_cwd_is_workdir(tmp_path):
     (tmp_path / "marker.txt").write_text("x", encoding="utf-8")
-    assert "marker.txt" in run_bash(ctx(tmp_path), "ls")
+    command = "pwd" if shutil.which("bash") else "cd"
+    actual = Path(run_bash(ctx(tmp_path), command).strip()).resolve()
+    assert actual == tmp_path.resolve()
 
 
-@needs_bash
 def test_run_bash_timeout(tmp_path):
+    command = "sleep 5" if shutil.which("bash") else subprocess.list2cmdline([
+        sys.executable, "-c", "import time; time.sleep(5)",
+    ])
     with pytest.raises(ToolError) as e:
-        run_bash(ctx(tmp_path), "sleep 5", timeout=1)
+        run_bash(ctx(tmp_path), command, timeout=1)
     assert "超时" in str(e.value)
 
 
