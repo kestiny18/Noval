@@ -4,7 +4,9 @@
 
 ## [Unreleased]
 
-目标版本：`v0.3.0`。当前功能已实现，等待真实任务验证和收敛。
+## [0.3.0] - 2026-06-29
+
+会话持久化与恢复版本。已通过多 workdir、中文路径、大历史、任务中断和进程强杀等真实场景验证。
 
 ### Added
 
@@ -60,6 +62,7 @@
 - 带 `max_steps` 的 Agent 循环与 CLI。
 - `MockClient` 和离线测试。
 
-[Unreleased]: https://github.com/kestiny18/Noval/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/kestiny18/Noval/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/kestiny18/Noval/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/kestiny18/Noval/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/kestiny18/Noval/releases/tag/v0.1.0

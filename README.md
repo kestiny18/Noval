@@ -3,13 +3,13 @@
 [![CI](https://github.com/kestiny18/Noval/actions/workflows/ci.yml/badge.svg)](https://github.com/kestiny18/Noval/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
-[![Stage](https://img.shields.io/badge/stage-v0.3.0--dev-orange.svg)](CHANGELOG.md)
+[![Release](https://img.shields.io/badge/release-v0.3.0-brightgreen.svg)](https://github.com/kestiny18/Noval/releases/tag/v0.3.0)
 
 一个与具体场景解耦的 Python Agent 小核心：负责模型调用、工具注册与执行、安全确认、项目上下文和会话恢复，不绑定 coding、搜索或任何单一应用。
 
 Noval 关注的不是“再包一层聊天接口”，而是 Agent 真正容易失控的地基：模型怎样可靠地感知工具结果、怎样从错误中自我纠正、怎样限制危险操作，以及怎样在中断后恢复合法的对话历史。
 
-> **当前状态**：`v0.2.0` 是经过真实任务收敛的多工具版本；`main` 已加入会话持久化，处于 `v0.3.0-dev` dogfooding 阶段，暂不标记为稳定发布。
+> **当前状态**：`v0.3.0` 是当前稳定里程碑，包含经过真实任务验证的多工具内核、会话持久化与中断恢复。
 
 ## 核心设计
 
@@ -130,15 +130,15 @@ project.json
 - 坏行和进程崩溃留下的半截尾行会被跳过，不废掉整个会话。
 - 内容目前是明文，可能包含用户粘贴的密钥或文件内容。可用 `"persist_sessions": false` 关闭。
 
-这部分已实现并有自动化测试，但仍在真实任务验证阶段。
+这部分已通过自动化测试与真实任务验证，包括多 workdir、中文路径、大历史、任务中断和进程强杀恢复。同一 session 不支持多进程并发写入。
 
 ## 版本里程碑
 
-| 版本 | 定位 | 对应提交 |
+| 版本 | 定位 | 对应引用 |
 |---|---|---|
-| `v0.1.0` | 最小可运行内核：单工具、Provider/Registry/Executor 三条接缝 | `275deda` |
-| `v0.2.0` | 多工具收敛版：文件状态机、风险分级、环境与项目记忆、真实任务加固 | `36bb365` |
-| `v0.3.0-dev` | 会话持久化与恢复，正在 dogfooding，暂不打稳定 tag | `main` |
+| `v0.1.0` | 最小可运行内核：单工具、Provider/Registry/Executor 三条接缝 | `v0.1.0` |
+| `v0.2.0` | 多工具收敛版：文件状态机、风险分级、环境与项目记忆、真实任务加固 | `v0.2.0` |
+| `v0.3.0` | 会话持久化与恢复：多项目隔离、append-only 日志、中断自愈 | `v0.3.0` |
 
 详细变化见 [CHANGELOG.md](CHANGELOG.md)。
 
@@ -153,7 +153,6 @@ CI 覆盖 Python 3.10-3.13，并在 Windows 上额外验证当前主版本。
 
 ## 路线图
 
-- 真实任务验证会话恢复，收敛后发布 `v0.3.0`。
 - 上下文增长后的历史压缩与摘要。
 - 更多 provider 适配器。
 - 会话标题、归档、置顶等管理体验。
