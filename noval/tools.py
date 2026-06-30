@@ -21,6 +21,8 @@ from typing import (
     get_args, get_origin, get_type_hints,
 )
 
+from .permissions import PermissionController
+
 if TYPE_CHECKING:
     from .shell import ShellBackend
 
@@ -67,10 +69,10 @@ class ReadRecord:
 class Context:
     """per-invocation 的执行上下文。workdir 决定相对路径与子进程 cwd；
     read_state 是跨工具调用共享的文件读取状态机（read-tracker）；
-    approved_keys 记录本会话「总是允许」过的工具，避免重复确认。"""
+    permissions 集中管理当前会话的权限模式与工具授权。"""
     workdir: Path
     read_state: Dict[str, ReadRecord] = field(default_factory=dict)
-    approved_keys: set = field(default_factory=set)
+    permissions: PermissionController = field(default_factory=PermissionController)
     shell_backend: Optional["ShellBackend"] = None
 
 

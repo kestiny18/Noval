@@ -101,6 +101,37 @@ def test_list_sessions_derives_title_and_sidecar_overrides(tmp_path):
     assert meta.title == "自定义标题"
 
 
+def test_sidecar_metadata_merges_and_keeps_lazy_creation(tmp_path):
+    base = tmp_path / "sessions"
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    store = JsonlSessionStore.create(base, workdir, "model-a")
+
+    store.update_metadata({"permissions": {"mode": "full_access", "approved_tools": []}})
+    store.set_title("保留标题")
+    assert not base.exists()                       # 空会话仍不落盘
+
+    store.append({"role": "user", "content": "hello"})
+    metadata = store.load_metadata()
+    assert metadata["title"] == "保留标题"
+    assert metadata["permissions"]["mode"] == "full_access"
+
+
+def test_open_loads_existing_sidecar_metadata(tmp_path):
+    base = tmp_path / "sessions"
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    store = JsonlSessionStore.create(base, workdir, "model-a")
+    store.append({"role": "user", "content": "hello"})
+    store.update_metadata({"permissions": {
+        "mode": "ask",
+        "approved_tools": ["run_bash"],
+    }})
+
+    resumed = JsonlSessionStore.open(base, workdir, store.session_id, "model-a")
+    assert resumed.load_metadata()["permissions"]["approved_tools"] == ["run_bash"]
+
+
 def test_open_missing_session_raises(tmp_path):
     with pytest.raises(FileNotFoundError):
         JsonlSessionStore.open(tmp_path / "sessions", tmp_path, "missing", "model-a")

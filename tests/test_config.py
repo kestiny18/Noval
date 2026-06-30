@@ -53,3 +53,12 @@ def test_persistence_config_rejects_bad_types(tmp_path):
     settings.write_text(json.dumps({"log_retention_days": 0}), encoding="utf-8")
     with pytest.raises(SystemExit, match="log_retention_days"):
         Config.load(settings)
+
+
+def test_removed_auto_approve_setting_is_silently_ignored(tmp_path):
+    settings = tmp_path / "settings.json"
+    settings.write_text(json.dumps({"auto_approve": "legacy-value"}), encoding="utf-8")
+
+    cfg = Config.load(settings)
+
+    assert not hasattr(cfg, "auto_approve")

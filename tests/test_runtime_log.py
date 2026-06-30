@@ -8,7 +8,7 @@ from noval.runtime_log import cleanup_old_logs, redact_text, setup_runtime_loggi
 def _config(logs_dir, **overrides):
     values = dict(
         model="m", base_url="u", api_key_env="K", max_steps=5,
-        max_tool_output_chars=8000, auto_approve=["read", "write"],
+        max_tool_output_chars=8000,
         logs_dir_setting=str(logs_dir),
     )
     values.update(overrides)

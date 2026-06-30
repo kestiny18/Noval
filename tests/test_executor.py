@@ -3,11 +3,13 @@ import json
 
 from noval.config import Config
 from noval.executor import execute_tool_call
+from noval.permissions import PermissionController, PermissionMode, PermissionState
+from noval.session import JsonlSessionStore
 from noval.tools import Context, Risk, tool
 
 BASE = dict(
     model="m", base_url="u", api_key_env="K", max_steps=5,
-    max_tool_output_chars=100, auto_approve=["read", "write"],
+    max_tool_output_chars=100,
 )
 
 
@@ -87,7 +89,7 @@ def test_confirmation_gate():
     assert not r.is_error and r.content == "did it"
 
 
-def test_dynamic_risk_auto_approves_readonly_bash(tmp_path):
+def test_dynamic_risk_allows_readonly_bash_without_prompt(tmp_path):
     # run_bash 的只读命令被 risk_assessor 降级为 READ → 免确认（无 approver 也能跑）
     import json as _j
     r = execute_tool_call("run_bash", _j.dumps({"command": "echo hi"}),
@@ -119,6 +121,48 @@ def test_always_decision_remembered_for_session():
     r2 = execute_tool_call("_dang_remember", "{}", cfg(), approver=approver, context=c)
     assert not r1.is_error and not r2.is_error
     assert calls["n"] == 1                       # 第二次没再问
+
+
+def test_always_decision_persists_across_resume(tmp_path):
+    @tool(name="_dang_persist", risk=Risk.DANGEROUS)
+    def dangerous() -> str:
+        """dangerous"""
+        return "ok"
+
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    store = JsonlSessionStore.create(tmp_path / "sessions", workdir, "m")
+    store.append({"role": "user", "content": "create session"})
+    permissions = PermissionController(on_change=lambda snapshot: store.update_metadata({
+        "permissions": snapshot,
+    }))
+    context = Context(workdir=workdir, permissions=permissions)
+
+    result = execute_tool_call(
+        "_dang_persist", "{}", cfg(), approver=lambda tool, args: "always", context=context
+    )
+    assert not result.is_error
+
+    resumed = JsonlSessionStore.open(tmp_path / "sessions", workdir, store.session_id, "m")
+    restored = PermissionController(PermissionState.from_dict(
+        resumed.load_metadata()["permissions"]
+    ))
+    assert restored.approved_tools == {"_dang_persist"}
+    assert restored.requires_approval("_dang_persist", "dangerous") is False
+
+
+def test_full_access_bypasses_approval():
+    @tool(name="_full_access", risk=Risk.DANGEROUS)
+    def dangerous() -> str:
+        """dangerous"""
+        return "ok"
+
+    permissions = PermissionController()
+    permissions.set_mode(PermissionMode.FULL_ACCESS)
+    context = Context(workdir=__import__("pathlib").Path("."), permissions=permissions)
+
+    result = execute_tool_call("_full_access", "{}", cfg(), context=context)
+    assert not result.is_error and result.content == "ok"
 
 
 def test_duration_excludes_approval_wait():

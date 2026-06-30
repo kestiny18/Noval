@@ -17,7 +17,11 @@ from typing import Any, Dict, List, Optional
 from .client import LLMClient, tool_message
 from .config import Config
 from .executor import Approver, execute_tool_call
-from .session import JsonlSessionStore, SessionMeta, SessionStore, list_sessions
+from .permissions import PermissionController, PermissionMode, PermissionState
+from .session import (
+    JsonlSessionStore, PersistentSessionStore, SessionMeta, SessionMetadataStore,
+    SessionStore, list_sessions,
+)
 from .runtime_log import setup_runtime_logging
 from .shell import ShellBackend, resolve_shell_backend, to_bash_path
 from .tools import Context, Tool, all_tools
@@ -121,6 +125,7 @@ class Agent:
         store: Optional[SessionStore] = None,
         resume_messages: Optional[List[Dict[str, Any]]] = None,
         shell_backend: Optional[ShellBackend] = None,
+        permissions: Optional[PermissionController] = None,
     ):
         self.client = client
         self.config = config
@@ -130,7 +135,11 @@ class Agent:
         # workdir 是 per-invocation 状态：本次启动各自决定，不存进全局 settings.json
         self.workdir = Path(workdir).resolve() if workdir else Path.cwd()
         # 执行上下文：workdir + 跨工具调用共享的 read-tracker，注入给需要的工具
-        self.context = Context(workdir=self.workdir, shell_backend=shell_backend)
+        self.context = Context(
+            workdir=self.workdir,
+            shell_backend=shell_backend,
+            permissions=permissions or PermissionController(),
+        )
         self.messages: List[Dict[str, Any]] = []
         # system 消息按「稳定性从高到低」排，让缓存前缀尽量长：
         #   人设/规则(随代码发布才变) → 环境(同机器同项目固定) → 项目记忆(用户会编辑,最易变)
@@ -267,7 +276,10 @@ def _read_turn(label: str) -> str:
 def _cli_approver(tool: Tool, args: Dict[str, Any]) -> str:
     print(f"\n⚠️  工具 '{tool.name}' (风险: {tool.risk.value}) 请求执行")
     print(f"    参数: {args}")
-    ans = input("    允许执行? [y]是 / [a]本会话总是允许 / [N]否 ").strip().lower()
+    always = f"[a]本会话总是允许 {tool.name}"
+    if tool.name == "run_bash":
+        always += "（包括后续任意命令）"
+    ans = input(f"    允许执行? [y]是 / {always} / [N]否 ").strip().lower()
     if ans in ("a", "always"):
         return "always"
     return "yes" if ans in ("y", "yes") else "no"
@@ -282,6 +294,71 @@ def _tool_arg_keys(arguments: str) -> List[str]:
     if not isinstance(parsed, dict):
         return ["<non-object>"]
     return sorted(str(key) for key in parsed)
+
+
+def _create_permission_controller(
+    store: Optional[SessionMetadataStore],
+) -> PermissionController:
+    metadata = store.load_metadata() if store is not None else {}
+    state = PermissionState.from_dict(metadata.get("permissions"))
+
+    def persist(snapshot: Dict[str, object]) -> None:
+        if store is not None:
+            store.update_metadata({"permissions": snapshot})
+
+    return PermissionController(state, on_change=persist if store is not None else None)
+
+
+def _permission_status(permissions: PermissionController) -> str:
+    approved = ", ".join(sorted(permissions.approved_tools)) or "无"
+    if permissions.mode is PermissionMode.FULL_ACCESS:
+        lines = [
+            f"权限模式: {permissions.mode.label} ({permissions.mode.value})",
+            "工具审批: 全部允许",
+        ]
+        if permissions.approved_tools:
+            lines.append(f"请求批准模式保留授权: {approved}")
+        return "\n".join(lines)
+    return (
+        f"权限模式: {permissions.mode.label} ({permissions.mode.value})\n"
+        f"本会话始终允许: {approved}"
+    )
+
+
+def _handle_permissions_command(
+    user_input: str,
+    permissions: PermissionController,
+) -> Optional[str]:
+    parts = user_input.strip().split()
+    if not parts or parts[0].lower() != "/permissions":
+        return None
+    if len(parts) == 1:
+        return _permission_status(permissions)
+
+    action = parts[1].lower().replace("-", "_")
+    if len(parts) == 2 and action in {"ask", "request", "request_approval"}:
+        permissions.set_mode(PermissionMode.ASK)
+        return _permission_status(permissions)
+    if len(parts) == 2 and action in {"full", "full_access"}:
+        permissions.set_mode(PermissionMode.FULL_ACCESS)
+        return _permission_status(permissions)
+    if len(parts) == 2 and action == "reset":
+        permissions.reset()
+        return _permission_status(permissions)
+    if len(parts) == 3 and action in {"allow", "revoke"}:
+        tool_name = parts[2]
+        available = {tool.name for tool in all_tools()}
+        if action == "allow" and tool_name not in available:
+            return f"未知工具 '{tool_name}'。可用工具: {', '.join(sorted(available))}"
+        if action == "allow":
+            permissions.allow_tool(tool_name)
+        else:
+            permissions.revoke_tool(tool_name)
+        return _permission_status(permissions)
+    return (
+        "用法: /permissions [ask|full-access|reset|"
+        "allow <tool>|revoke <tool>]"
+    )
 
 
 def _choose_resume_session(sessions: List[SessionMeta]) -> Optional[str]:
@@ -330,7 +407,7 @@ def run_cli(argv: Optional[List[str]] = None) -> None:
     os.chdir(workdir)  # 让文件工具/将来 run_bash 的子进程，相对路径都落在 workdir
 
     config = Config.load()
-    store: Optional[SessionStore] = None
+    store: Optional[PersistentSessionStore] = None
     resume_messages: Optional[List[Dict[str, Any]]] = None
     resumed_session_id: Optional[str] = None
     if args.resume is not None and not config.persist_sessions:
@@ -353,6 +430,7 @@ def run_cli(argv: Optional[List[str]] = None) -> None:
             else:
                 print("没有选择可恢复会话，已开启新会话。")
                 store = JsonlSessionStore.create(sessions_dir, workdir, config.model)
+    permissions = _create_permission_controller(store)
     session_id = getattr(store, "session_id", None)
     log_path = setup_runtime_logging(config, session_id)
     log.info("workdir = %s", workdir)
@@ -367,7 +445,7 @@ def run_cli(argv: Optional[List[str]] = None) -> None:
     agent = Agent(client, config, approver=_cli_approver, workdir=str(workdir),
                   env_context=env_context, project_memory=project_memory,
                   store=store, resume_messages=resume_messages,
-                  shell_backend=shell_backend)
+                  shell_backend=shell_backend, permissions=permissions)
 
     print(f"Noval 已就绪 (workdir: {workdir})。输入 'exit' 退出。")
     if resumed_session_id:
@@ -376,6 +454,9 @@ def run_cli(argv: Optional[List[str]] = None) -> None:
         print(f"✓ 会话持久化已开启（session: {getattr(store, 'session_id', 'unknown')}）")
     if project_memory:
         print("✓ 已加载项目记忆 (AGENTS.md / CLAUDE.md)")
+    print(f"✓ 权限模式: {permissions.mode.label}")
+    if permissions.approved_tools:
+        print(f"✓ 本会话始终允许: {', '.join(sorted(permissions.approved_tools))}")
     print(env_context)  # 让你也看到探测结果
     while True:
         try:
@@ -388,6 +469,11 @@ def run_cli(argv: Optional[List[str]] = None) -> None:
             continue
         if user_input.strip().lower() == "exit":
             break
+        permission_reply = _handle_permissions_command(user_input, permissions)
+        if permission_reply is not None:
+            print()
+            _print_turn("Noval", permission_reply)
+            continue
         # 模型调用/网络异常不该掀翻整个会话：兜住、报错、保留历史、继续
         try:
             reply = agent.send(user_input)

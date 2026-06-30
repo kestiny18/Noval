@@ -9,9 +9,7 @@ import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List
-
-from .tools import Risk
+from typing import Any, Dict
 
 # 默认配置：任何字段都可被 settings.json 覆盖
 DEFAULTS: Dict[str, Any] = {
@@ -20,7 +18,6 @@ DEFAULTS: Dict[str, Any] = {
     "api_key_env": "DEEPSEEK_API_KEY",        # 从该环境变量读取 key
     "max_steps": 40,                          # 单轮用户输入内，工具循环的最大步数(build/调试类任务费步数)
     "max_tool_output_chars": 8000,            # 工具输出超过此长度即截断
-    "auto_approve": ["read", "write"],        # 这些风险级别免确认；其余(dangerous)需确认
     "persist_sessions": True,                 # 会话落盘：默认开启，可在 settings.json 关闭
     "sessions_dir": "",                       # 空=~/.noval/sessions；可改到别的全局目录
     "persist_logs": True,                     # 脱敏运行日志：默认开启
@@ -50,7 +47,6 @@ class Config:
     api_key_env: str
     max_steps: int
     max_tool_output_chars: int
-    auto_approve: List[str]
     api_key: str = ""          # 可选：直接写在 ~/.noval/settings.json 里（该文件不在仓库内）
     persist_sessions: bool = True
     sessions_dir_setting: str = ""
@@ -71,9 +67,6 @@ class Config:
             merged.update(user)  # 顶层覆盖；当前配置无深层嵌套，浅合并足够
 
         # 校验：错配置要给出清晰报错，而不是静默跑歪
-        # （例如 auto_approve 写成字符串 "read" → list() 会拆成 ['r','e','a','d']）
-        if not isinstance(merged["auto_approve"], list):
-            raise SystemExit('settings.json: auto_approve 必须是数组，如 ["read", "write"]')
         if not isinstance(merged["persist_sessions"], bool):
             raise SystemExit("settings.json: persist_sessions 必须是布尔值 true/false")
         if not isinstance(merged["sessions_dir"], str):
@@ -96,7 +89,6 @@ class Config:
             api_key_env=merged["api_key_env"],
             max_steps=merged["max_steps"],
             max_tool_output_chars=merged["max_tool_output_chars"],
-            auto_approve=list(merged["auto_approve"]),
             api_key=merged.get("api_key", ""),
             persist_sessions=merged["persist_sessions"],
             sessions_dir_setting=merged["sessions_dir"],
@@ -135,7 +127,3 @@ class Config:
             f"  2) 设置环境变量 {self.api_key_env}"
             f"（PowerShell: $env:{self.api_key_env}=\"sk-...\"）"
         )
-
-    def needs_confirmation(self, risk: Risk) -> bool:
-        """确认门策略：风险级别不在白名单里，就需要用户确认。"""
-        return risk.value not in self.auto_approve

@@ -4,7 +4,6 @@
   "api_key_env": "DEEPSEEK_API_KEY",
   "max_steps": 40,
   "max_tool_output_chars": 8000,
-  "auto_approve": ["read", "write"],
   "persist_sessions": true,
   "sessions_dir": "",
   "persist_logs": true,

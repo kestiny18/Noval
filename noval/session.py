@@ -37,6 +37,15 @@ class SessionStore(Protocol):
     def load(self) -> List[Dict[str, Any]]: ...          # 读回 msg 序列(已剥信封)
 
 
+class SessionMetadataStore(Protocol):
+    def load_metadata(self) -> Dict[str, Any]: ...       # sidecar 可变会话属性
+    def update_metadata(self, updates: Dict[str, Any]) -> None: ...
+
+
+class PersistentSessionStore(SessionStore, SessionMetadataStore, Protocol):
+    """CLI 持久化会话所需的完整能力；Agent 循环仍只依赖 SessionStore。"""
+
+
 @dataclass
 class SessionMeta:
     """给 --resume 选择器看的会话摘要（不含正文）。"""
@@ -121,6 +130,7 @@ class JsonlSessionStore:
         self._next_seq = 0
         self._header_written = False
         self._fh = None  # type: ignore[assignment]  # 懒打开的 append 句柄
+        self._pending_metadata: Optional[Dict[str, Any]] = None
 
     # --- 构造入口 ----------------------------------------------------------
     @classmethod
@@ -177,6 +187,7 @@ class JsonlSessionStore:
             self._fh.write(json.dumps(header, ensure_ascii=False) + "\n")
             self._fh.flush()
             self._header_written = True
+        self._flush_metadata()
 
     def _ensure_project_json(self) -> None:
         """project.json 写一次、纯显示元数据（反查 hash 目录对应的真实路径）。"""
@@ -190,8 +201,31 @@ class JsonlSessionStore:
 
     def set_title(self, title: str) -> None:
         """改名 = 原子覆盖 sidecar（可变会话属性，不进 append-only 日志）。"""
+        self.update_metadata({"title": title})
+
+    def load_metadata(self) -> Dict[str, Any]:
+        """读取 sidecar；损坏或不存在时按空元数据处理。"""
+        if self._pending_metadata is not None:
+            return dict(self._pending_metadata)
+        return _read_json_object(self._meta_path)
+
+    def update_metadata(self, updates: Dict[str, Any]) -> None:
+        """合并更新 sidecar；新会话仍保持懒创建，首条消息落盘时再写。"""
+        data = self.load_metadata()
+        data.update(updates)
+        self._pending_metadata = data
+        if self._path.exists():
+            self._flush_metadata()
+
+    def _flush_metadata(self) -> None:
+        if self._pending_metadata is None:
+            return
         self._dir.mkdir(parents=True, exist_ok=True)
-        _atomic_write(self._meta_path, json.dumps({"title": title}, ensure_ascii=False))
+        _atomic_write(
+            self._meta_path,
+            json.dumps(self._pending_metadata, ensure_ascii=False),
+        )
+        self._pending_metadata = None
 
     # --- 读 ----------------------------------------------------------------
     def load(self) -> List[Dict[str, Any]]:
@@ -255,11 +289,15 @@ def _read_session_meta(path: Path) -> Optional[SessionMeta]:
 
 
 def _read_sidecar_title(meta_path: Path) -> Optional[str]:
-    if not meta_path.exists():
-        return None
+    t = _read_json_object(meta_path).get("title")
+    return t if isinstance(t, str) and t.strip() else None
+
+
+def _read_json_object(path: Path) -> Dict[str, Any]:
+    if not path.exists():
+        return {}
     try:
-        data = json.loads(meta_path.read_text(encoding="utf-8"))
-        t = data.get("title")
-        return t if isinstance(t, str) and t.strip() else None
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
     except (OSError, json.JSONDecodeError):
-        return None
+        return {}

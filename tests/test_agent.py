@@ -5,13 +5,15 @@ from datetime import datetime
 from pathlib import Path
 
 from noval.agent import (
-    Agent, _choose_resume_session, _format_turn, _read_turn,
+    Agent, _choose_resume_session, _create_permission_controller, _format_turn,
+    _handle_permissions_command, _read_turn,
     _supports_color, _tool_arg_keys, _turn_prefix, detect_environment,
     load_project_memory,
 )
 from noval.client import LLMResponse, MockClient, ToolCall, mock_text, mock_tool_call
 from noval.config import Config
-from noval.session import SessionMeta
+from noval.permissions import PermissionController, PermissionMode
+from noval.session import JsonlSessionStore, SessionMeta
 from noval.shell import ShellBackend, to_bash_path
 
 
@@ -27,7 +29,7 @@ def _multi_tool_call(calls):
 def cfg():
     return Config(
         model="m", base_url="u", api_key_env="K", max_steps=5,
-        max_tool_output_chars=8000, auto_approve=["read", "write"],
+        max_tool_output_chars=8000,
     )
 
 
@@ -372,3 +374,47 @@ def test_no_color_disables_ansi(monkeypatch):
 
     monkeypatch.setenv("NO_COLOR", "1")
     assert _supports_color(TTY()) is False
+
+
+def test_permissions_commands_change_session_state():
+    permissions = PermissionController()
+
+    assert "请求批准" in _handle_permissions_command("/permissions", permissions)
+    full_status = _handle_permissions_command("/permissions full-access", permissions)
+    assert "完全访问" in full_status
+    assert "工具审批: 全部允许" in full_status
+    assert "本会话始终允许: 无" not in full_status
+    assert permissions.mode is PermissionMode.FULL_ACCESS
+
+    reply = _handle_permissions_command("/permissions allow run_bash", permissions)
+    assert "请求批准模式保留授权: run_bash" in reply
+    assert "run_bash" in permissions.approved_tools
+
+    _handle_permissions_command("/permissions ask", permissions)
+    assert permissions.mode is PermissionMode.ASK
+    assert "run_bash" in permissions.approved_tools      # 切模式不清空显式授权
+
+    _handle_permissions_command("/permissions revoke run_bash", permissions)
+    assert "run_bash" not in permissions.approved_tools
+
+    _handle_permissions_command("/permissions allow run_bash", permissions)
+    _handle_permissions_command("/permissions reset", permissions)
+    assert permissions.mode is PermissionMode.ASK
+    assert not permissions.approved_tools
+
+
+def test_permissions_restore_directly_from_session_sidecar(tmp_path):
+    base = tmp_path / "sessions"
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    store = JsonlSessionStore.create(base, workdir, "m")
+    store.append({"role": "user", "content": "hello"})
+
+    first = _create_permission_controller(store)
+    first.set_mode(PermissionMode.FULL_ACCESS)
+    first.allow_tool("run_bash")
+
+    resumed = JsonlSessionStore.open(base, workdir, store.session_id, "m")
+    restored = _create_permission_controller(resumed)
+    assert restored.mode is PermissionMode.FULL_ACCESS
+    assert restored.approved_tools == {"run_bash"}
