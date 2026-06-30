@@ -6,9 +6,10 @@ from pathlib import Path
 
 from noval.agent import (
     Agent, _choose_resume_session, _create_permission_controller, _format_turn,
-    _handle_permissions_command, _read_turn,
+    _format_reasoning_summary, _handle_permissions_command, _handle_reasoning_command,
+    _read_turn,
     _supports_color, _tool_arg_keys, _turn_prefix, detect_environment,
-    load_project_memory,
+    load_project_memory, TurnMetrics,
 )
 from noval.client import LLMResponse, MockClient, ToolCall, mock_text, mock_tool_call
 from noval.config import Config
@@ -75,6 +76,40 @@ def test_multiple_tool_calls_all_backfilled(tmp_path):
     tool_msgs = [m for m in client.seen_messages[1] if m.get("role") == "tool"]
     assert len(tool_msgs) == 2
     assert {m["tool_call_id"] for m in tool_msgs} == {"c1", "c2"}
+
+
+def test_reasoning_replay_and_turn_metrics_across_tool_loop(tmp_path):
+    f = tmp_path / "doc.txt"
+    f.write_text("hello", encoding="utf-8")
+    client = MockClient([
+        mock_tool_call(
+            "c1", "read_file", json.dumps({"path": str(f)}),
+            reasoning_content="need to inspect the file",
+            meta={
+                "thinking_enabled": True,
+                "reasoning_tokens": 20,
+                "duration_ms": 1200,
+            },
+        ),
+        mock_text("done", meta={
+            "thinking_enabled": True,
+            "reasoning_tokens": 5,
+            "duration_ms": 300,
+        }),
+    ])
+    store = _MemoryStore()
+    agent = Agent(client, cfg(), workdir=str(tmp_path), store=store)
+
+    assert agent.send("read") == "done"
+
+    replayed = client.seen_messages[1]
+    assistant = next(m for m in replayed if m.get("role") == "assistant")
+    assert assistant["reasoning_content"] == "need to inspect the file"
+    assert any(m.get("reasoning_content") == "need to inspect the file" for m in store.saved)
+    assert agent.last_turn_metrics.reasoning_tokens == 25
+    assert agent.last_turn_metrics.llm_duration_ms == 1500
+    assert agent.last_turn_metrics.tool_calls == 1
+    assert agent.last_turn_metrics.api_calls == 2
 
 
 def test_answer_pending_tool_calls_backfills():
@@ -374,6 +409,31 @@ def test_no_color_disables_ansi(monkeypatch):
 
     monkeypatch.setenv("NO_COLOR", "1")
     assert _supports_color(TTY()) is False
+
+
+def test_reasoning_status_and_summary_hide_raw_content():
+    metrics = TurnMetrics(
+        api_calls=2,
+        reasoning_tokens=1234,
+        has_reasoning_usage=True,
+        llm_duration_ms=3800,
+        tool_calls=3,
+        thinking_detected=True,
+    )
+
+    summary = _format_reasoning_summary(metrics)
+    assert summary == "思考: 1,234 reasoning tokens · 模型耗时 3.8s · 3 次工具调用"
+
+    status = _handle_reasoning_command("/reasoning", cfg(), metrics)
+    assert "思考模式: 由 Provider 决定" in status
+    assert "上次请求: 1,234 reasoning tokens" in status
+    assert "原始思考过程: 不展示" in status
+
+
+def test_reasoning_command_is_local_and_exact():
+    assert _handle_reasoning_command("/reasoning", cfg(), TurnMetrics()) is not None
+    assert _handle_reasoning_command("/reasoning show", cfg(), TurnMetrics()) is None
+    assert _handle_reasoning_command("question", cfg(), TurnMetrics()) is None
 
 
 def test_permissions_commands_change_session_state():

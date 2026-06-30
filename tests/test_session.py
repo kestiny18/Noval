@@ -132,6 +132,28 @@ def test_open_loads_existing_sidecar_metadata(tmp_path):
     assert resumed.load_metadata()["permissions"]["approved_tools"] == ["run_bash"]
 
 
+def test_reasoning_content_round_trips_for_tool_call(tmp_path):
+    base = tmp_path / "sessions"
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    store = JsonlSessionStore.create(base, workdir, "model-a")
+    message = {
+        "role": "assistant",
+        "content": None,
+        "reasoning_content": "required replay state",
+        "tool_calls": [{
+            "id": "call-1",
+            "type": "function",
+            "function": {"name": "read_file", "arguments": "{}"},
+        }],
+    }
+
+    store.append(message)
+
+    resumed = JsonlSessionStore.open(base, workdir, store.session_id, "model-a")
+    assert resumed.load() == [message]
+
+
 def test_open_missing_session_raises(tmp_path):
     with pytest.raises(FileNotFoundError):
         JsonlSessionStore.open(tmp_path / "sessions", tmp_path, "missing", "model-a")

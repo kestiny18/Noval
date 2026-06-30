@@ -8,6 +8,7 @@ agent 循环只依赖 LLMClient 接口与下面这几个归一化的数据结构
 """
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Protocol
 
@@ -26,8 +27,9 @@ class ToolCall:
 class LLMResponse:
     content: Optional[str]                 # 助手文本（无工具调用时即最终回复）
     tool_calls: List[ToolCall]             # 本轮请求的工具调用
-    assistant_message: Dict[str, Any]      # 要追加进历史的助手消息（provider 原生格式）
+    assistant_message: Dict[str, Any]      # Provider 构造的、可安全回放的历史消息
     raw: Any = None                        # 原始响应对象，仅供调试/日志
+    meta: Dict[str, Any] = field(default_factory=dict)  # reasoning token / 耗时等，不给模型
 
 
 class LLMClient(Protocol):
@@ -61,21 +63,23 @@ class OpenAICompatibleClient:
 
     def complete(self, messages: List[Dict[str, Any]], tools: List[Tool]) -> LLMResponse:
         openai_tools = [_to_openai_tool(t) for t in tools] or None
+        started = time.perf_counter()
         resp = self._client.chat.completions.create(
             model=self.model,
             messages=messages,
             tools=openai_tools,
             tool_choice="auto" if openai_tools else None,
         )
+        duration_ms = round((time.perf_counter() - started) * 1000, 1)
         msg = resp.choices[0].message
         tool_calls = [
             ToolCall(id=tc.id, name=tc.function.name, arguments=tc.function.arguments)
             for tc in (msg.tool_calls or [])
         ]
-        # 回填历史时只保留协议必需字段。msg.model_dump() 会带上 reasoning_content /
-        # audio / annotations 等 provider 专属字段，把它们灌回下一轮请求：有的模型
-        # (如 deepseek-reasoner) 会直接报错，也违背了 LLMClient 这层「不让 provider
-        # 细节外泄」的初衷。所以这里显式重建一个干净的 assistant 消息。
+        reasoning_content = getattr(msg, "reasoning_content", None)
+        # 白名单重建回放消息，不直接 model_dump()。DeepSeek 思考模式有一个例外：
+        # 发生工具调用时 reasoning_content 是后续请求的必需协议状态，必须保留；
+        # 普通最终回复则无需回传，避免无意义地扩大历史与会话文件。
         assistant_message: Dict[str, Any] = {"role": "assistant", "content": msg.content}
         if tool_calls:
             assistant_message["tool_calls"] = [
@@ -83,10 +87,21 @@ class OpenAICompatibleClient:
                  "function": {"name": tc.name, "arguments": tc.arguments}}
                 for tc in tool_calls
             ]
+            if reasoning_content is not None:
+                assistant_message["reasoning_content"] = reasoning_content
+
+        usage = getattr(resp, "usage", None)
+        completion_details = getattr(usage, "completion_tokens_details", None)
+        reasoning_tokens = getattr(completion_details, "reasoning_tokens", None)
         return LLMResponse(
             content=msg.content,
             tool_calls=tool_calls,
             assistant_message=assistant_message,
+            meta={
+                "thinking_enabled": reasoning_content is not None,
+                "reasoning_tokens": reasoning_tokens,
+                "duration_ms": duration_ms,
+            },
             raw=resp,
         )
 
@@ -107,25 +122,37 @@ class MockClient:
 
 
 # 构造 mock 响应的便捷函数，让测试可读
-def mock_text(text: str) -> LLMResponse:
+def mock_text(text: str, *, meta: Optional[Dict[str, Any]] = None) -> LLMResponse:
     return LLMResponse(
         content=text,
         tool_calls=[],
         assistant_message={"role": "assistant", "content": text},
+        meta=dict(meta or {}),
     )
 
 
-def mock_tool_call(call_id: str, name: str, arguments_json: str) -> LLMResponse:
+def mock_tool_call(
+    call_id: str,
+    name: str,
+    arguments_json: str,
+    *,
+    reasoning_content: Optional[str] = None,
+    meta: Optional[Dict[str, Any]] = None,
+) -> LLMResponse:
+    assistant_message: Dict[str, Any] = {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [{
+            "id": call_id,
+            "type": "function",
+            "function": {"name": name, "arguments": arguments_json},
+        }],
+    }
+    if reasoning_content is not None:
+        assistant_message["reasoning_content"] = reasoning_content
     return LLMResponse(
         content=None,
         tool_calls=[ToolCall(id=call_id, name=name, arguments=arguments_json)],
-        assistant_message={
-            "role": "assistant",
-            "content": None,
-            "tool_calls": [{
-                "id": call_id,
-                "type": "function",
-                "function": {"name": name, "arguments": arguments_json},
-            }],
-        },
+        assistant_message=assistant_message,
+        meta=dict(meta or {}),
     )

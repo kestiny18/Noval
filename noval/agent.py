@@ -10,11 +10,12 @@ import logging
 import os
 import platform
 import sys
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .client import LLMClient, tool_message
+from .client import LLMClient, LLMResponse, tool_message
 from .config import Config
 from .executor import Approver, execute_tool_call
 from .permissions import PermissionController, PermissionMode, PermissionState
@@ -111,6 +112,31 @@ def load_project_memory(workdir: Path) -> Optional[str]:
     return None
 
 
+@dataclass
+class TurnMetrics:
+    """一个用户回合内的模型指标汇总，不包含思考正文。"""
+
+    api_calls: int = 0
+    reasoning_tokens: int = 0
+    has_reasoning_usage: bool = False
+    llm_duration_ms: float = 0.0
+    tool_calls: int = 0
+    thinking_detected: bool = False
+
+    def observe(self, response: LLMResponse) -> None:
+        self.api_calls += 1
+        self.tool_calls += len(response.tool_calls)
+        duration = response.meta.get("duration_ms")
+        if isinstance(duration, (int, float)):
+            self.llm_duration_ms += float(duration)
+        tokens = response.meta.get("reasoning_tokens")
+        if isinstance(tokens, int):
+            self.reasoning_tokens += tokens
+            self.has_reasoning_usage = True
+        if response.meta.get("thinking_enabled") is True:
+            self.thinking_detected = True
+
+
 class Agent:
     def __init__(
         self,
@@ -140,6 +166,7 @@ class Agent:
             shell_backend=shell_backend,
             permissions=permissions or PermissionController(),
         )
+        self.last_turn_metrics = TurnMetrics()
         self.messages: List[Dict[str, Any]] = []
         # system 消息按「稳定性从高到低」排，让缓存前缀尽量长：
         #   人设/规则(随代码发布才变) → 环境(同机器同项目固定) → 项目记忆(用户会编辑,最易变)
@@ -165,6 +192,7 @@ class Agent:
 
     def send(self, user_input: str) -> str:
         """处理一条用户输入，跑完工具循环，返回最终助手文本。"""
+        self.last_turn_metrics = TurnMetrics()
         # 当前时间随每个回合注入 user 消息(而非进 system prompt)：system 前缀因此
         # 与时间无关、跨天/跨重启不破缓存；历史里的时间戳是冻结的，不破后续前缀；
         # 且每轮刷新「现在」，长会话跨午夜也正确。
@@ -177,6 +205,7 @@ class Agent:
         try:
             for _ in range(self.config.max_steps):
                 resp = self.client.complete(self.messages, self.tools)
+                self.last_turn_metrics.observe(resp)
                 self._append_message(resp.assistant_message)
 
                 if not resp.tool_calls:                       # 没有工具调用 → 最终回复
@@ -206,6 +235,7 @@ class Agent:
             ),
         })
         resp = self.client.complete(self.messages, [])  # 不给工具 → 强制产出文本总结
+        self.last_turn_metrics.observe(resp)
         self._append_message(resp.assistant_message)
         return resp.content or "（已达到最大工具调用步数，已停止。）"
 
@@ -361,6 +391,41 @@ def _handle_permissions_command(
     )
 
 
+def _reasoning_mode_status(config: Config) -> str:
+    if "deepseek" in config.base_url.lower() or config.model.lower().startswith("deepseek"):
+        return "已开启（DeepSeek 默认）"
+    return "由 Provider 决定"
+
+
+def _format_reasoning_summary(metrics: TurnMetrics) -> Optional[str]:
+    if not metrics.api_calls or not (metrics.thinking_detected or metrics.has_reasoning_usage):
+        return None
+    parts = []
+    if metrics.has_reasoning_usage:
+        parts.append(f"{metrics.reasoning_tokens:,} reasoning tokens")
+    parts.append(f"模型耗时 {metrics.llm_duration_ms / 1000:.1f}s")
+    parts.append(f"{metrics.tool_calls} 次工具调用")
+    return "思考: " + " · ".join(parts)
+
+
+def _handle_reasoning_command(
+    user_input: str,
+    config: Config,
+    metrics: TurnMetrics,
+) -> Optional[str]:
+    if user_input.strip().lower() != "/reasoning":
+        return None
+    summary = _format_reasoning_summary(metrics) or "上次请求: 无"
+    if summary.startswith("思考: "):
+        summary = "上次请求: " + summary[len("思考: "):]
+    return (
+        f"思考模式: {_reasoning_mode_status(config)}\n"
+        "思考强度: Provider 自动\n"
+        f"{summary}\n"
+        "原始思考过程: 不展示"
+    )
+
+
 def _choose_resume_session(sessions: List[SessionMeta]) -> Optional[str]:
     """CLI 选择器：返回 session_id；None 表示开新会话。"""
     if not sessions:
@@ -457,6 +522,7 @@ def run_cli(argv: Optional[List[str]] = None) -> None:
     print(f"✓ 权限模式: {permissions.mode.label}")
     if permissions.approved_tools:
         print(f"✓ 本会话始终允许: {', '.join(sorted(permissions.approved_tools))}")
+    print(f"✓ 思考模式: {_reasoning_mode_status(config)}")
     print(env_context)  # 让你也看到探测结果
     while True:
         try:
@@ -474,6 +540,11 @@ def run_cli(argv: Optional[List[str]] = None) -> None:
             print()
             _print_turn("Noval", permission_reply)
             continue
+        reasoning_reply = _handle_reasoning_command(user_input, config, agent.last_turn_metrics)
+        if reasoning_reply is not None:
+            print()
+            _print_turn("Noval", reasoning_reply)
+            continue
         # 模型调用/网络异常不该掀翻整个会话：兜住、报错、保留历史、继续
         try:
             reply = agent.send(user_input)
@@ -484,6 +555,9 @@ def run_cli(argv: Optional[List[str]] = None) -> None:
             continue
         print()
         _print_turn("Noval", reply)
+        reasoning_summary = _format_reasoning_summary(agent.last_turn_metrics)
+        if reasoning_summary:
+            print(" " * len(_turn_prefix("Noval")) + reasoning_summary)
     print("\n再见！")
 
 

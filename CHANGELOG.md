@@ -9,6 +9,7 @@
 - 默认写入 `~/.noval/logs/YYYY-MM-DD/` 的脱敏运行日志，支持目录与保留期配置。
 - Git 提交前预检、测试、单次提交和 hash 回报的最小 agent 行为约束。
 - 会话级 ASK / FULL_ACCESS 权限模式与 `/permissions` 即时控制命令。
+- `/reasoning` 状态命令与每回合 reasoning token、模型耗时、工具调用指标。
 
 ### Changed
 
@@ -16,6 +17,10 @@
 - 工具调用 trace 只记录参数名，不再记录参数值；常见凭据形态在文件日志中二次脱敏。
 - 降低 `httpx` / `openai` 请求流水的日志级别，保持 CLI 输出聚焦任务本身。
 - 权限模式与 `[a]` 工具授权改存 session sidecar，恢复时直接生效；移除全局 `auto_approve`。
+
+### Fixed
+
+- DeepSeek 思考模式的工具调用轮保留并回传 `reasoning_content`，支持多工具子轮和会话恢复。
 
 ## [0.3.0] - 2026-06-29
 

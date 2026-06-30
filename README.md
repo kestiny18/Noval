@@ -134,6 +134,12 @@ def inspect_file(path: str) -> str:
 
 在请求批准模式下，确认提示中的 `[a]` 仍可授权当前工具。本会话授权 `run_bash` 意味着其后任意命令都不再询问，CLI 会明确提示这一范围。完全访问只跳过确认，不改变 workdir 边界、超时、日志脱敏等框架约束。
 
+## 思考模式
+
+DeepSeek 当前默认开启思考模式。Noval 不展示原始思考过程；工具调用轮所需的 `reasoning_content` 只作为 Provider 协议状态回传并随会话保存，普通最终回复不保存该字段。
+
+每轮回答后会显示 reasoning token、模型耗时与工具调用次数。输入 `/reasoning` 可查看当前模式和上一次请求指标；这些结构化指标也不会包含思考正文。
+
 ## 会话持久化
 
 会话默认存放在 `~/.noval/sessions/<workdir-hash>/`：
@@ -147,7 +153,7 @@ project.json
 - JSONL 保存 user / assistant / tool 消息；system prompt、环境和项目记忆在恢复时重建。
 - 标题默认从第一条用户消息派生；自定义标题与会话权限写入独立 sidecar。
 - 坏行和进程崩溃留下的半截尾行会被跳过，不废掉整个会话。
-- 内容目前是明文，可能包含用户粘贴的密钥或文件内容。可用 `"persist_sessions": false` 关闭。
+- 内容目前是明文，可能包含用户粘贴的密钥、文件内容，以及工具调用轮为协议续传所需的 `reasoning_content`。可用 `"persist_sessions": false` 关闭。
 
 这部分已通过自动化测试与真实任务验证，包括多 workdir、中文路径、大历史、任务中断和进程强杀恢复。同一 session 不支持多进程并发写入。
 
