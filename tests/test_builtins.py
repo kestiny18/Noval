@@ -1,6 +1,5 @@
 """内置工具行为测试 + 文件工具状态机（read-tracker / staleness）。"""
 import os
-import shutil
 import subprocess
 import sys
 
@@ -11,6 +10,7 @@ from noval.builtins import (
     run_bash, write_file,
 )
 from noval.tools import Context, Risk, ToolError
+from noval.shell import ShellBackend, resolve_shell_backend
 
 
 def ctx(tmp_path):
@@ -238,18 +238,38 @@ def test_run_bash_does_not_inherit_stdin(monkeypatch, tmp_path):
     assert seen["stdin"] is subprocess.DEVNULL
 
 
+def test_run_bash_uses_backend_frozen_in_context(monkeypatch, tmp_path):
+    seen = {}
+    backend = ShellBackend("chosen-bash", "Git Bash")
+
+    def fake_run(argv, **kwargs):
+        seen["argv"] = argv
+        seen.update(kwargs)
+        return subprocess.CompletedProcess(argv, 0, stdout="ok", stderr="")
+
+    monkeypatch.setattr("noval.builtins.subprocess.run", fake_run)
+    context = Context(workdir=tmp_path, shell_backend=backend)
+
+    assert run_bash(context, "pwd") == "ok"
+    assert seen["argv"] == ["chosen-bash", "-c", "pwd"]
+    assert seen["shell"] is False
+
+
 def test_run_bash_cwd_is_workdir(tmp_path):
     (tmp_path / "marker.txt").write_text("x", encoding="utf-8")
-    command = "ls marker.txt" if shutil.which("bash") else "dir /b marker.txt"
-    assert run_bash(ctx(tmp_path), command).strip() == "marker.txt"
+    backend = resolve_shell_backend()
+    command = "ls marker.txt" if backend.executable else "dir /b marker.txt"
+    context = Context(workdir=tmp_path, shell_backend=backend)
+    assert run_bash(context, command).strip() == "marker.txt"
 
 
 def test_run_bash_timeout(tmp_path):
-    command = "sleep 5" if shutil.which("bash") else subprocess.list2cmdline([
+    backend = resolve_shell_backend()
+    command = "sleep 5" if backend.executable else subprocess.list2cmdline([
         sys.executable, "-c", "import time; time.sleep(5)",
     ])
     with pytest.raises(ToolError) as e:
-        run_bash(ctx(tmp_path), command, timeout=1)
+        run_bash(Context(workdir=tmp_path, shell_backend=backend), command, timeout=1)
     assert "超时" in str(e.value)
 
 

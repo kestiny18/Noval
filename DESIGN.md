@@ -342,6 +342,12 @@ class SessionStore(Protocol):
 
 **原则收尾**：还是那条同源判断（决策 9/15）——**东西放在和它生命周期匹配的地方**。不可变事件进 append 日志、可变属性进 sidecar、可重建的派生态（system）压根不存、易变的「现在」随回合走。各归各位，架构就不会乱。
 
+## 决策 19：Shell 后端与运行日志都属于一次启动的框架状态
+
+Windows 的 `bash` 可能同时指向 Git Bash 和 WSL。若环境探测与工具执行各自调用 `which`，system prompt 描述的路径约定就可能与真正执行不一致。现在启动时只解析一次 `ShellBackend`：Windows 优先 Git for Windows Bash、再回退 PATH 中的 WSL；同一个不可变对象同时注入环境提示与 `Context`，`run_bash` 不再自行重新选择。
+
+运行日志与会话持久化也必须分层：会话日志为了恢复而保存完整消息，运行日志只为排障，默认只落工具名、参数名、耗时、错误和截断状态，并对常见凭据形态二次脱敏。文件按 `日期/session/pid` 隔离，避免多进程共享轮转文件；保留期清理只认框架自有的 `YYYY-MM-DD` 目录。
+
 ## 施工顺序
 
 1. `tools.py`：`ToolResult` / `ToolError` / `@tool` 注册表 —— 地基

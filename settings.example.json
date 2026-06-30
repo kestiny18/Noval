@@ -6,5 +6,8 @@
   "max_tool_output_chars": 8000,
   "auto_approve": ["read", "write"],
   "persist_sessions": true,
-  "sessions_dir": ""
+  "sessions_dir": "",
+  "persist_logs": true,
+  "logs_dir": "",
+  "log_retention_days": 14
 }

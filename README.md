@@ -132,6 +132,14 @@ project.json
 
 这部分已通过自动化测试与真实任务验证，包括多 workdir、中文路径、大历史、任务中断和进程强杀恢复。同一 session 不支持多进程并发写入。
 
+## 运行日志
+
+运行日志默认写入 `~/.noval/logs/YYYY-MM-DD/noval-<session>-<pid>.log`，保留 14 天。不同进程各写一个文件，避免多会话互相争用；CLI 仍只显示必要的 INFO/WARNING，`httpx` 请求流水不再刷屏。
+
+运行日志只记录工具名、参数名、耗时、错误和截断状态，不保存用户对话、工具参数值或工具输出；常见 API key、token、密码形态还会经过二次脱敏。它与上面的会话 JSONL 不同：会话为恢复上下文仍会保存明文正文。
+
+可通过 `persist_logs`、`logs_dir` 和 `log_retention_days` 调整或关闭运行日志。
+
 ## 版本里程碑
 
 | 版本 | 定位 | 对应引用 |

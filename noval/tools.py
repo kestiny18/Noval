@@ -17,9 +17,12 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import (
-    Any, Callable, Dict, List, Literal, Optional, Union,
+    TYPE_CHECKING, Any, Callable, Dict, List, Literal, Optional, Union,
     get_args, get_origin, get_type_hints,
 )
+
+if TYPE_CHECKING:
+    from .shell import ShellBackend
 
 
 # ---------------------------------------------------------------------------
@@ -68,6 +71,7 @@ class Context:
     workdir: Path
     read_state: Dict[str, ReadRecord] = field(default_factory=dict)
     approved_keys: set = field(default_factory=set)
+    shell_backend: Optional["ShellBackend"] = None
 
 
 # ---------------------------------------------------------------------------

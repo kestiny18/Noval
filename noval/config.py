@@ -23,6 +23,9 @@ DEFAULTS: Dict[str, Any] = {
     "auto_approve": ["read", "write"],        # 这些风险级别免确认；其余(dangerous)需确认
     "persist_sessions": True,                 # 会话落盘：默认开启，可在 settings.json 关闭
     "sessions_dir": "",                       # 空=~/.noval/sessions；可改到别的全局目录
+    "persist_logs": True,                     # 脱敏运行日志：默认开启
+    "logs_dir": "",                           # 空=~/.noval/logs
+    "log_retention_days": 14,                 # 按日目录清理过期运行日志
 }
 # 注：system_prompt 不在这里——它是 agent 的行为定义(属代码)，不是「全局稳定偏好」，
 # 故不开放给 settings.json 覆盖。见 noval/agent.py 的 DEFAULT_SYSTEM_PROMPT。
@@ -36,6 +39,10 @@ def default_sessions_dir() -> Path:
     return Path.home() / ".noval" / "sessions"
 
 
+def default_logs_dir() -> Path:
+    return Path.home() / ".noval" / "logs"
+
+
 @dataclass
 class Config:
     model: str
@@ -47,6 +54,9 @@ class Config:
     api_key: str = ""          # 可选：直接写在 ~/.noval/settings.json 里（该文件不在仓库内）
     persist_sessions: bool = True
     sessions_dir_setting: str = ""
+    persist_logs: bool = True
+    logs_dir_setting: str = ""
+    log_retention_days: int = 14
     raw: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -68,11 +78,17 @@ class Config:
             raise SystemExit("settings.json: persist_sessions 必须是布尔值 true/false")
         if not isinstance(merged["sessions_dir"], str):
             raise SystemExit('settings.json: sessions_dir 必须是字符串路径，如 "D:/noval-sessions"')
-        for key in ("max_steps", "max_tool_output_chars"):
+        if not isinstance(merged["persist_logs"], bool):
+            raise SystemExit("settings.json: persist_logs 必须是布尔值 true/false")
+        if not isinstance(merged["logs_dir"], str):
+            raise SystemExit('settings.json: logs_dir 必须是字符串路径，如 "D:/noval-logs"')
+        for key in ("max_steps", "max_tool_output_chars", "log_retention_days"):
             try:
                 merged[key] = int(merged[key])
             except (TypeError, ValueError):
                 raise SystemExit(f"settings.json: {key} 必须是整数")
+        if merged["log_retention_days"] < 1:
+            raise SystemExit("settings.json: log_retention_days 必须大于等于 1")
 
         return cls(
             model=merged["model"],
@@ -84,6 +100,9 @@ class Config:
             api_key=merged.get("api_key", ""),
             persist_sessions=merged["persist_sessions"],
             sessions_dir_setting=merged["sessions_dir"],
+            persist_logs=merged["persist_logs"],
+            logs_dir_setting=merged["logs_dir"],
+            log_retention_days=merged["log_retention_days"],
             raw=merged,
         )
 
@@ -92,6 +111,12 @@ class Config:
         if not self.sessions_dir_setting.strip():
             return default_sessions_dir()
         return Path(self.sessions_dir_setting).expanduser()
+
+    def logs_dir(self) -> Path:
+        """运行日志根目录。默认在用户主目录下，避免污染项目仓库。"""
+        if not self.logs_dir_setting.strip():
+            return default_logs_dir()
+        return Path(self.logs_dir_setting).expanduser()
 
     def resolve_api_key(self) -> str:
         """解析 api_key，优先级：settings.json 里的 api_key → 环境变量 → 报错。

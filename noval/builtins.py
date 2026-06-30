@@ -14,12 +14,12 @@ import fnmatch
 import glob as _glob
 import os
 import re
-import shutil
 import subprocess
 from pathlib import Path
 from typing import List, Optional
 
 from .tools import Context, Risk, ToolError, tool
+from .shell import resolve_shell_backend
 
 # 读取整文件的上限：超过就引导用 grep 定位，避免一口气塞爆上下文/内存
 MAX_READ_BYTES = 256 * 1024
@@ -422,8 +422,8 @@ def _bash_risk(args: dict) -> Risk:
 def run_bash(ctx: Context, command: str, timeout: int = 120) -> str:
     """在 workdir 下执行 shell 命令，返回合并的 stdout+stderr。
     命令非交互执行，超时会真正终止子进程。属危险操作，受确认门管控。"""
-    bash = shutil.which("bash")
-    argv = [bash, "-c", command] if bash else command
+    backend = ctx.shell_backend or resolve_shell_backend()
+    argv, use_system_shell = backend.command(command)
     try:
         proc = subprocess.run(
             argv,
@@ -434,7 +434,7 @@ def run_bash(ctx: Context, command: str, timeout: int = 120) -> str:
             encoding="utf-8",
             errors="replace",
             timeout=timeout,
-            shell=bash is None,
+            shell=use_system_shell,
         )
     except subprocess.TimeoutExpired:
         raise ToolError(f"命令超时（>{timeout}s）已被终止: {command}")

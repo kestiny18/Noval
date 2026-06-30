@@ -5,12 +5,10 @@
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import platform
-import re
-import shutil
-import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -20,6 +18,8 @@ from .client import LLMClient, tool_message
 from .config import Config
 from .executor import Approver, execute_tool_call
 from .session import JsonlSessionStore, SessionMeta, SessionStore, list_sessions
+from .runtime_log import setup_runtime_logging
+from .shell import ShellBackend, resolve_shell_backend, to_bash_path
 from .tools import Context, Tool, all_tools
 
 log = logging.getLogger("noval.agent")
@@ -29,6 +29,9 @@ log = logging.getLogger("noval.agent")
 DEFAULT_SYSTEM_PROMPT = (
     "你是 Noval，一个能调用工具的通用助手。"
     "需要外部信息或执行操作时主动使用提供的工具；不要臆造工具不存在的结果。"
+    "修改代码后先验证再宣称完成；除非用户明确要求，不要创建 Git 提交。"
+    "执行 Git 提交时，先检查 status/diff 与敏感内容并运行相关测试；"
+    "除非用户明确要求拆分，一次请求只创建一个提交，完成后报告 commit hash 与剩余工作区状态。"
 )
 
 
@@ -36,68 +39,30 @@ DEFAULT_SYSTEM_PROMPT = (
 # 环境探测：启动时把「脚下是什么」塞进 system prompt，省掉模型的试错
 # （真实任务里见过模型先 `ls "c:/..."` 失败花 10s，才改用 /mnt/c —— 就为消除这个）
 # ---------------------------------------------------------------------------
-def _to_bash_path(winpath: str, flavor: str) -> Optional[str]:
-    """把 Windows 路径转成对应 shell 的写法：C:\\X → /mnt/c/X (WSL) 或 /c/X (Git Bash)。"""
-    m = re.match(r"^([A-Za-z]):[\\/](.*)$", str(winpath))
-    if not m:
-        return None
-    drive, rest = m.group(1).lower(), m.group(2).replace("\\", "/")
-    if flavor == "WSL":
-        return f"/mnt/{drive}/{rest}"
-    if flavor == "Git Bash":
-        return f"/{drive}/{rest}"
-    return None
-
-
-def _detect_bash() -> Optional[tuple]:
-    """探测 run_bash 实际使用的 shell：返回 (flavor, uname, 路径映射说明)。"""
-    bash = shutil.which("bash")
-    if not bash:
-        return None
-    try:
-        out = subprocess.run(
-            [bash, "-c", "uname -s -r"],
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=5,
-        )
-        uname = (out.stdout or "").strip()
-    except Exception:
-        return ("bash", "", "")
-    low = uname.lower()
-    if "microsoft" in low or "wsl" in low:
-        return ("WSL", uname, "Windows 路径 C:\\X 在 run_bash 里要写成 /mnt/c/X（盘符小写）")
-    if "mingw" in low or "msys" in low:
-        return ("Git Bash", uname, "Windows 路径 C:\\X 在 run_bash 里要写成 /c/X")
-    return ("Linux/Unix", uname, "")
-
-
-def detect_environment(workdir: Path) -> str:
+def detect_environment(workdir: Path, backend: Optional[ShellBackend] = None) -> str:
     """组装环境上下文块。模型据此判断 OS/路径风格/日期，而不是靠命令试错。"""
     # 注意：当前时间「不」放这里——它易变，会破坏 system 缓存前缀。
     # 时间随每个用户回合注入(见 Agent.send)，前缀只留「同机器同项目内不变」的东西。
     lines = [
-        f"- 运行平台: {platform.system()} {platform.release()}",
+        f"- Noval 主进程平台: {platform.system()} {platform.release()}（原生 Python）",
         f"- 工作目录(workdir): {workdir}",
     ]
-    flavor = _detect_bash()
-    if flavor:
-        name, uname, hint = flavor
-        lines.append(f"- run_bash 使用的 shell: {name}" + (f" — {uname}" if uname else ""))
-        if hint:
-            lines.append(f"- 路径映射: {hint}")
-        bash_wd = _to_bash_path(str(workdir), name)
+    selected = backend or resolve_shell_backend()
+    lines.append(
+        f"- run_bash 执行后端: {selected.flavor}"
+        + (f" — {selected.uname}" if selected.uname else "")
+    )
+    if selected.executable:
+        lines.append(f"- run_bash 可执行文件: {selected.executable}")
+    if selected.path_hint:
+        lines.append(f"- 路径映射: {selected.path_hint}")
+        bash_wd = to_bash_path(str(workdir), selected.flavor)
         if bash_wd:
             lines.append(f"- workdir 在 run_bash 中即: {bash_wd}")
             lines.append(
-                "- 注意区分：run_bash 用上面的 WSL/bash 路径；但 read_file/grep/glob 等"
+                "- 注意区分：run_bash 用上面执行后端的路径；但 read_file/grep/glob 等"
                 "文件工具是原生工具——路径优先用「相对 workdir」，绝对路径两种约定都接受"
             )
-    else:
-        lines.append("- run_bash 不可用（系统未找到 bash）")
     return (
         "<environment>\n"
         "你的运行环境如下。执行命令、拼接路径时直接据此判断，不要靠失败重试来摸索环境：\n"
@@ -155,6 +120,7 @@ class Agent:
         system_prompt: Optional[str] = None,
         store: Optional[SessionStore] = None,
         resume_messages: Optional[List[Dict[str, Any]]] = None,
+        shell_backend: Optional[ShellBackend] = None,
     ):
         self.client = client
         self.config = config
@@ -164,7 +130,7 @@ class Agent:
         # workdir 是 per-invocation 状态：本次启动各自决定，不存进全局 settings.json
         self.workdir = Path(workdir).resolve() if workdir else Path.cwd()
         # 执行上下文：workdir + 跨工具调用共享的 read-tracker，注入给需要的工具
-        self.context = Context(workdir=self.workdir)
+        self.context = Context(workdir=self.workdir, shell_backend=shell_backend)
         self.messages: List[Dict[str, Any]] = []
         # system 消息按「稳定性从高到低」排，让缓存前缀尽量长：
         #   人设/规则(随代码发布才变) → 环境(同机器同项目固定) → 项目记忆(用户会编辑,最易变)
@@ -209,7 +175,7 @@ class Agent:
 
                 # OpenAI 协议要求：每个 tool_call 都必须有对应的 tool 消息回填
                 for call in resp.tool_calls:
-                    log.info("calling tool %s args=%s", call.name, call.arguments)
+                    log.info("calling tool=%s arg_keys=%s", call.name, _tool_arg_keys(call.arguments))
                     result = execute_tool_call(
                         call.name, call.arguments, self.config, self.approver, self.context
                     )
@@ -307,8 +273,15 @@ def _cli_approver(tool: Tool, args: Dict[str, Any]) -> str:
     return "yes" if ans in ("y", "yes") else "no"
 
 
-def setup_logging(level: int = logging.INFO) -> None:
-    logging.basicConfig(level=level, format="%(levelname)s %(name)s: %(message)s")
+def _tool_arg_keys(arguments: str) -> List[str]:
+    """Return structural tool-call metadata without logging argument values."""
+    try:
+        parsed = json.loads(arguments)
+    except (TypeError, json.JSONDecodeError):
+        return ["<invalid-json>"]
+    if not isinstance(parsed, dict):
+        return ["<non-object>"]
+    return sorted(str(key) for key in parsed)
 
 
 def _choose_resume_session(sessions: List[SessionMeta]) -> Optional[str]:
@@ -356,8 +329,6 @@ def run_cli(argv: Optional[List[str]] = None) -> None:
         raise SystemExit(f"--workdir 不是有效目录: {workdir}")
     os.chdir(workdir)  # 让文件工具/将来 run_bash 的子进程，相对路径都落在 workdir
 
-    setup_logging()
-    log.info("workdir = %s", workdir)
     config = Config.load()
     store: Optional[SessionStore] = None
     resume_messages: Optional[List[Dict[str, Any]]] = None
@@ -382,12 +353,21 @@ def run_cli(argv: Optional[List[str]] = None) -> None:
             else:
                 print("没有选择可恢复会话，已开启新会话。")
                 store = JsonlSessionStore.create(sessions_dir, workdir, config.model)
-    env_context = detect_environment(workdir)      # 启动时探测一次
+    session_id = getattr(store, "session_id", None)
+    log_path = setup_runtime_logging(config, session_id)
+    log.info("workdir = %s", workdir)
+    if log_path:
+        log.info("运行日志 = %s", log_path)
+    shell_backend = resolve_shell_backend()         # 启动时选择一次，提示与执行共用
+    log.info("run_bash backend=%s executable=%s", shell_backend.flavor,
+             shell_backend.executable or "<system>")
+    env_context = detect_environment(workdir, shell_backend)
     project_memory = load_project_memory(workdir)  # 读 AGENTS.md / CLAUDE.md 一次
     client = OpenAICompatibleClient(config.base_url, config.resolve_api_key(), config.model)
     agent = Agent(client, config, approver=_cli_approver, workdir=str(workdir),
                   env_context=env_context, project_memory=project_memory,
-                  store=store, resume_messages=resume_messages)
+                  store=store, resume_messages=resume_messages,
+                  shell_backend=shell_backend)
 
     print(f"Noval 已就绪 (workdir: {workdir})。输入 'exit' 退出。")
     if resumed_session_id:

@@ -9,20 +9,30 @@ def test_persistence_config_defaults(tmp_path):
     cfg = Config.load(tmp_path / "missing.json")
     assert cfg.persist_sessions is True
     assert cfg.sessions_dir().name == "sessions"
+    assert cfg.persist_logs is True
+    assert cfg.logs_dir().name == "logs"
+    assert cfg.log_retention_days == 14
 
 
 def test_persistence_config_can_be_overridden(tmp_path):
     settings = tmp_path / "settings.json"
     sessions = tmp_path / "my-sessions"
+    logs = tmp_path / "my-logs"
     settings.write_text(json.dumps({
         "persist_sessions": False,
         "sessions_dir": str(sessions),
+        "persist_logs": False,
+        "logs_dir": str(logs),
+        "log_retention_days": 30,
     }), encoding="utf-8")
 
     cfg = Config.load(settings)
 
     assert cfg.persist_sessions is False
     assert cfg.sessions_dir() == sessions
+    assert cfg.persist_logs is False
+    assert cfg.logs_dir() == logs
+    assert cfg.log_retention_days == 30
 
 
 def test_persistence_config_rejects_bad_types(tmp_path):
@@ -34,4 +44,12 @@ def test_persistence_config_rejects_bad_types(tmp_path):
 
     settings.write_text(json.dumps({"sessions_dir": ["bad"]}), encoding="utf-8")
     with pytest.raises(SystemExit, match="sessions_dir"):
+        Config.load(settings)
+
+    settings.write_text(json.dumps({"persist_logs": "yes"}), encoding="utf-8")
+    with pytest.raises(SystemExit, match="persist_logs"):
+        Config.load(settings)
+
+    settings.write_text(json.dumps({"log_retention_days": 0}), encoding="utf-8")
+    with pytest.raises(SystemExit, match="log_retention_days"):
         Config.load(settings)

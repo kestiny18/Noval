@@ -1,18 +1,18 @@
 """agent 循环测试：用 MockClient 跑完整条「工具调用 → 回填 → 最终回复」闭环，离线零成本。"""
 import json
 import os
-import subprocess
 from datetime import datetime
 from pathlib import Path
 
 from noval.agent import (
-    Agent, _choose_resume_session, _detect_bash, _format_turn, _read_turn,
-    _supports_color, _to_bash_path, _turn_prefix, detect_environment,
+    Agent, _choose_resume_session, _format_turn, _read_turn,
+    _supports_color, _tool_arg_keys, _turn_prefix, detect_environment,
     load_project_memory,
 )
 from noval.client import LLMResponse, MockClient, ToolCall, mock_text, mock_tool_call
 from noval.config import Config
 from noval.session import SessionMeta
+from noval.shell import ShellBackend, to_bash_path
 
 
 def _multi_tool_call(calls):
@@ -99,31 +99,46 @@ def test_workdir_explicit(tmp_path):
 
 
 def test_to_bash_path():
-    assert _to_bash_path("C:\\Users\\x", "WSL") == "/mnt/c/Users/x"
-    assert _to_bash_path("E:/Work/y", "Git Bash") == "/e/Work/y"
-    assert _to_bash_path("/already/unix", "WSL") is None        # 非 Windows 路径不转
-
-
-def test_detect_bash_does_not_inherit_stdin(monkeypatch):
-    seen = {}
-
-    monkeypatch.setattr("noval.agent.shutil.which", lambda name: "bash")
-
-    def fake_run(*args, **kwargs):
-        seen.update(kwargs)
-        return subprocess.CompletedProcess(args[0], 0, stdout="MINGW64_NT", stderr="")
-
-    monkeypatch.setattr("noval.agent.subprocess.run", fake_run)
-
-    assert _detect_bash()[0] == "Git Bash"
-    assert seen["stdin"] is subprocess.DEVNULL
+    assert to_bash_path("C:\\Users\\x", "WSL") == "/mnt/c/Users/x"
+    assert to_bash_path("E:/Work/y", "Git Bash") == "/e/Work/y"
+    assert to_bash_path("/already/unix", "WSL") is None        # 非 Windows 路径不转
 
 
 def test_detect_environment_has_basics(tmp_path):
-    env = detect_environment(tmp_path)
+    backend = ShellBackend("C:/Git/bin/bash.exe", "Git Bash", "MINGW64_NT", "path hint")
+    env = detect_environment(tmp_path, backend)
     assert "<environment>" in env and "workdir" in env
     assert str(tmp_path) in env
+    assert "Noval 主进程平台" in env
+    assert "run_bash 执行后端: Git Bash" in env
+    assert "C:/Git/bin/bash.exe" in env
     assert "当前日期" not in env and "当前时间" not in env       # 时间不进 system 前缀
+
+
+def test_agent_context_keeps_selected_shell_backend():
+    backend = ShellBackend("chosen-bash", "Git Bash")
+    agent = Agent(MockClient([mock_text("hi")]), cfg(), shell_backend=backend)
+    assert agent.context.shell_backend is backend
+
+
+def test_tool_arg_keys_never_include_values():
+    assert _tool_arg_keys('{"path":"C:/secret.txt","limit":20}') == ["limit", "path"]
+    assert _tool_arg_keys("not json") == ["<invalid-json>"]
+
+
+def test_tool_call_log_omits_argument_values(tmp_path, caplog):
+    secret_path = tmp_path / "private-token-file.txt"
+    secret_path.write_text("ok", encoding="utf-8")
+    client = MockClient([
+        mock_tool_call("c1", "read_file", json.dumps({"path": str(secret_path)})),
+        mock_text("done"),
+    ])
+    caplog.set_level("INFO", logger="noval.agent")
+
+    Agent(client, cfg(), workdir=str(tmp_path)).send("read it")
+
+    assert "arg_keys=['path']" in caplog.text
+    assert str(secret_path) not in caplog.text
 
 
 def test_send_stamps_user_message_with_current_time():
@@ -157,6 +172,8 @@ def test_default_system_prompt_when_not_overridden():
     from noval.agent import DEFAULT_SYSTEM_PROMPT
     agent = Agent(MockClient([mock_text("hi")]), cfg())        # 不传任何 system_prompt
     assert agent.messages[0]["content"] == DEFAULT_SYSTEM_PROMPT
+    assert "运行相关测试" in DEFAULT_SYSTEM_PROMPT
+    assert "commit hash" in DEFAULT_SYSTEM_PROMPT
 
 
 # --- 项目记忆 (AGENTS.md / CLAUDE.md) -------------------------------------
