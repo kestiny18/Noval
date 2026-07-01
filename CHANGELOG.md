@@ -10,6 +10,7 @@
 - Git 提交前预检、测试、单次提交和 hash 回报的最小 agent 行为约束。
 - 会话级 ASK / FULL_ACCESS 权限模式与 `/permissions` 即时控制命令。
 - `/reasoning` 状态命令与每回合 reasoning token、模型耗时、工具调用指标。
+- 按日、跨项目汇总的 Token 用量事件存储与 `/usage` 命令，支持缓存、reasoning 和模型维度。
 
 ### Changed
 

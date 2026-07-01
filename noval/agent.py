@@ -26,6 +26,7 @@ from .session import (
 from .runtime_log import setup_runtime_logging
 from .shell import ShellBackend, resolve_shell_backend, to_bash_path
 from .tools import Context, Tool, all_tools
+from .usage import JsonlUsageStore, MeteredLLMClient, UsageBreakdown, UsageSummary
 
 log = logging.getLogger("noval.agent")
 
@@ -129,9 +130,8 @@ class TurnMetrics:
         duration = response.meta.get("duration_ms")
         if isinstance(duration, (int, float)):
             self.llm_duration_ms += float(duration)
-        tokens = response.meta.get("reasoning_tokens")
-        if isinstance(tokens, int):
-            self.reasoning_tokens += tokens
+        if response.usage is not None and response.usage.reasoning_tokens is not None:
+            self.reasoning_tokens += response.usage.reasoning_tokens
             self.has_reasoning_usage = True
         if response.meta.get("thinking_enabled") is True:
             self.thinking_detected = True
@@ -426,6 +426,56 @@ def _handle_reasoning_command(
     )
 
 
+def _format_usage_breakdown(usage: UsageBreakdown, *, indent: str = "") -> List[str]:
+    lines = [
+        f"{indent}请求次数: {usage.requests:,}",
+        f"{indent}输入: {usage.prompt_tokens:,}",
+    ]
+    if usage.cache_reported:
+        cache_total = usage.cache_hit_tokens + usage.cache_miss_tokens
+        hit_rate = usage.cache_hit_tokens / cache_total * 100 if cache_total else 0.0
+        lines.extend([
+            f"{indent}  缓存命中: {usage.cache_hit_tokens:,} ({hit_rate:.1f}%)",
+            f"{indent}  缓存未命中: {usage.cache_miss_tokens:,}",
+        ])
+    lines.append(f"{indent}输出: {usage.completion_tokens:,}")
+    if usage.reasoning_reported:
+        lines.append(f"{indent}  其中 reasoning: {usage.reasoning_tokens:,}")
+    lines.append(f"{indent}总计: {usage.total_tokens:,}")
+    return lines
+
+
+def _format_usage_summary(summary: UsageSummary) -> str:
+    lines = [f"今日 Token 使用 ({summary.day.isoformat()})"]
+    lines.extend(_format_usage_breakdown(summary.total))
+    if len(summary.by_model) > 1:
+        lines.append("")
+        lines.append("按模型:")
+        for model in sorted(summary.by_model):
+            usage = summary.by_model[model]
+            lines.append(model)
+            lines.append(
+                f"  请求: {usage.requests:,} · 输入: {usage.prompt_tokens:,} · "
+                f"输出: {usage.completion_tokens:,} · 总计: {usage.total_tokens:,}"
+            )
+    return "\n".join(lines)
+
+
+def _handle_usage_command(
+    user_input: str,
+    store: Optional[JsonlUsageStore],
+) -> Optional[str]:
+    if user_input.strip().lower() != "/usage":
+        return None
+    if store is None:
+        return "Token 统计已关闭。"
+    try:
+        return _format_usage_summary(store.summarize())
+    except Exception:
+        log.warning("读取 token 用量统计失败", exc_info=True)
+        return "Token 统计暂时无法读取，请查看运行日志。"
+
+
 def _choose_resume_session(sessions: List[SessionMeta]) -> Optional[str]:
     """CLI 选择器：返回 session_id；None 表示开新会话。"""
     if not sessions:
@@ -506,7 +556,13 @@ def run_cli(argv: Optional[List[str]] = None) -> None:
              shell_backend.executable or "<system>")
     env_context = detect_environment(workdir, shell_backend)
     project_memory = load_project_memory(workdir)  # 读 AGENTS.md / CLAUDE.md 一次
-    client = OpenAICompatibleClient(config.base_url, config.resolve_api_key(), config.model)
+    client: LLMClient = OpenAICompatibleClient(
+        config.base_url, config.resolve_api_key(), config.model
+    )
+    usage_store: Optional[JsonlUsageStore] = None
+    if config.persist_usage:
+        usage_store = JsonlUsageStore(config.usage_dir(), session_id)
+        client = MeteredLLMClient(client, usage_store, config.model)
     agent = Agent(client, config, approver=_cli_approver, workdir=str(workdir),
                   env_context=env_context, project_memory=project_memory,
                   store=store, resume_messages=resume_messages,
@@ -544,6 +600,11 @@ def run_cli(argv: Optional[List[str]] = None) -> None:
         if reasoning_reply is not None:
             print()
             _print_turn("Noval", reasoning_reply)
+            continue
+        usage_reply = _handle_usage_command(user_input, usage_store)
+        if usage_reply is not None:
+            print()
+            _print_turn("Noval", usage_reply)
             continue
         # 模型调用/网络异常不该掀翻整个会话：兜住、报错、保留历史、继续
         try:

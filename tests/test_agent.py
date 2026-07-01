@@ -11,7 +11,9 @@ from noval.agent import (
     _supports_color, _tool_arg_keys, _turn_prefix, detect_environment,
     load_project_memory, TurnMetrics,
 )
-from noval.client import LLMResponse, MockClient, ToolCall, mock_text, mock_tool_call
+from noval.client import (
+    LLMResponse, MockClient, TokenUsage, ToolCall, mock_text, mock_tool_call,
+)
 from noval.config import Config
 from noval.permissions import PermissionController, PermissionMode
 from noval.session import JsonlSessionStore, SessionMeta
@@ -87,15 +89,14 @@ def test_reasoning_replay_and_turn_metrics_across_tool_loop(tmp_path):
             reasoning_content="need to inspect the file",
             meta={
                 "thinking_enabled": True,
-                "reasoning_tokens": 20,
                 "duration_ms": 1200,
             },
+            usage=TokenUsage(100, 20, 120, reasoning_tokens=20),
         ),
         mock_text("done", meta={
             "thinking_enabled": True,
-            "reasoning_tokens": 5,
             "duration_ms": 300,
-        }),
+        }, usage=TokenUsage(120, 10, 130, reasoning_tokens=5)),
     ])
     store = _MemoryStore()
     agent = Agent(client, cfg(), workdir=str(tmp_path), store=store)

@@ -23,6 +23,8 @@ DEFAULTS: Dict[str, Any] = {
     "persist_logs": True,                     # 脱敏运行日志：默认开启
     "logs_dir": "",                           # 空=~/.noval/logs
     "log_retention_days": 14,                 # 按日目录清理过期运行日志
+    "persist_usage": True,                    # 模型返回的 token 用量：默认开启
+    "usage_dir": "",                         # 空=~/.noval/usage
 }
 # 注：system_prompt 不在这里——它是 agent 的行为定义(属代码)，不是「全局稳定偏好」，
 # 故不开放给 settings.json 覆盖。见 noval/agent.py 的 DEFAULT_SYSTEM_PROMPT。
@@ -40,6 +42,10 @@ def default_logs_dir() -> Path:
     return Path.home() / ".noval" / "logs"
 
 
+def default_usage_dir() -> Path:
+    return Path.home() / ".noval" / "usage"
+
+
 @dataclass
 class Config:
     model: str
@@ -53,6 +59,8 @@ class Config:
     persist_logs: bool = True
     logs_dir_setting: str = ""
     log_retention_days: int = 14
+    persist_usage: bool = True
+    usage_dir_setting: str = ""
     raw: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -75,6 +83,10 @@ class Config:
             raise SystemExit("settings.json: persist_logs 必须是布尔值 true/false")
         if not isinstance(merged["logs_dir"], str):
             raise SystemExit('settings.json: logs_dir 必须是字符串路径，如 "D:/noval-logs"')
+        if not isinstance(merged["persist_usage"], bool):
+            raise SystemExit("settings.json: persist_usage 必须是布尔值 true/false")
+        if not isinstance(merged["usage_dir"], str):
+            raise SystemExit('settings.json: usage_dir 必须是字符串路径，如 "D:/noval-usage"')
         for key in ("max_steps", "max_tool_output_chars", "log_retention_days"):
             try:
                 merged[key] = int(merged[key])
@@ -95,6 +107,8 @@ class Config:
             persist_logs=merged["persist_logs"],
             logs_dir_setting=merged["logs_dir"],
             log_retention_days=merged["log_retention_days"],
+            persist_usage=merged["persist_usage"],
+            usage_dir_setting=merged["usage_dir"],
             raw=merged,
         )
 
@@ -109,6 +123,12 @@ class Config:
         if not self.logs_dir_setting.strip():
             return default_logs_dir()
         return Path(self.logs_dir_setting).expanduser()
+
+    def usage_dir(self) -> Path:
+        """Token 用量根目录。统计跨项目汇总，因此固定在用户目录。"""
+        if not self.usage_dir_setting.strip():
+            return default_usage_dir()
+        return Path(self.usage_dir_setting).expanduser()
 
     def resolve_api_key(self) -> str:
         """解析 api_key，优先级：settings.json 里的 api_key → 环境变量 → 报错。

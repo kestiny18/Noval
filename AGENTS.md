@@ -43,6 +43,7 @@
 - **项目记忆**：启动时读 workdir 的 `AGENTS.md`（开放标准，回退 `CLAUDE.md`），用 `<project_instructions>` 包安全边界后注入 system prompt；**只读不写**。system 顺序按稳定性：人设 → 环境 → 项目记忆（见 DESIGN 决策 14）。
 - **可观测性**：禁止 `print(整个 response)`。每次工具调用记结构化 trace（tool / args / 耗时 / is_error / truncated）。
 - **Provider 回放状态**：`LLMResponse.assistant_message` 由适配器按白名单构造，必须保留后续请求所需的协议字段。DeepSeek thinking 在工具调用轮必须回传 `reasoning_content`；普通最终回复丢弃该字段。Agent 不读取、不展示思考正文，只消费归一化 token/耗时元数据。
+- **Token 用量**：Provider 只负责填充 `TokenUsage`，持久化由 `MeteredLLMClient` 装饰器旁路完成；统计故障不得影响模型响应。事件按日期/session/pid 追加，查询时全局汇总，不保存项目路径或消息正文。
 - **可测试性**：`LLMClient` 必须能被 mock，使整条 agent 循环可在不联网、不烧钱的情况下测试。
 - **循环安全**：agent 循环必须有 `max_steps` 上限，达到上限优雅停止。
 - **密钥**：永不硬编码 api_key，一律从环境变量 / 配置读取。
@@ -68,6 +69,7 @@ noval/
   builtins.py   # 内置工具实现（read/write/edit/bash/ls/grep/glob）
   executor.py   # 执行管道（含 Context 注入）                 [接缝3]
   permissions.py # 会话级权限状态与唯一决策入口
+  usage.py      # Token 计量装饰器、按日 JSONL 事件与汇总
   agent.py      # 对话循环(含 max_steps) + CLI 入口
 ```
 

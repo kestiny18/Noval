@@ -23,13 +23,26 @@ class ToolCall:
     arguments: str   # 原始 JSON 字符串；解析容错由 executor 负责
 
 
+@dataclass(frozen=True)
+class TokenUsage:
+    """一次成功模型请求返回的标准化 token 用量。"""
+
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+    cache_hit_tokens: Optional[int] = None
+    cache_miss_tokens: Optional[int] = None
+    reasoning_tokens: Optional[int] = None
+
+
 @dataclass
 class LLMResponse:
     content: Optional[str]                 # 助手文本（无工具调用时即最终回复）
     tool_calls: List[ToolCall]             # 本轮请求的工具调用
     assistant_message: Dict[str, Any]      # Provider 构造的、可安全回放的历史消息
     raw: Any = None                        # 原始响应对象，仅供调试/日志
-    meta: Dict[str, Any] = field(default_factory=dict)  # reasoning token / 耗时等，不给模型
+    meta: Dict[str, Any] = field(default_factory=dict)  # 耗时等框架元数据，不给模型
+    usage: Optional[TokenUsage] = None      # Provider 返回的实际用量；缺失时不估算
 
 
 class LLMClient(Protocol):
@@ -52,6 +65,37 @@ def _to_openai_tool(tool: Tool) -> Dict[str, Any]:
             "parameters": tool.parameters,
         },
     }
+
+
+def _value(obj: Any, name: str) -> Any:
+    if isinstance(obj, dict):
+        return obj.get(name)
+    return getattr(obj, name, None)
+
+
+def _optional_int(value: Any) -> Optional[int]:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _normalize_usage(raw_usage: Any) -> Optional[TokenUsage]:
+    """归一化 OpenAI 兼容 usage；核心计数缺失时不做猜测。"""
+    if raw_usage is None:
+        return None
+    prompt_tokens = _optional_int(_value(raw_usage, "prompt_tokens"))
+    completion_tokens = _optional_int(_value(raw_usage, "completion_tokens"))
+    total_tokens = _optional_int(_value(raw_usage, "total_tokens"))
+    if prompt_tokens is None or completion_tokens is None or total_tokens is None:
+        return None
+
+    completion_details = _value(raw_usage, "completion_tokens_details")
+    return TokenUsage(
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=total_tokens,
+        cache_hit_tokens=_optional_int(_value(raw_usage, "prompt_cache_hit_tokens")),
+        cache_miss_tokens=_optional_int(_value(raw_usage, "prompt_cache_miss_tokens")),
+        reasoning_tokens=_optional_int(_value(completion_details, "reasoning_tokens")),
+    )
 
 
 # --- 真实适配器：OpenAI 兼容端点（DeepSeek） ------------------------------
@@ -90,18 +134,16 @@ class OpenAICompatibleClient:
             if reasoning_content is not None:
                 assistant_message["reasoning_content"] = reasoning_content
 
-        usage = getattr(resp, "usage", None)
-        completion_details = getattr(usage, "completion_tokens_details", None)
-        reasoning_tokens = getattr(completion_details, "reasoning_tokens", None)
+        usage = _normalize_usage(getattr(resp, "usage", None))
         return LLMResponse(
             content=msg.content,
             tool_calls=tool_calls,
             assistant_message=assistant_message,
             meta={
                 "thinking_enabled": reasoning_content is not None,
-                "reasoning_tokens": reasoning_tokens,
                 "duration_ms": duration_ms,
             },
+            usage=usage,
             raw=resp,
         )
 
@@ -122,12 +164,18 @@ class MockClient:
 
 
 # 构造 mock 响应的便捷函数，让测试可读
-def mock_text(text: str, *, meta: Optional[Dict[str, Any]] = None) -> LLMResponse:
+def mock_text(
+    text: str,
+    *,
+    meta: Optional[Dict[str, Any]] = None,
+    usage: Optional[TokenUsage] = None,
+) -> LLMResponse:
     return LLMResponse(
         content=text,
         tool_calls=[],
         assistant_message={"role": "assistant", "content": text},
         meta=dict(meta or {}),
+        usage=usage,
     )
 
 
@@ -138,6 +186,7 @@ def mock_tool_call(
     *,
     reasoning_content: Optional[str] = None,
     meta: Optional[Dict[str, Any]] = None,
+    usage: Optional[TokenUsage] = None,
 ) -> LLMResponse:
     assistant_message: Dict[str, Any] = {
         "role": "assistant",
@@ -155,4 +204,5 @@ def mock_tool_call(
         tool_calls=[ToolCall(id=call_id, name=name, arguments=arguments_json)],
         assistant_message=assistant_message,
         meta=dict(meta or {}),
+        usage=usage,
     )

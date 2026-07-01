@@ -21,7 +21,11 @@ def _client(responses):
     return client, completions
 
 
-def _response(*, content, reasoning_content, tool_calls=None, reasoning_tokens=0):
+def _response(
+    *, content, reasoning_content, tool_calls=None, reasoning_tokens=0,
+    prompt_tokens=100, completion_tokens=20, cache_hit_tokens=60,
+    cache_miss_tokens=40,
+):
     message = SimpleNamespace(
         content=content,
         reasoning_content=reasoning_content,
@@ -29,6 +33,11 @@ def _response(*, content, reasoning_content, tool_calls=None, reasoning_tokens=0
         annotations=["must not leak"],
     )
     usage = SimpleNamespace(
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=prompt_tokens + completion_tokens,
+        prompt_cache_hit_tokens=cache_hit_tokens,
+        prompt_cache_miss_tokens=cache_miss_tokens,
         completion_tokens_details=SimpleNamespace(reasoning_tokens=reasoning_tokens)
     )
     return SimpleNamespace(choices=[SimpleNamespace(message=message)], usage=usage)
@@ -58,8 +67,24 @@ def test_reasoning_is_omitted_for_plain_assistant_message():
 
     assert result.assistant_message == {"role": "assistant", "content": "answer"}
     assert result.meta["thinking_enabled"] is True
-    assert result.meta["reasoning_tokens"] == 12
+    assert result.usage is not None
+    assert result.usage.prompt_tokens == 100
+    assert result.usage.completion_tokens == 20
+    assert result.usage.total_tokens == 120
+    assert result.usage.cache_hit_tokens == 60
+    assert result.usage.cache_miss_tokens == 40
+    assert result.usage.reasoning_tokens == 12
     assert result.meta["duration_ms"] >= 0
+
+
+def test_missing_usage_is_not_estimated():
+    response = _response(content="answer", reasoning_content=None)
+    response.usage = None
+    client, _ = _client([response])
+
+    result = client.complete([{"role": "user", "content": "question"}], [])
+
+    assert result.usage is None
 
 
 def test_tool_call_reasoning_is_preserved_once_and_replayed():
