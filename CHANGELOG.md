@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-01
+
+运行治理与可观测性版本。权限、日志、DeepSeek thinking 和 Token 用量均已在真实 CLI 会话中验证。
+
 ### Added
 
 - 默认写入 `~/.noval/logs/YYYY-MM-DD/` 的脱敏运行日志，支持目录与保留期配置。
@@ -81,7 +85,8 @@
 - 带 `max_steps` 的 Agent 循环与 CLI。
 - `MockClient` 和离线测试。
 
-[Unreleased]: https://github.com/kestiny18/Noval/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/kestiny18/Noval/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/kestiny18/Noval/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/kestiny18/Noval/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/kestiny18/Noval/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/kestiny18/Noval/releases/tag/v0.1.0
