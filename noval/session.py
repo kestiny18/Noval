@@ -45,6 +45,20 @@ class SessionMetadataStore(Protocol):
 class PersistentSessionStore(SessionStore, SessionMetadataStore, Protocol):
     """CLI 持久化会话所需的完整能力；Agent 循环仍只依赖 SessionStore。"""
 
+    session_id: str
+
+    def load_records(self) -> List["SessionRecord"]: ...
+    def context_path(self) -> Path: ...
+
+
+@dataclass(frozen=True)
+class SessionRecord:
+    """带持久化来源信息的消息；Provider 仍只接收其中的 msg。"""
+
+    seq: int
+    ts: str
+    msg: Dict[str, Any]
+
 
 @dataclass
 class SessionMeta:
@@ -227,17 +241,27 @@ class JsonlSessionStore:
         )
         self._pending_metadata = None
 
+    def context_path(self) -> Path:
+        """该会话的派生上下文 checkpoint 文件；与原始消息日志分目录。"""
+        return self._dir / "context" / f"{self.session_id}.jsonl"
+
     # --- 读 ----------------------------------------------------------------
-    def load(self) -> List[Dict[str, Any]]:
-        """读回该会话的 msg 序列（剥掉信封 + 跳过 _meta/坏行）。新会话返回 []。"""
-        msgs: List[Dict[str, Any]] = []
+    def load_records(self) -> List[SessionRecord]:
+        """读回合法消息信封，保留 seq/ts 供 checkpoint 标记来源。"""
+        records: List[SessionRecord] = []
         for rec in _iter_records(self._path):
             if "_meta" in rec:
                 continue
+            seq = rec.get("seq")
+            ts = rec.get("ts")
             msg = rec.get("msg")
-            if isinstance(msg, dict):
-                msgs.append(msg)
-        return msgs
+            if isinstance(seq, int) and isinstance(ts, str) and isinstance(msg, dict):
+                records.append(SessionRecord(seq=seq, ts=ts, msg=msg))
+        return records
+
+    def load(self) -> List[Dict[str, Any]]:
+        """读回该会话的 msg 序列（剥掉信封 + 跳过 _meta/坏行）。新会话返回 []。"""
+        return [record.msg for record in self.load_records()]
 
 
 # ---------------------------------------------------------------------------

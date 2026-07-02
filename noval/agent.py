@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional
 
 from .client import LLMClient, LLMResponse, tool_message
 from .config import Config
+from .context import ContextManager
 from .executor import Approver, execute_tool_call
 from .permissions import PermissionController, PermissionMode, PermissionState
 from .session import (
@@ -152,12 +153,14 @@ class Agent:
         resume_messages: Optional[List[Dict[str, Any]]] = None,
         shell_backend: Optional[ShellBackend] = None,
         permissions: Optional[PermissionController] = None,
+        context_manager: Optional[ContextManager] = None,
     ):
         self.client = client
         self.config = config
         self.tools = tools if tools is not None else all_tools()
         self.approver = approver
         self.store = store
+        self.context_manager = context_manager
         # workdir 是 per-invocation 状态：本次启动各自决定，不存进全局 settings.json
         self.workdir = Path(workdir).resolve() if workdir else Path.cwd()
         # 执行上下文：workdir + 跨工具调用共享的 read-tracker，注入给需要的工具
@@ -204,7 +207,7 @@ class Agent:
 
         try:
             for _ in range(self.config.max_steps):
-                resp = self.client.complete(self.messages, self.tools)
+                resp = self._complete(self.tools)
                 self.last_turn_metrics.observe(resp)
                 self._append_message(resp.assistant_message)
 
@@ -234,10 +237,20 @@ class Agent:
                 "简洁给出：① 已查明的关键事实 ② 当前卡在哪 ③ 建议的下一步。"
             ),
         })
-        resp = self.client.complete(self.messages, [])  # 不给工具 → 强制产出文本总结
+        resp = self._complete([])  # 不给工具 → 强制产出文本总结
         self.last_turn_metrics.observe(resp)
         self._append_message(resp.assistant_message)
         return resp.content or "（已达到最大工具调用步数，已停止。）"
+
+    def _complete(self, tools: List[Tool]) -> LLMResponse:
+        """经上下文预算门调用 Provider；压缩不进入原始会话消息。"""
+        if self.context_manager is not None:
+            self.messages = self.context_manager.prepare(self.messages, tools)
+        request_messages = self.messages
+        response = self.client.complete(request_messages, tools)
+        if self.context_manager is not None:
+            self.context_manager.observe(request_messages, tools, response.usage)
+        return response
 
     def _answer_pending_tool_calls(self) -> None:
         """给最后一条 assistant 消息里「还没回填 tool 响应」的 tool_call 补上占位，
@@ -524,6 +537,7 @@ def run_cli(argv: Optional[List[str]] = None) -> None:
     config = Config.load()
     store: Optional[PersistentSessionStore] = None
     resume_messages: Optional[List[Dict[str, Any]]] = None
+    resumed_message_count = 0
     resumed_session_id: Optional[str] = None
     if args.resume is not None and not config.persist_sessions:
         raise SystemExit("--resume 需要 settings.json 中 persist_sessions=true")
@@ -540,7 +554,7 @@ def run_cli(argv: Optional[List[str]] = None) -> None:
                     store = JsonlSessionStore.open(sessions_dir, workdir, sid, config.model)
                 except (FileNotFoundError, ValueError) as e:
                     raise SystemExit(str(e))
-                resume_messages = store.load()
+                resumed_message_count = len(store.load_records())
                 resumed_session_id = sid
             else:
                 print("没有选择可恢复会话，已开启新会话。")
@@ -563,14 +577,28 @@ def run_cli(argv: Optional[List[str]] = None) -> None:
     if config.persist_usage:
         usage_store = JsonlUsageStore(config.usage_dir(), session_id)
         client = MeteredLLMClient(client, usage_store, config.model)
+    context_manager: Optional[ContextManager] = None
+    if store is not None:
+        context_manager = ContextManager(
+            client, store, config.model, config.context_budget_tokens
+        )
+        if resumed_session_id:
+            resume_messages = context_manager.restore()
     agent = Agent(client, config, approver=_cli_approver, workdir=str(workdir),
                   env_context=env_context, project_memory=project_memory,
                   store=store, resume_messages=resume_messages,
-                  shell_backend=shell_backend, permissions=permissions)
+                  shell_backend=shell_backend, permissions=permissions,
+                  context_manager=context_manager)
 
     print(f"Noval 已就绪 (workdir: {workdir})。输入 'exit' 退出。")
     if resumed_session_id:
-        print(f"✓ 已恢复会话 {resumed_session_id}（{len(resume_messages or [])} 条历史消息）")
+        print(f"✓ 已恢复会话 {resumed_session_id}（{resumed_message_count} 条历史消息）")
+        if context_manager is not None and context_manager.checkpoint is not None:
+            checkpoint = context_manager.checkpoint
+            print(
+                f"✓ 已加载上下文 checkpoint {checkpoint.checkpoint_id}"
+                f"（覆盖至 seq {checkpoint.source_through_seq}，活跃 {len(resume_messages or [])} 条）"
+            )
     elif store is not None:
         print(f"✓ 会话持久化已开启（session: {getattr(store, 'session_id', 'unknown')}）")
     if project_memory:

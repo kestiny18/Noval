@@ -25,6 +25,7 @@ DEFAULTS: Dict[str, Any] = {
     "log_retention_days": 14,                 # 按日目录清理过期运行日志
     "persist_usage": True,                    # 模型返回的 token 用量：默认开启
     "usage_dir": "",                         # 空=~/.noval/usage
+    "context_budget_tokens": 256000,          # active context 工作预算；可按 Provider 能力调大
 }
 # 注：system_prompt 不在这里——它是 agent 的行为定义(属代码)，不是「全局稳定偏好」，
 # 故不开放给 settings.json 覆盖。见 noval/agent.py 的 DEFAULT_SYSTEM_PROMPT。
@@ -61,6 +62,7 @@ class Config:
     log_retention_days: int = 14
     persist_usage: bool = True
     usage_dir_setting: str = ""
+    context_budget_tokens: int = 256000
     raw: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -87,13 +89,17 @@ class Config:
             raise SystemExit("settings.json: persist_usage 必须是布尔值 true/false")
         if not isinstance(merged["usage_dir"], str):
             raise SystemExit('settings.json: usage_dir 必须是字符串路径，如 "D:/noval-usage"')
-        for key in ("max_steps", "max_tool_output_chars", "log_retention_days"):
+        for key in (
+            "max_steps", "max_tool_output_chars", "log_retention_days", "context_budget_tokens",
+        ):
             try:
                 merged[key] = int(merged[key])
             except (TypeError, ValueError):
                 raise SystemExit(f"settings.json: {key} 必须是整数")
         if merged["log_retention_days"] < 1:
             raise SystemExit("settings.json: log_retention_days 必须大于等于 1")
+        if merged["context_budget_tokens"] < 1000:
+            raise SystemExit("settings.json: context_budget_tokens 必须大于等于 1000")
 
         return cls(
             model=merged["model"],
@@ -109,6 +115,7 @@ class Config:
             log_retention_days=merged["log_retention_days"],
             persist_usage=merged["persist_usage"],
             usage_dir_setting=merged["usage_dir"],
+            context_budget_tokens=merged["context_budget_tokens"],
             raw=merged,
         )
 

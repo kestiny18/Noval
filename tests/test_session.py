@@ -29,7 +29,25 @@ def test_create_is_lazy_until_first_append(tmp_path):
     assert json.loads(lines[1])["seq"] == 0
     assert json.loads(lines[1])["msg"] == msg
     assert store.load() == [msg]
+    [record] = store.load_records()
+    assert record.seq == 0
+    assert record.ts
+    assert record.msg == msg
     assert (path.parent / "project.json").exists()
+
+
+def test_context_path_is_outside_session_jsonl_scan(tmp_path):
+    base = tmp_path / "sessions"
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    store = JsonlSessionStore.create(base, workdir, "model-a")
+    store.append({"role": "user", "content": "hello"})
+
+    path = store.context_path()
+
+    assert path.parent.name == "context"
+    assert path.name == f"{store.session_id}.jsonl"
+    assert path.parent.parent == _session_file(base, workdir, store.session_id).parent
 
 
 def test_open_continues_seq_numbers(tmp_path):

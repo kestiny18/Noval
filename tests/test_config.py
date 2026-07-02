@@ -14,6 +14,7 @@ def test_persistence_config_defaults(tmp_path):
     assert cfg.log_retention_days == 14
     assert cfg.persist_usage is True
     assert cfg.usage_dir().name == "usage"
+    assert cfg.context_budget_tokens == 256000
 
 
 def test_persistence_config_can_be_overridden(tmp_path):
@@ -29,6 +30,7 @@ def test_persistence_config_can_be_overridden(tmp_path):
         "log_retention_days": 30,
         "persist_usage": False,
         "usage_dir": str(usage),
+        "context_budget_tokens": 512000,
     }), encoding="utf-8")
 
     cfg = Config.load(settings)
@@ -40,6 +42,7 @@ def test_persistence_config_can_be_overridden(tmp_path):
     assert cfg.log_retention_days == 30
     assert cfg.persist_usage is False
     assert cfg.usage_dir() == usage
+    assert cfg.context_budget_tokens == 512000
 
 
 def test_persistence_config_rejects_bad_types(tmp_path):
@@ -67,6 +70,14 @@ def test_persistence_config_rejects_bad_types(tmp_path):
 
     settings.write_text(json.dumps({"usage_dir": ["bad"]}), encoding="utf-8")
     with pytest.raises(SystemExit, match="usage_dir"):
+        Config.load(settings)
+
+    settings.write_text(json.dumps({"context_budget_tokens": "many"}), encoding="utf-8")
+    with pytest.raises(SystemExit, match="context_budget_tokens"):
+        Config.load(settings)
+
+    settings.write_text(json.dumps({"context_budget_tokens": 999}), encoding="utf-8")
+    with pytest.raises(SystemExit, match="context_budget_tokens"):
         Config.load(settings)
 
 

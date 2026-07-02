@@ -366,6 +366,16 @@ Token 用量属于 Provider 响应事实，由适配器归一化为 `TokenUsage`
 
 存储按 `日期/session/pid` 拆成 append-only JSONL，不让多个进程竞争一个可变汇总文件；`/usage` 查询时扫描当天事件，先给出跨项目、跨会话的全局总量，只有存在多个模型才展开模型维度。事件不保存 workdir、消息或工具内容。缓存明细保留“Provider 未返回”和“返回 0”的差异，reasoning 是 completion 的组成部分，不重复加到 total。
 
+## 决策 23：原始会话与 active context 分层，压缩结果是持久化派生态
+
+Provider 的最大 context window 是物理容量，不是应当持续填满的工作目标。Noval 使用独立的 `context_budget_tokens` 控制 active context：70% 触发压缩、45% 为目标、85% 为硬保护；比例先作为代码策略固化，避免把未经验证的旋钮全部暴露为配置。默认预算 256K，可按 Provider 与真实 Eval 调整。
+
+原始 `<session>.jsonl` 继续逐条保存 user / assistant / tool 消息，是唯一真相源。压缩器只读取带 `seq/ts/msg` 的 `SessionRecord`，在完整最终 assistant 回复处选择边界，并把结构化摘要追加到 `context/<session>.jsonl`。checkpoint 记录来源 seq 区间、上一个 checkpoint、来源哈希、时间、模型和 prompt version；摘要不写回原始消息，也不提升为 system 权限。
+
+恢复时重建当前 system/environment/project memory，再加载最新有效 checkpoint 和 `through_seq` 之后的原始尾部。恢复本身不调用模型；下一次压缩只输入上一个摘要与新增记录，旧原文不再重复总结。checkpoint 坏行、来源不匹配或写入中断只影响派生态：读取时回退前一个有效 checkpoint，必要时回到完整原始历史。
+
+Token 预算用可替换 `TokenEstimator` 估算消息与工具 schema；默认实现无 tokenizer 依赖，并用 Provider 返回的实际 `prompt_tokens` 校准当前进程。压缩失败时，软水位继续使用原上下文并记录 warning；超过硬水位则停止请求并给出可纠正错误，绝不静默丢消息或截断未完成的 tool-call 协议链。
+
 ## 施工顺序
 
 1. `tools.py`：`ToolResult` / `ToolError` / `@tool` 注册表 —— 地基
