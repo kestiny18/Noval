@@ -50,10 +50,12 @@ class Expectation:
     category: str
     statement: str
     match_all: Tuple[str, ...]
+    section: Optional[str] = None
     hard_failure: Optional[str] = None
 
     def matches(self, summary: str) -> bool:
-        return all(re.search(pattern, summary, re.I | re.M) for pattern in self.match_all)
+        target = _section_content(summary, self.section) if self.section else summary
+        return all(re.search(pattern, target, re.I | re.M) for pattern in self.match_all)
 
 
 @dataclass(frozen=True)
@@ -102,13 +104,34 @@ def _expectation(data: Any, *, case_id: str) -> Expectation:
     hard_failure = data.get("hard_failure")
     if hard_failure is not None and not isinstance(hard_failure, str):
         raise CaseFormatError(f"{case_id}/{expectation_id}: hard_failure 必须是字符串")
+    section = data.get("section")
+    if section is not None and section not in SUMMARY_HEADINGS:
+        raise CaseFormatError(
+            f"{case_id}/{expectation_id}: section 必须是固定章节之一，实际为 {section!r}"
+        )
     return Expectation(
         expectation_id=expectation_id,
         category=category,
         statement=statement,
         match_all=tuple(patterns),
+        section=section,
         hard_failure=hard_failure,
     )
+
+
+def _section_content(summary: str, heading: str) -> str:
+    """只返回指定固定章节正文，防止有界正则误穿透到下一个章节。"""
+    start = summary.find(heading)
+    if start < 0:
+        return ""
+    content_start = start + len(heading)
+    following = [
+        summary.find(candidate, content_start)
+        for candidate in SUMMARY_HEADINGS
+        if summary.find(candidate, content_start) >= 0
+    ]
+    content_end = min(following) if following else len(summary)
+    return summary[content_start:content_end]
 
 
 def _records(data: Dict[str, Any], *, case_id: str, previous_through_seq: int) -> Tuple[SessionRecord, ...]:
@@ -434,8 +457,31 @@ def _git_commit() -> Optional[str]:
         return None
 
 
+def _git_dirty() -> Optional[bool]:
+    try:
+        status = subprocess.check_output(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            text=True,
+            encoding="utf-8",
+            stderr=subprocess.DEVNULL,
+        )
+        return bool(status.strip())
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+
 def _file_hash(path: Path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _prompt_hash() -> str:
+    payload = json.dumps(
+        build_compaction_messages(None, []),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def build_report(
@@ -480,8 +526,11 @@ def build_report(
         "metadata": {
             "model": model,
             "prompt_version": COMPACTION_PROMPT_VERSION,
+            "prompt_hash": _prompt_hash(),
             "cases_hash": _file_hash(cases_path),
             "git_commit": _git_commit(),
+            "git_dirty": _git_dirty(),
+            "temperature": None,
             "semantic_method": "deterministic_regex_smoke_checks",
         },
         "summary": {

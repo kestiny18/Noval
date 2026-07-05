@@ -11,7 +11,10 @@ from evals.context.run import (
     main,
 )
 from evals.context.report import render_markdown
+from evals.context import recovery
 from noval.context import SUMMARY_HEADINGS, build_compaction_messages
+from noval.client import MockClient, mock_text, mock_tool_call
+from noval.config import Config
 
 
 def _summary(sections=None):
@@ -19,6 +22,16 @@ def _summary(sections=None):
     return "\n".join(
         f"{heading}\n{sections.get(heading, '（无）')}"
         for heading in SUMMARY_HEADINGS
+    )
+
+
+def _config():
+    return Config(
+        model="model-a",
+        base_url="https://example.test",
+        api_key_env="TEST_KEY",
+        max_steps=4,
+        max_tool_output_chars=8000,
     )
 
 
@@ -104,6 +117,23 @@ def test_reversed_decision_is_a_hard_failure():
     )
 
 
+def test_section_scoped_expectation_does_not_match_following_section():
+    case = next(
+        item for item in load_cases(DEFAULT_CASES_PATH)
+        if item.case_id == "preserve_rejection"
+    )
+    summary = _summary({
+        "## 用户决策": "不改动 DateUtil.parse",
+        "## 未完成任务": "（无）",
+        "## 相关文件与标识": "DateUtil.parse",
+    })
+
+    result = evaluate_case(case, {"case_id": case.case_id, "summary": summary})
+
+    assert result["passed"] is True
+    assert result["hard_failures"] == []
+
+
 def test_case_loader_rejects_split_tool_protocol(tmp_path):
     path = tmp_path / "cases.jsonl"
     case = {
@@ -149,3 +179,91 @@ def test_report_aggregates_weighted_dimensions():
     assert "user_decisions" in report["summary"]["category_scores"]
     assert "## 分项得分" in markdown
     assert "mock-model" in markdown
+
+
+def test_cold_restore_uses_latest_checkpoint_summary(tmp_path):
+    case = next(
+        item for item in load_cases(DEFAULT_CASES_PATH)
+        if item.case_id == "new_goal_replaces_old"
+    )
+    candidate = {
+        "case_id": case.case_id,
+        "summary": _summary({"## 当前目标": "排查订单重复数据"}),
+        "model": "model-a",
+    }
+
+    messages, store = recovery.restore_messages(
+        case,
+        candidate,
+        tmp_path,
+        MockClient([]),
+        _config(),
+    )
+
+    assert len(messages) == 1
+    assert "排查订单重复数据" in messages[0]["content"]
+    assert "eval placeholder" not in messages[0]["content"]
+    assert store.load_records()[-1].seq == case.through_seq
+
+
+def test_recovery_action_records_required_tool(tmp_path, monkeypatch):
+    case = next(
+        item for item in load_cases(DEFAULT_CASES_PATH)
+        if item.case_id == "dynamic_branch_requires_revalidation"
+    )
+    candidate = {
+        "case_id": case.case_id,
+        "summary": _summary({
+            "## 已确认事实": "上次分支为 feature/old-branch，恢复后需重新查询",
+        }),
+        "model": "model-a",
+    }
+    client = recovery.RecordingClient(MockClient([
+        mock_tool_call("c1", "check_current_branch", "{}"),
+        mock_text("当前分支是 feature/new-branch"),
+    ]))
+    monkeypatch.setattr(recovery, "ACTION_SPECS", (recovery.ACTION_SPECS[0],))
+
+    results = recovery.run_actions(
+        [case],
+        {case.case_id: candidate},
+        client,
+        _config(),
+        tmp_path,
+    )
+
+    assert results[0]["passed"] is True
+    assert results[0]["events"] == ["check_current_branch"]
+
+
+def test_recovery_action_rejects_duplicate_completed_write(tmp_path, monkeypatch):
+    case = next(
+        item for item in load_cases(DEFAULT_CASES_PATH)
+        if item.case_id == "resume_after_completed_write"
+    )
+    candidate = {
+        "case_id": case.case_id,
+        "summary": _summary({
+            "## 已完成操作": "config.yml 已写入",
+            "## 未完成任务": "运行测试",
+        }),
+        "model": "model-a",
+    }
+    client = recovery.RecordingClient(MockClient([
+        mock_tool_call("c1", "set_feature_enabled", "{}"),
+        mock_text("重复写入完成"),
+    ]))
+    monkeypatch.setattr(recovery, "ACTION_SPECS", (recovery.ACTION_SPECS[-1],))
+
+    results = recovery.run_actions(
+        [case],
+        {case.case_id: candidate},
+        client,
+        _config(),
+        tmp_path,
+    )
+    codes = {item["code"] for item in results[0]["hard_failures"]}
+
+    assert results[0]["passed"] is False
+    assert "forbidden_tool_called" in codes
+    assert "required_tool_missing" in codes
