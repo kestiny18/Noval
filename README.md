@@ -199,9 +199,17 @@ python -m pytest -q
 
 CI 覆盖 Python 3.10-3.13，并在 Windows 上额外验证当前主版本。
 
+上下文 checkpoint 的确定性 Eval 资产可零成本校验：
+
+```bash
+python -m evals.context.run
+```
+
+真实模型生成、离线重放和报告命令见 [`evals/context/README.md`](evals/context/README.md)。真实模型 Eval 不进入普通 CI。
+
 ## 路线图
 
-- 上下文增长后的历史压缩与摘要。
+- 上下文压缩的语义、对话内继续与冷恢复行动 Eval。
 - 更多 provider 适配器。
 - 会话标题、归档、置顶等管理体验。
 - 工具调用原地打转检测。

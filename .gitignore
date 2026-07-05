@@ -17,6 +17,8 @@ env/
 .ruff_cache/
 htmlcov/
 .coverage
+.eval-results/
+/evals/private/
 
 # IDE / OS
 .vscode/
