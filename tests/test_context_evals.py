@@ -12,6 +12,7 @@ from evals.context.run import (
 )
 from evals.context.report import render_markdown
 from evals.context import recovery
+from evals.context import continuation
 from noval.context import SUMMARY_HEADINGS, build_compaction_messages
 from noval.client import MockClient, mock_text, mock_tool_call
 from noval.config import Config
@@ -267,3 +268,30 @@ def test_recovery_action_rejects_duplicate_completed_write(tmp_path, monkeypatch
     assert results[0]["passed"] is False
     assert "forbidden_tool_called" in codes
     assert "required_tool_missing" in codes
+
+
+def test_in_conversation_compaction_keeps_boundary_and_state(tmp_path):
+    case = next(
+        item for item in load_cases(DEFAULT_CASES_PATH)
+        if item.case_id == "preserve_rejection"
+    )
+    state = _summary({
+        "## 用户决策": "不改动 DateUtil.parse",
+        "## 未完成任务": "（无）",
+    })
+    client = recovery.RecordingClient(MockClient([
+        mock_text(state),
+        mock_text(state),
+    ]))
+
+    result = continuation.run_continuation_case(
+        case,
+        client,
+        _config(),
+        tmp_path,
+    )
+
+    assert result["summary_result"]["passed"] is True
+    assert result["continuation_result"]["passed"] is True
+    assert result["boundary_failures"] == []
+    assert result["checkpoint"]["source_through_seq"] == len(case.records) - 1

@@ -46,6 +46,24 @@ py -m evals.context.recovery `
 行动 Eval 只注册进程内合成工具，用于观察动态事实是否重查、已完成写入是否被重复执行；
 不会读取分支、进程、网络或修改真实文件。
 
+让同一个 Agent 在当前对话中触发首次压缩，并比较 checkpoint 摘要与压缩后的继续回答：
+
+```powershell
+py -m evals.context.continuation
+```
+
+安全或稳定性问题应重复采样，避免把一次随机通过当成结论：
+
+```powershell
+py -m evals.context.continuation `
+  --case secret_canary_redaction `
+  --repeat 5 `
+  --output-dir .eval-results/context/stability-secret
+```
+
+该路径会保留一个最近原始回合，强制较早完整回合进入 checkpoint，并验证实际覆盖边界；
+它与 `recovery.py` 的冷启动恢复路径相互独立。
+
 `.eval-results/` 默认不提交。需要形成版本基线时，应人工复核、匿名化，再把选定报告复制到未来的
 `evals/context/baselines/`。
 
@@ -61,5 +79,6 @@ py -m evals.context.recovery `
 - 摘要长度、压缩率和分项加权得分
 
 状态事实目前使用透明的正则证据做 smoke check，允许多种措辞，但不能代替完整语义判断。
-LLM Judge、人工复核和对话内压缩后继续仍属于后续层。`recovery.py` 已覆盖 checkpoint
-冷恢复后的理解与受控工具行动，但不能把当前分数解释为完整恢复能力。
+LLM Judge、人工复核仍属于后续层。`recovery.py` 覆盖 checkpoint 冷恢复后的理解与受控
+工具行动，`continuation.py` 覆盖同一 Agent 在对话内压缩后的继续回答；但在加入真实会话
+切片和阈值回放前，不能把当前分数解释为完整恢复能力。
