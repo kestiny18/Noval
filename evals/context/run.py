@@ -68,6 +68,7 @@ class EvalCase:
     expectations: Tuple[Expectation, ...]
     forbidden: Tuple[Expectation, ...]
     secret_canaries: Tuple[str, ...]
+    secret_forbidden_fragments: Tuple[str, ...]
     max_summary_chars: int
 
     @property
@@ -248,6 +249,13 @@ def load_cases(path: Path = DEFAULT_CASES_PATH) -> List[EvalCase]:
         canaries = data.get("secret_canaries", [])
         if not isinstance(canaries, list) or not all(isinstance(item, str) and item for item in canaries):
             raise CaseFormatError(f"{case_id}: secret_canaries 必须是字符串数组")
+        fragments = data.get("secret_forbidden_fragments", [])
+        if not isinstance(fragments, list) or not all(
+            isinstance(item, str) and item for item in fragments
+        ):
+            raise CaseFormatError(
+                f"{case_id}: secret_forbidden_fragments 必须是字符串数组"
+            )
         max_summary_chars = data.get("max_summary_chars", 1800)
         if not isinstance(max_summary_chars, int) or max_summary_chars < 1:
             raise CaseFormatError(f"{case_id}: max_summary_chars 必须是正整数")
@@ -260,6 +268,7 @@ def load_cases(path: Path = DEFAULT_CASES_PATH) -> List[EvalCase]:
             expectations=expectations,
             forbidden=forbidden,
             secret_canaries=tuple(canaries),
+            secret_forbidden_fragments=tuple(fragments),
             max_summary_chars=max_summary_chars,
         ))
     if not cases:
@@ -333,6 +342,12 @@ def evaluate_case(case: EvalCase, candidate: Dict[str, Any]) -> Dict[str, Any]:
     leaked = [canary for canary in case.secret_canaries if canary in summary]
     if leaked:
         fail("secret_leak", f"摘要泄露 {len(leaked)} 个合成凭据 canary")
+    leaked_fragments = [
+        fragment for fragment in case.secret_forbidden_fragments
+        if fragment in summary
+    ]
+    if leaked_fragments:
+        fail("secret_fragment_leak", f"摘要泄露 {len(leaked_fragments)} 个凭据片段")
 
     assertions: List[Dict[str, Any]] = []
     for expectation in case.expectations:
@@ -553,6 +568,7 @@ def build_report(
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Noval context checkpoint Eval")
     parser.add_argument("--cases", type=Path, default=DEFAULT_CASES_PATH)
+    parser.add_argument("--case", action="append", dest="case_ids")
     source = parser.add_mutually_exclusive_group()
     source.add_argument("--summaries", type=Path, help="离线候选摘要 JSONL")
     source.add_argument("--generate", action="store_true", help="调用当前配置的真实模型")
@@ -565,7 +581,13 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = _parser().parse_args(argv)
     try:
-        cases = load_cases(args.cases)
+        all_cases = load_cases(args.cases)
+        by_id = {case.case_id: case for case in all_cases}
+        selected_ids = args.case_ids or [case.case_id for case in all_cases]
+        unknown_cases = sorted(set(selected_ids) - set(by_id))
+        if unknown_cases:
+            raise CaseFormatError(f"未知用例: {unknown_cases}")
+        cases = [by_id[case_id] for case_id in selected_ids]
         if not args.generate and args.summaries is None:
             print(
                 f"PASS: {len(cases)} 个 context Eval 用例资产有效；"

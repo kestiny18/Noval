@@ -9,6 +9,10 @@
 - 持久化增量上下文压缩：按 Token 预算生成 checkpoint，恢复时复用摘要与原始尾部，并保留完整 Session 作为唯一真相源。
 - 仓库级 context Eval 脊柱：最小语义/对抗用例、结构与敏感信息硬检查、离线重放及 Markdown/JSON 报告。
 
+### Changed
+
+- 上下文压缩 prompt v2 明确禁止凭据原值进入 checkpoint，并要求保留用户否决/暂停决策且不得恢复为待办。
+
 ## [0.4.0] - 2026-07-01
 
 运行治理与可观测性版本。权限、日志、DeepSeek thinking 和 Token 用量均已在真实 CLI 会话中验证。

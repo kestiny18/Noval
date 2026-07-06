@@ -64,6 +64,16 @@ py -m evals.context.continuation `
 该路径会保留一个最近原始回合，强制较早完整回合进入 checkpoint，并验证实际覆盖边界；
 它与 `recovery.py` 的冷启动恢复路径相互独立。
 
+使用不同模型做辅助语义 Judge（确定性硬检查仍优先）：
+
+```powershell
+py -m evals.context.judge `
+  --summaries .eval-results/context/candidates-v2.jsonl `
+  --model deepseek-v4-flash
+```
+
+当前 Judge 与摘要模型使用同一 DeepSeek Provider/API Key，只是模型不同；报告会明确记录这一限制。
+
 `.eval-results/` 默认不提交。需要形成版本基线时，应人工复核、匿名化，再把选定报告复制到未来的
 `evals/context/baselines/`。
 
