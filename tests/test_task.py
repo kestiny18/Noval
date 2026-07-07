@@ -80,6 +80,16 @@ def test_readonly_task_guard_blocks_write_even_with_full_access(tmp_path):
     assert "只读" in controller.state.violations[0]
 
 
+def test_diagnostic_question_does_not_become_task_guard_scope():
+    controller = TaskController()
+
+    controller.observe_user_input("这个错误发生的原因是什么：git pull fatal: couldn't find remote ref refs/heads/jinzhong")
+
+    assert controller.state.spec is not None
+    assert controller.state.spec.action_mode is ActionMode.UNSPECIFIED
+    assert not controller.state.spec.prohibited_actions
+
+
 def test_agent_records_task_events_and_tool_evidence(tmp_path):
     @tool(name="_task_read_ok", risk=Risk.READ)
     def read_ok() -> str:

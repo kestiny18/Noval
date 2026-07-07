@@ -357,6 +357,21 @@ _GIT_READONLY = {
     "rev-list", "describe", "shortlog", "whatchanged", "cat-file", "grep",
     "for-each-ref", "show-ref", "symbolic-ref", "name-rev", "reflog",
 }
+_GIT_BRANCH_READONLY_FLAGS = {
+    "-a", "--all", "-r", "--remotes", "-v", "-vv", "--verbose", "--show-current",
+    "--list", "--contains", "--no-contains", "--merged", "--no-merged", "--points-at",
+    "--format", "--sort", "--color", "--no-color", "--abbrev", "--no-abbrev",
+    "--column", "--no-column",
+}
+_GIT_BRANCH_VALUE_FLAGS = {
+    "--contains", "--no-contains", "--merged", "--no-merged", "--points-at",
+    "--format", "--sort", "--color", "--abbrev", "--column",
+}
+_GIT_BRANCH_MUTATING_FLAGS = {
+    "-d", "-D", "--delete", "-m", "-M", "--move", "-c", "-C", "--copy",
+    "-f", "--force", "--set-upstream-to", "-u", "--unset-upstream", "--track",
+    "--no-track", "--recurse-submodules", "--edit-description",
+}
 # git 的「带参数全局 flag」：取子命令时要连同其参数一起跳过(如 -C /path)
 _GIT_ARG_FLAGS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"}
 # 这些子串只要出现就判定为危险（程序名检查覆盖不到的「写」语义）
@@ -375,8 +390,8 @@ def _segment_tokens(seg: str) -> List[str]:
     return toks
 
 
-def _git_subcommand(toks: List[str]) -> Optional[str]:
-    """从 ['git', ...] 里找出子命令，跳过全局 flag 及其参数(如 -C /path)。"""
+def _git_parts(toks: List[str]) -> tuple[Optional[str], List[str]]:
+    """从 ['git', ...] 里找出子命令与其参数，跳过全局 flag 及其参数(如 -C /path)。"""
     i = 1
     while i < len(toks):
         tok = toks[i]
@@ -385,8 +400,48 @@ def _git_subcommand(toks: List[str]) -> Optional[str]:
         elif tok.startswith("-"):
             i += 1          # 无参 flag(--no-pager 等)
         else:
-            return tok      # 第一个非 flag token = 子命令
-    return None
+            return tok, toks[i + 1:]      # 第一个非 flag token = 子命令
+    return None, []
+
+
+def _git_subcommand(toks: List[str]) -> Optional[str]:
+    """从 ['git', ...] 里找出子命令，跳过全局 flag 及其参数(如 -C /path)。"""
+    return _git_parts(toks)[0]
+
+
+def _is_readonly_git(toks: List[str]) -> bool:
+    subcommand, args = _git_parts(toks)
+    if subcommand in _GIT_READONLY:
+        return True
+    if subcommand == "ls-remote":
+        return True
+    if subcommand == "remote":
+        return args in ([], ["-v"], ["--verbose"], ["get-url", "origin"])
+    if subcommand == "branch":
+        return _is_readonly_git_branch(args)
+    return False
+
+
+def _is_readonly_git_branch(args: List[str]) -> bool:
+    if not args:
+        return True
+    i = 0
+    while i < len(args):
+        tok = args[i]
+        if tok in _GIT_BRANCH_MUTATING_FLAGS:
+            return False
+        if tok in _GIT_BRANCH_VALUE_FLAGS:
+            i += 2
+            continue
+        if any(tok.startswith(flag + "=") for flag in _GIT_BRANCH_VALUE_FLAGS):
+            i += 1
+            continue
+        if tok in _GIT_BRANCH_READONLY_FLAGS:
+            i += 1
+            continue
+        # `git branch foo` 会创建分支；未知参数也保守视为可能改变状态。
+        return False
+    return True
 
 
 def _is_readonly_segment(seg: str) -> bool:
@@ -395,7 +450,7 @@ def _is_readonly_segment(seg: str) -> bool:
     if not toks:
         return False        # 无法判定 → 保守当作非只读
     if toks[0] == "git":
-        return _git_subcommand(toks) in _GIT_READONLY
+        return _is_readonly_git(toks)
     return toks[0] in _READONLY_BASH
 
 

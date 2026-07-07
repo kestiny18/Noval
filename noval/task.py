@@ -259,6 +259,9 @@ class TaskEventStore:
 
 
 class TaskStateResolver:
+    # 只识别用户明确说出的边界。不要把「为什么/原因是什么」这类诊断问句
+    # 自动升级成任务级硬限制；这类工作习惯交给 system prompt 约束，避免
+    # 任务状态层变成不断补洞的自然语言意图识别器。
     READ_ONLY_PATTERNS = (
         r"只\s*(查|看|读|调查|排查|分析|确认|定位)",
         r"先\s*不\s*(改|修改|动|提交)",
@@ -299,8 +302,8 @@ class TaskStateResolver:
         constraints = []
         prohibited = []
         if action_mode is ActionMode.READ_ONLY:
-            constraints.append("User requested investigation/read-only behavior.")
-            prohibited.append("Do not run write or dangerous tools unless the user changes scope.")
+            constraints.append("User explicitly requested read-only/investigation scope.")
+            prohibited.append("Do not run write or dangerous tools unless the user explicitly changes scope.")
 
         if current.spec is None or current.status in {
             TaskStatus.COMPLETED,
@@ -373,9 +376,12 @@ class TaskActionGuard:
         spec = state.spec
         if spec is None:
             return None
+        # 这里只兜用户明确说出的硬边界；不要把 TaskActionGuard 做成第二套
+        # 「猜用户意图」权限系统。模糊任务先计划、先确认，交给 system prompt
+        # 和工具风险确认门处理。
         if spec.action_mode is ActionMode.READ_ONLY and risk is not Risk.READ:
             return (
-                f"当前任务是只读/调查范围，禁止执行 {risk.value} 工具 '{tool.name}'。"
+                f"当前任务包含用户明确给出的只读/调查范围，禁止执行 {risk.value} 工具 '{tool.name}'。"
                 "请先向用户确认是否扩大任务范围。"
             )
         return None

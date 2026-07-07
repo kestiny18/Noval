@@ -316,9 +316,15 @@ def test_bash_risk_git_readonly():
     assert _bash_risk({"command": "cd /mnt/e/p && git show --stat HEAD"}) is Risk.READ
     assert _bash_risk({"command": "git -C /path status"}) is Risk.READ       # 跳过 -C 参数
     assert _bash_risk({"command": "git --no-pager diff | head"}) is Risk.READ
+    assert _bash_risk({"command": "git branch -a"}) is Risk.READ
+    assert _bash_risk({"command": "git branch -vv"}) is Risk.READ
+    assert _bash_risk({"command": "git branch --show-current"}) is Risk.READ
+    assert _bash_risk({"command": "git remote -v"}) is Risk.READ
+    assert _bash_risk({"command": "git ls-remote origin refs/heads/main 2>&1"}) is Risk.READ
 
 
 def test_bash_risk_git_mutating_still_dangerous():
     for cmd in ("git commit -m x", "git push", "git reset --hard HEAD~1",
-                "git checkout main", "cd /x && git clean -fd", "git pull"):
+                "git checkout main", "cd /x && git clean -fd", "git pull",
+                "git remote prune origin", "git branch new-topic", "git branch -D old"):
         assert _bash_risk({"command": cmd}) is Risk.DANGEROUS, cmd

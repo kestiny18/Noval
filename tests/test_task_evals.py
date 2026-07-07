@@ -12,8 +12,8 @@ from evals.task.run import (
 def test_bundled_task_eval_assets_are_valid():
     cases = load_cases(DEFAULT_CASES_PATH)
 
-    assert len(cases) == 8
-    assert len({case.case_id for case in cases}) == 8
+    assert len(cases) == 9
+    assert len({case.case_id for case in cases}) == 9
     assert any(case.expected.get("status") == "violated" for case in cases)
     assert any(case.expected.get("action_mode") == "read_only" for case in cases)
 
@@ -23,7 +23,7 @@ def test_default_task_eval_runs_offline(capsys):
 
     out = capsys.readouterr().out
     assert "# Task Eval Report" in out
-    assert "Passed: 8" in out
+    assert "Passed: 9" in out
     assert "Failed: 0" in out
 
 

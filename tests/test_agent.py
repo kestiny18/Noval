@@ -210,6 +210,9 @@ def test_default_system_prompt_when_not_overridden():
     from noval.agent import DEFAULT_SYSTEM_PROMPT
     agent = Agent(MockClient([mock_text("hi")]), cfg())        # 不传任何 system_prompt
     assert agent.messages[0]["content"] == DEFAULT_SYSTEM_PROMPT
+    assert "默认先只读调查" in DEFAULT_SYSTEM_PROMPT
+    assert "等待确认后再执行" in DEFAULT_SYSTEM_PROMPT
+    assert "FULL_ACCESS" in DEFAULT_SYSTEM_PROMPT
     assert "运行相关测试" in DEFAULT_SYSTEM_PROMPT
     assert "commit hash" in DEFAULT_SYSTEM_PROMPT
 
