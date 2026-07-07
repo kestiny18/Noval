@@ -1,5 +1,6 @@
 {
   "model": "deepseek-v4-pro",
+  "judge_model": "deepseek-v4-flash",
   "base_url": "https://api.deepseek.com",
   "api_key_env": "DEEPSEEK_API_KEY",
   "max_steps": 40,

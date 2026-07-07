@@ -26,6 +26,7 @@ from .session import (
 )
 from .runtime_log import setup_runtime_logging
 from .shell import ShellBackend, resolve_shell_backend, to_bash_path
+from .task import CompletionVerifier, SemanticJudge, TaskController, TaskEventStore
 from .tools import Context, Tool, all_tools
 from .usage import JsonlUsageStore, MeteredLLMClient, UsageBreakdown, UsageSummary
 
@@ -154,6 +155,7 @@ class Agent:
         shell_backend: Optional[ShellBackend] = None,
         permissions: Optional[PermissionController] = None,
         context_manager: Optional[ContextManager] = None,
+        task_controller: Optional[TaskController] = None,
     ):
         self.client = client
         self.config = config
@@ -161,6 +163,7 @@ class Agent:
         self.approver = approver
         self.store = store
         self.context_manager = context_manager
+        self.task_controller = task_controller or TaskController()
         # workdir 是 per-invocation 状态：本次启动各自决定，不存进全局 settings.json
         self.workdir = Path(workdir).resolve() if workdir else Path.cwd()
         # 执行上下文：workdir + 跨工具调用共享的 read-tracker，注入给需要的工具
@@ -204,6 +207,7 @@ class Agent:
             "role": "user",
             "content": f"<context>当前时间: {stamp}</context>\n\n{user_input}",
         })
+        self.task_controller.observe_user_input(user_input)
 
         try:
             for _ in range(self.config.max_steps):
@@ -212,13 +216,21 @@ class Agent:
                 self._append_message(resp.assistant_message)
 
                 if not resp.tool_calls:                       # 没有工具调用 → 最终回复
-                    return resp.content or ""
+                    final = resp.content or ""
+                    self.task_controller.verify_completion(final)
+                    return final
 
                 # OpenAI 协议要求：每个 tool_call 都必须有对应的 tool 消息回填
                 for call in resp.tool_calls:
                     log.info("calling tool=%s arg_keys=%s", call.name, _tool_arg_keys(call.arguments))
                     result = execute_tool_call(
-                        call.name, call.arguments, self.config, self.approver, self.context
+                        call.name, call.arguments, self.config, self.approver, self.context,
+                        action_guard=self.task_controller.guard_action,
+                    )
+                    self.task_controller.observe_tool_result(
+                        tool_name=call.name,
+                        raw_arguments=call.arguments,
+                        result=result,
                     )
                     self._append_message(tool_message(call.id, result.content))
         except KeyboardInterrupt:
@@ -240,7 +252,9 @@ class Agent:
         resp = self._complete([])  # 不给工具 → 强制产出文本总结
         self.last_turn_metrics.observe(resp)
         self._append_message(resp.assistant_message)
-        return resp.content or "（已达到最大工具调用步数，已停止。）"
+        final = resp.content or "（已达到最大工具调用步数，已停止。）"
+        self.task_controller.verify_completion(final)
+        return final
 
     def _complete(self, tools: List[Tool]) -> LLMResponse:
         """经上下文预算门调用 Provider；压缩不进入原始会话消息。"""
@@ -471,6 +485,15 @@ def _format_usage_summary(summary: UsageSummary) -> str:
                 f"  请求: {usage.requests:,} · 输入: {usage.prompt_tokens:,} · "
                 f"输出: {usage.completion_tokens:,} · 总计: {usage.total_tokens:,}"
             )
+    if len(summary.by_purpose) > 1:
+        lines.append("")
+        lines.append("按用途")
+        for purpose in sorted(summary.by_purpose):
+            usage = summary.by_purpose[purpose]
+            lines.append(
+                f"{purpose}: 请求 {usage.requests:,} · 输入 {usage.prompt_tokens:,} · "
+                f"输出 {usage.completion_tokens:,} · 总计 {usage.total_tokens:,}"
+            )
     return "\n".join(lines)
 
 
@@ -570,13 +593,20 @@ def run_cli(argv: Optional[List[str]] = None) -> None:
              shell_backend.executable or "<system>")
     env_context = detect_environment(workdir, shell_backend)
     project_memory = load_project_memory(workdir)  # 读 AGENTS.md / CLAUDE.md 一次
+    api_key = config.resolve_api_key()
     client: LLMClient = OpenAICompatibleClient(
-        config.base_url, config.resolve_api_key(), config.model
+        config.base_url, api_key, config.model
+    )
+    judge_client: LLMClient = OpenAICompatibleClient(
+        config.base_url, api_key, config.judge_model
     )
     usage_store: Optional[JsonlUsageStore] = None
     if config.persist_usage:
         usage_store = JsonlUsageStore(config.usage_dir(), session_id)
-        client = MeteredLLMClient(client, usage_store, config.model)
+        client = MeteredLLMClient(client, usage_store, config.model, purpose="agent")
+        judge_client = MeteredLLMClient(
+            judge_client, usage_store, config.judge_model, purpose="completion_judge"
+        )
     context_manager: Optional[ContextManager] = None
     if store is not None:
         context_manager = ContextManager(
@@ -584,11 +614,19 @@ def run_cli(argv: Optional[List[str]] = None) -> None:
         )
         if resumed_session_id:
             resume_messages = context_manager.restore()
+    task_store = TaskEventStore(store.task_path()) if store is not None else None
+    task_controller = TaskController(
+        event_store=task_store,
+        completion_verifier=CompletionVerifier(
+            SemanticJudge(judge_client, model=config.judge_model)
+        ),
+    )
     agent = Agent(client, config, approver=_cli_approver, workdir=str(workdir),
                   env_context=env_context, project_memory=project_memory,
                   store=store, resume_messages=resume_messages,
                   shell_backend=shell_backend, permissions=permissions,
-                  context_manager=context_manager)
+                  context_manager=context_manager,
+                  task_controller=task_controller)
 
     print(f"Noval 已就绪 (workdir: {workdir})。输入 'exit' 退出。")
     if resumed_session_id:

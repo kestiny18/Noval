@@ -14,6 +14,7 @@ from typing import Any, Dict
 # 默认配置：任何字段都可被 settings.json 覆盖
 DEFAULTS: Dict[str, Any] = {
     "model": "deepseek-v4-pro",
+    "judge_model": "deepseek-v4-flash",
     "base_url": "https://api.deepseek.com",
     "api_key_env": "DEEPSEEK_API_KEY",        # 从该环境变量读取 key
     "max_steps": 40,                          # 单轮用户输入内，工具循环的最大步数(build/调试类任务费步数)
@@ -63,6 +64,7 @@ class Config:
     persist_usage: bool = True
     usage_dir_setting: str = ""
     context_budget_tokens: int = 256000
+    judge_model: str = "deepseek-v4-flash"
     raw: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -75,6 +77,10 @@ class Config:
             except json.JSONDecodeError as e:
                 raise SystemExit(f"settings.json 不是合法 JSON: {e}")  # 漏逗号等不该是难看的 traceback
             merged.update(user)  # 顶层覆盖；当前配置无深层嵌套，浅合并足够
+
+        for key in ("model", "judge_model", "base_url", "api_key_env"):
+            if not isinstance(merged[key], str) or not merged[key].strip():
+                raise SystemExit(f"settings.json: {key} 必须是非空字符串")
 
         # 校验：错配置要给出清晰报错，而不是静默跑歪
         if not isinstance(merged["persist_sessions"], bool):
@@ -103,6 +109,7 @@ class Config:
 
         return cls(
             model=merged["model"],
+            judge_model=merged["judge_model"],
             base_url=merged["base_url"],
             api_key_env=merged["api_key_env"],
             max_steps=merged["max_steps"],

@@ -50,10 +50,11 @@ class UsageSummary:
     day: date
     total: UsageBreakdown = field(default_factory=UsageBreakdown)
     by_model: Dict[str, UsageBreakdown] = field(default_factory=dict)
+    by_purpose: Dict[str, UsageBreakdown] = field(default_factory=dict)
 
 
 class UsageRecorder(Protocol):
-    def record(self, model: str, usage: TokenUsage) -> Path:
+    def record(self, model: str, usage: TokenUsage, *, purpose: str = "agent") -> Path:
         ...
 
 
@@ -72,12 +73,13 @@ class JsonlUsageStore:
         self.identity = re.sub(r"[^A-Za-z0-9._-]+", "-", identity).strip("-") or "invocation"
         self._now = now or (lambda: datetime.now().astimezone())
 
-    def record(self, model: str, usage: TokenUsage) -> Path:
+    def record(self, model: str, usage: TokenUsage, *, purpose: str = "agent") -> Path:
         timestamp = self._now()
         event: Dict[str, Any] = {
             "schema_version": 1,
             "timestamp": timestamp.isoformat(timespec="seconds"),
             "model": model or "unknown",
+            "purpose": _safe_purpose(purpose),
             "prompt_tokens": usage.prompt_tokens,
             "completion_tokens": usage.completion_tokens,
             "total_tokens": usage.total_tokens,
@@ -128,6 +130,8 @@ class JsonlUsageStore:
                 summary.total.add(event)
                 model = event.get("model") or "unknown"
                 summary.by_model.setdefault(model, UsageBreakdown()).add(event)
+                purpose = event.get("purpose") or "agent"
+                summary.by_purpose.setdefault(purpose, UsageBreakdown()).add(event)
 
 
 def _valid_event(event: Any) -> bool:
@@ -136,6 +140,10 @@ def _valid_event(event: Any) -> bool:
     if event.get("schema_version") != 1:
         return False
     if not isinstance(event.get("model"), str) or not event["model"]:
+        return False
+    if "purpose" in event and (
+        not isinstance(event["purpose"], str) or not event["purpose"]
+    ):
         return False
     required = ("prompt_tokens", "completion_tokens", "total_tokens")
     optional = ("cache_hit_tokens", "cache_miss_tokens", "reasoning_tokens")
@@ -151,10 +159,18 @@ def _is_token_count(value: Any) -> bool:
 class MeteredLLMClient:
     """给任意 Provider 适配器增加用量计量，不让统计故障影响模型结果。"""
 
-    def __init__(self, inner: LLMClient, store: UsageRecorder, model: str):
+    def __init__(
+        self,
+        inner: LLMClient,
+        store: UsageRecorder,
+        model: str,
+        *,
+        purpose: str = "agent",
+    ):
         self.inner = inner
         self.store = store
         self.model = model
+        self.purpose = _safe_purpose(purpose)
 
     def complete(self, messages: List[Dict[str, Any]], tools: List[Tool]) -> LLMResponse:
         response = self.inner.complete(messages, tools)
@@ -162,7 +178,14 @@ class MeteredLLMClient:
             return response
         response_model = getattr(response.raw, "model", None) or self.model
         try:
-            self.store.record(str(response_model), response.usage)
+            self.store.record(str(response_model), response.usage, purpose=self.purpose)
         except Exception:
             log.warning("token 用量持久化失败，已跳过本次记录", exc_info=True)
         return response
+
+
+def _safe_purpose(value: str) -> str:
+    text = str(value or "agent").strip().lower().replace("-", "_")
+    if not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", text):
+        return "agent"
+    return text

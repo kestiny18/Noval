@@ -37,9 +37,11 @@ def test_jsonl_store_aggregates_daily_usage_and_models(tmp_path):
     assert summary.total.cache_miss_tokens == 75
     assert summary.total.reasoning_tokens == 12
     assert set(summary.by_model) == {"deepseek-v4-pro", "deepseek-chat"}
+    assert set(summary.by_purpose) == {"agent"}
     assert len(list((tmp_path / "2026-06-30").glob("*.jsonl"))) == 2
     event = json.loads(next((tmp_path / "2026-06-30").glob("*.jsonl")).read_text())
     assert event["schema_version"] == 1
+    assert event["purpose"] == "agent"
     assert "workdir" not in event
     assert "session" not in event
 
@@ -77,6 +79,34 @@ def test_metered_client_records_actual_response_model(tmp_path):
     assert client.complete([], []).content == "ok"
 
     assert set(store.summarize().by_model) == {"provider-model"}
+
+
+def test_usage_records_and_summarizes_purpose(tmp_path):
+    store = JsonlUsageStore(tmp_path, "session", now=lambda: NOW)
+    store.record("main", usage(), purpose="agent")
+    store.record("judge", usage(10, 2), purpose="completion_judge")
+
+    summary = store.summarize()
+    text = _format_usage_summary(summary)
+
+    assert set(summary.by_purpose) == {"agent", "completion_judge"}
+    assert summary.by_purpose["completion_judge"].requests == 1
+    assert "按用途" in text
+    assert "completion_judge" in text
+
+
+def test_metered_client_records_configured_purpose(tmp_path):
+    response = mock_text("ok", usage=usage())
+    inner = MockClient([response])
+    store = JsonlUsageStore(tmp_path, "session", now=lambda: NOW)
+    client = MeteredLLMClient(
+        inner, store, "judge-model", purpose="completion_judge"
+    )
+
+    assert client.complete([], []).content == "ok"
+
+    event = json.loads(next((tmp_path / "2026-06-30").glob("*.jsonl")).read_text())
+    assert event["purpose"] == "completion_judge"
 
 
 def test_metering_failure_does_not_hide_model_response(caplog):

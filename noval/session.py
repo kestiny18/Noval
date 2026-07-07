@@ -49,6 +49,7 @@ class PersistentSessionStore(SessionStore, SessionMetadataStore, Protocol):
 
     def load_records(self) -> List["SessionRecord"]: ...
     def context_path(self) -> Path: ...
+    def task_path(self) -> Path: ...
 
 
 @dataclass(frozen=True)
@@ -244,6 +245,10 @@ class JsonlSessionStore:
     def context_path(self) -> Path:
         """该会话的派生上下文 checkpoint 文件；与原始消息日志分目录。"""
         return self._dir / "context" / f"{self.session_id}.jsonl"
+
+    def task_path(self) -> Path:
+        """该会话的派生任务状态事件文件；任务事件是 append-only。"""
+        return self._dir / "task" / f"{self.session_id}.jsonl"
 
     # --- 读 ----------------------------------------------------------------
     def load_records(self) -> List[SessionRecord]:

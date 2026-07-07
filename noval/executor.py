@@ -18,13 +18,14 @@ from typing import Any, Callable, Dict, Optional
 
 from .config import Config
 from .permissions import PermissionController
-from .tools import Tool, ToolError, ToolResult, all_tools, get_tool
+from .tools import Risk, Tool, ToolError, ToolResult, all_tools, get_tool
 
 log = logging.getLogger("noval.executor")
 
 # 确认门回调：框架问「要不要执行这个工具」，由调用方（CLI/测试）决定怎么答。
 # 返回 True/"yes" 允许一次；"always" 本会话总是允许该工具；其余拒绝。
 Approver = Callable[[Tool, Dict[str, Any]], object]
+ActionGuard = Callable[[Tool, Dict[str, Any], Risk], Optional[str]]
 
 
 def _normalize_decision(raw: object) -> str:
@@ -66,6 +67,7 @@ def execute_tool_call(
     config: Config,
     approver: Optional[Approver] = None,
     context: Optional["Context"] = None,
+    action_guard: Optional[ActionGuard] = None,
 ) -> ToolResult:
     """执行单次工具调用，永远返回 ToolResult（绝不抛异常给上层）。"""
     started = time.perf_counter()
@@ -105,17 +107,34 @@ def execute_tool_call(
     # 4. 确认门（横切关注点，不在工具内部）
     #    风险可由工具按本次参数动态评估（如 run_bash 把只读命令降级为 READ → 免确认）。
     effective_risk = tool.risk_assessor(args) if tool.risk_assessor else tool.risk
+    if action_guard is not None:
+        violation = action_guard(tool, args, effective_risk)
+        if violation:
+            return finish(
+                f"Error: {violation}",
+                is_error=True,
+                task_violation=True,
+                effective_risk=effective_risk.value,
+            )
     permissions = context.permissions if context is not None else PermissionController()
     if permissions.requires_approval(tool.name, effective_risk.value):
         decision = _normalize_decision(approver(tool, args) if approver else "no")
         if decision == "always":
             permissions.allow_tool(tool.name)
         if decision == "no":
-            return finish(f"Error: 用户拒绝执行工具 '{name}'。", is_error=True)
+            return finish(
+                f"Error: 用户拒绝执行工具 '{name}'。",
+                is_error=True,
+                effective_risk=effective_risk.value,
+            )
 
     # 上下文注入：声明了 ctx: Context 的工具，由框架把 context 作为首个位置参传入
     if tool.wants_context and context is None:
-        return finish(f"Error: 工具 '{name}' 需要执行上下文，但调用方未提供 context", is_error=True)
+        return finish(
+            f"Error: 工具 '{name}' 需要执行上下文，但调用方未提供 context",
+            is_error=True,
+            effective_risk=effective_risk.value,
+        )
     extra = (context,) if tool.wants_context else ()
     t["exec_start"] = time.perf_counter()  # 确认门已过，从这里开始计真正的执行耗时
 
@@ -124,19 +143,32 @@ def execute_tool_call(
     try:
         inspect.signature(tool.func).bind(*extra, **args)
     except TypeError as e:
-        return finish(f"Error: 参数与工具签名不匹配: {e}", is_error=True)
+        return finish(
+            f"Error: 参数与工具签名不匹配: {e}",
+            is_error=True,
+            effective_risk=effective_risk.value,
+        )
 
     # 5b. 执行：统一 try/except —— 任何失败都转成模型可纠错的结果，而不是让程序崩
     try:
         raw = tool.func(*extra, **args)
     except ToolError as e:                       # 工具主动抛出的领域错误（信息最丰富）
-        return finish(f"Error: {e}", is_error=True)
+        return finish(f"Error: {e}", is_error=True, effective_risk=effective_risk.value)
     except Exception as e:                         # 兜底：任何未预期异常（含工具内部 TypeError）
         log.exception("工具 %s 执行异常", name)
-        return finish(f"Error: 工具执行异常 ({type(e).__name__}): {e}", is_error=True)
+        return finish(
+            f"Error: 工具执行异常 ({type(e).__name__}): {e}",
+            is_error=True,
+            effective_risk=effective_risk.value,
+        )
 
     # 6. 输出规整：统一成字符串 + 截断
     content = raw if isinstance(raw, str) else json.dumps(raw, ensure_ascii=False, default=str)
     original_chars = len(content)
     content, truncated = _truncate(content, config.max_tool_output_chars)
-    return finish(content, truncated=truncated, original_chars=original_chars)
+    return finish(
+        content,
+        truncated=truncated,
+        original_chars=original_chars,
+        effective_risk=effective_risk.value,
+    )
