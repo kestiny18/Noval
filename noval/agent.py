@@ -26,6 +26,7 @@ from .session import (
 )
 from .runtime_log import setup_runtime_logging
 from .shell import ShellBackend, resolve_shell_backend, to_bash_path
+from .skills import SkillRegistry, skill_index_context
 from .task import CompletionVerifier, SemanticJudge, TaskController, TaskEventStore
 from .tools import Context, Tool, all_tools
 from .usage import JsonlUsageStore, MeteredLLMClient, UsageBreakdown, UsageSummary
@@ -160,6 +161,7 @@ class Agent:
         permissions: Optional[PermissionController] = None,
         context_manager: Optional[ContextManager] = None,
         task_controller: Optional[TaskController] = None,
+        skill_registry: Optional[SkillRegistry] = None,
     ):
         self.client = client
         self.config = config
@@ -170,11 +172,13 @@ class Agent:
         self.task_controller = task_controller or TaskController()
         # workdir 是 per-invocation 状态：本次启动各自决定，不存进全局 settings.json
         self.workdir = Path(workdir).resolve() if workdir else Path.cwd()
+        self.skill_registry = skill_registry or SkillRegistry.discover(self.workdir)
         # 执行上下文：workdir + 跨工具调用共享的 read-tracker，注入给需要的工具
         self.context = Context(
             workdir=self.workdir,
             shell_backend=shell_backend,
             permissions=permissions or PermissionController(),
+            skills=self.skill_registry,
         )
         self.last_turn_metrics = TurnMetrics()
         self.messages: List[Dict[str, Any]] = []
@@ -182,7 +186,14 @@ class Agent:
         #   人设/规则(随代码发布才变) → 环境(同机器同项目固定) → 项目记忆(用户会编辑,最易变)
         # 顺序同时服务语义：规则先立框，项目约定在后且被边界标记为「不可覆盖系统规则」。
         prompt = system_prompt if system_prompt is not None else DEFAULT_SYSTEM_PROMPT
-        parts = [p for p in (prompt, env_context, project_memory) if p]
+        parts = [
+            p for p in (
+                prompt,
+                env_context,
+                project_memory,
+                skill_index_context(self.skill_registry),
+            ) if p
+        ]
         if parts:
             self._append_message({"role": "system", "content": "\n\n".join(parts)}, persist=False)
         for msg in resume_messages or []:

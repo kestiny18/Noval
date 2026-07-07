@@ -25,6 +25,7 @@ from .permissions import PermissionController
 
 if TYPE_CHECKING:
     from .shell import ShellBackend
+    from .skills import SkillRegistry
 
 
 # ---------------------------------------------------------------------------
@@ -74,6 +75,7 @@ class Context:
     read_state: Dict[str, ReadRecord] = field(default_factory=dict)
     permissions: PermissionController = field(default_factory=PermissionController)
     shell_backend: Optional["ShellBackend"] = None
+    skills: Optional["SkillRegistry"] = None
 
 
 # ---------------------------------------------------------------------------

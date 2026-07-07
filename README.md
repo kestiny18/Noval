@@ -101,9 +101,22 @@ Windows 上如果 `python` 命中 Microsoft Store 占位程序，请把命令中
 | `list_directory` | READ | 列出目录内容 |
 | `glob` | READ | 按文件名模式查找 |
 | `grep` | READ | 正则搜索内容，支持 files/content/count 模式 |
+| `list_skills` | READ | 列出当前 workdir 可用的 Skill 轻量索引 |
+| `load_skill` | READ | 按需读取指定 Skill 的 `SKILL.md` 正文 |
+| `read_skill_resource` | READ | 读取 Skill 目录内的附属资源文件 |
+| `run_skill_script` | DANGEROUS | 在权限门后执行 Skill 目录内脚本 |
 | `write_file` | WRITE | 写文件；覆盖已有文件前必须完整读取 |
 | `edit_file` | WRITE | 精确字符串替换，检查外部改动 |
 | `run_bash` | DANGEROUS | 在 workdir 中执行命令；只读命令可动态降级 |
+
+## Skills
+
+Noval 的 Skill 机制不发明新格式，而是复用 Claude Code / Codex 常见的目录包：每个 Skill 是一个目录，入口为 `SKILL.md`，可带 `references/`、`scripts/` 等附属文件。启动时会扫描：
+
+- 用户级：`~/.claude/skills`、`~/.codex/skills`、`~/.noval/skills`
+- 项目级：`<workdir>/.claude/skills`、`<workdir>/.codex/skills`、`<workdir>/.noval/skills`
+
+Cursor 规则目录不会被扫描。Noval 只把 Skill 的 id、name、description、source 作为轻量索引放进 system prompt；完整正文、资源和脚本由模型在需要时通过工具按需加载。Skill 脚本仍然走统一权限门、timeout、日志和截断，不会绕过框架约束。
 
 加一个工具只需要实现它的领域逻辑：
 
@@ -210,8 +223,8 @@ python -m evals.context.run
 ## 路线图
 
 1. ✅ 评测脊柱 MVP：结构、语义、冷恢复、对话内继续、受控行动与模型 Judge；真实切片、阈值回放和确定性安全后处理持续增强。
-2. ⏳ 任务完成验证：主模型执行任务，独立 judge_model 只根据最近三个不重复用户输入和最后回复判定是否完成。
-3. ⏳ Skill：按需加载、版本化、可测试的程序性知识。
+2. ✅ 任务完成验证 MVP：主模型执行任务，独立 judge_model 只根据最近三个不重复用户输入和最后回复判定是否完成。
+3. ✅ Skill 加载运行 MVP：复用 `SKILL.md` 目录包，轻量索引注入 system，正文/资源/脚本按需加载。
 4. ⏳ 长任务与记忆：暂停/恢复、取消、唤醒和有来源的分层记忆。
 5. ⏳ 模型路由：按能力、成本、延迟和风险选择 Provider/模型。
 6. ⏳ 多 Agent：共享预算、结果合并和独立复核。

@@ -18,6 +18,7 @@ from noval.config import Config
 from noval.permissions import PermissionController, PermissionMode
 from noval.session import JsonlSessionStore, SessionMeta
 from noval.shell import ShellBackend, to_bash_path
+from noval.skills import SkillRegistry
 
 
 def _multi_tool_call(calls):
@@ -208,13 +209,34 @@ def test_system_prompt_assembly_order():
 
 def test_default_system_prompt_when_not_overridden():
     from noval.agent import DEFAULT_SYSTEM_PROMPT
-    agent = Agent(MockClient([mock_text("hi")]), cfg())        # 不传任何 system_prompt
+    agent = Agent(
+        MockClient([mock_text("hi")]),
+        cfg(),
+        skill_registry=SkillRegistry([]),
+    )        # 不传任何 system_prompt
     assert agent.messages[0]["content"] == DEFAULT_SYSTEM_PROMPT
     assert "默认先只读调查" in DEFAULT_SYSTEM_PROMPT
     assert "等待确认后再执行" in DEFAULT_SYSTEM_PROMPT
     assert "FULL_ACCESS" in DEFAULT_SYSTEM_PROMPT
     assert "运行相关测试" in DEFAULT_SYSTEM_PROMPT
     assert "commit hash" in DEFAULT_SYSTEM_PROMPT
+
+
+def test_agent_injects_skill_index_without_full_skill_body(tmp_path):
+    skill_dir = tmp_path / ".claude" / "skills" / "bug"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: bug-investigation\ndescription: debug issues\n---\n\nSECRET BODY",
+        encoding="utf-8",
+    )
+
+    agent = Agent(MockClient([mock_text("hi")]), cfg(), workdir=str(tmp_path))
+
+    system = agent.messages[0]["content"]
+    assert "<available_skills>" in system
+    assert "bug-investigation" in system
+    assert "debug issues" in system
+    assert "SECRET BODY" not in system
 
 
 # --- 项目记忆 (AGENTS.md / CLAUDE.md) -------------------------------------
