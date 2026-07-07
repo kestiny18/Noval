@@ -269,20 +269,6 @@ class TaskStateResolver:
         r"read[-_\s]?only",
         r"investigate only",
     )
-    MUTATING_PATTERNS = (
-        r"修改",
-        r"修复",
-        r"实现",
-        r"添加",
-        r"新增",
-        r"删除",
-        r"提交",
-        r"推送",
-        r"write",
-        r"edit",
-        r"fix",
-        r"implement",
-    )
     ACK_PATTERNS = (
         r"^好(的)?[。.!！]*$",
         r"^可以[。.!！]*$",
@@ -354,8 +340,6 @@ class TaskStateResolver:
     def _detect_action_mode(self, text: str) -> ActionMode:
         if any(re.search(pattern, text, re.I) for pattern in self.READ_ONLY_PATTERNS):
             return ActionMode.READ_ONLY
-        if any(re.search(pattern, text, re.I) for pattern in self.MUTATING_PATTERNS):
-            return ActionMode.MUTATING
         return ActionMode.UNSPECIFIED
 
     def _is_ack(self, text: str) -> bool:

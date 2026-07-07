@@ -90,6 +90,16 @@ def test_diagnostic_question_does_not_become_task_guard_scope():
     assert not controller.state.spec.prohibited_actions
 
 
+def test_mutating_words_do_not_set_task_action_mode():
+    controller = TaskController()
+
+    controller.observe_user_input("修复配置读取问题")
+
+    assert controller.state.spec is not None
+    assert controller.state.spec.action_mode is ActionMode.UNSPECIFIED
+    assert not controller.state.spec.prohibited_actions
+
+
 def test_agent_records_task_events_and_tool_evidence(tmp_path):
     @tool(name="_task_read_ok", risk=Risk.READ)
     def read_ok() -> str:
