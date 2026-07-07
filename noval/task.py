@@ -421,17 +421,17 @@ class CompletionVerifier:
                 confidence=0.2,
                 missing=["candidate reply is empty"],
             )
-        if re.search(r"(请提供|需要你|等待你|无法继续|need you|please provide)", lowered, re.I):
-            return CompletionVerdict(
-                status=TaskStatus.WAITING_USER,
-                confidence=0.8,
-                reasons=["candidate reply asks the user for required input"],
-            )
         if re.search(r"(被阻塞|无法完成|不能继续|blocked|cannot proceed)", lowered, re.I):
             return CompletionVerdict(
                 status=TaskStatus.BLOCKED,
                 confidence=0.8,
                 reasons=["candidate reply reports a blocker"],
+            )
+        if re.search(r"(请提供|需要你|等待你|无法继续|need you|please provide)", lowered, re.I):
+            return CompletionVerdict(
+                status=TaskStatus.WAITING_USER,
+                confidence=0.8,
+                reasons=["candidate reply asks the user for required input"],
             )
         if re.search(r"(已完成|完成了|已经|通过|解决|done|completed|fixed)", lowered, re.I):
             return CompletionVerdict(

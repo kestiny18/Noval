@@ -9,6 +9,8 @@
 - Task state and completion verification MVP: append-only task ledger, read-only
   action guard, completion verifier, independent `judge_model`, and usage
   purpose tracking for judge calls.
+- Task Eval assets for deterministic task-state replay, covering read-only
+  boundary checks, completion statuses, objective updates, and evidence capture.
 
 - 持久化增量上下文压缩：按 Token 预算生成 checkpoint，恢复时复用摘要与原始尾部，并保留完整 Session 作为唯一真相源。
 - 仓库级 context Eval 脊柱：最小语义/对抗用例、结构与敏感信息硬检查、离线重放及 Markdown/JSON 报告。
