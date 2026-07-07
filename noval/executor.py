@@ -25,7 +25,6 @@ log = logging.getLogger("noval.executor")
 # 确认门回调：框架问「要不要执行这个工具」，由调用方（CLI/测试）决定怎么答。
 # 返回 True/"yes" 允许一次；"always" 本会话总是允许该工具；其余拒绝。
 Approver = Callable[[Tool, Dict[str, Any]], object]
-ActionGuard = Callable[[Tool, Dict[str, Any], Risk], Optional[str]]
 
 
 def _normalize_decision(raw: object) -> str:
@@ -67,7 +66,6 @@ def execute_tool_call(
     config: Config,
     approver: Optional[Approver] = None,
     context: Optional["Context"] = None,
-    action_guard: Optional[ActionGuard] = None,
 ) -> ToolResult:
     """执行单次工具调用，永远返回 ToolResult（绝不抛异常给上层）。"""
     started = time.perf_counter()
@@ -107,15 +105,6 @@ def execute_tool_call(
     # 4. 确认门（横切关注点，不在工具内部）
     #    风险可由工具按本次参数动态评估（如 run_bash 把只读命令降级为 READ → 免确认）。
     effective_risk = tool.risk_assessor(args) if tool.risk_assessor else tool.risk
-    if action_guard is not None:
-        violation = action_guard(tool, args, effective_risk)
-        if violation:
-            return finish(
-                f"Error: {violation}",
-                is_error=True,
-                task_violation=True,
-                effective_risk=effective_risk.value,
-            )
     permissions = context.permissions if context is not None else PermissionController()
     if permissions.requires_approval(tool.name, effective_risk.value):
         decision = _normalize_decision(approver(tool, args) if approver else "no")

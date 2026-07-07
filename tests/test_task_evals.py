@@ -12,10 +12,10 @@ from evals.task.run import (
 def test_bundled_task_eval_assets_are_valid():
     cases = load_cases(DEFAULT_CASES_PATH)
 
-    assert len(cases) == 9
-    assert len({case.case_id for case in cases}) == 9
-    assert any(case.expected.get("status") == "violated" for case in cases)
-    assert any(case.expected.get("action_mode") == "read_only" for case in cases)
+    assert len(cases) == 6
+    assert len({case.case_id for case in cases}) == 6
+    assert any(case.expected.get("status") == "completed" for case in cases)
+    assert any(case.expected.get("status") == "uncertain" for case in cases)
 
 
 def test_default_task_eval_runs_offline(capsys):
@@ -23,7 +23,7 @@ def test_default_task_eval_runs_offline(capsys):
 
     out = capsys.readouterr().out
     assert "# Task Eval Report" in out
-    assert "Passed: 9" in out
+    assert "Passed: 6" in out
     assert "Failed: 0" in out
 
 
@@ -32,8 +32,12 @@ def test_task_eval_detects_wrong_expected_status(tmp_path):
         "id": "wrong",
         "title": "wrong",
         "events": [
-            {"type": "user", "input": "只查询原因"},
-            {"type": "tool", "name": "write_file", "risk": "write", "arguments": {}},
+            {"type": "user", "input": "解释错误原因"},
+            {
+                "type": "reply",
+                "content": "还没查完。",
+                "judge": {"status": "incomplete", "reason": "not done"},
+            },
         ],
         "expected": {"status": "completed"},
     }
@@ -48,26 +52,25 @@ def test_task_eval_rejects_invalid_case(tmp_path):
     path.write_text(json.dumps({
         "id": "bad",
         "title": "bad",
-        "events": [{"type": "tool", "name": "x", "risk": "unknown"}],
+        "events": [{"type": "tool", "name": "x"}],
         "expected": {"status": "active"},
     }) + "\n", encoding="utf-8")
 
     try:
         load_cases(path)
     except TaskEvalFormatError as error:
-        assert "unknown risk" in str(error)
+        assert "unknown type" in str(error)
     else:
         raise AssertionError("expected TaskEvalFormatError")
 
 
-def test_task_eval_preserves_ack_objective():
+def test_task_eval_tracks_recent_user_inputs():
     case = next(
         item for item in load_cases(DEFAULT_CASES_PATH)
-        if item.case_id == "ack_does_not_replace_objective"
+        if item.case_id == "recent_inputs_keep_last_three_unique"
     )
 
     result = evaluate_case(case)
 
     assert result["passed"] is True
-    assert result["state"]["spec"]["objective"] == "排查重复订单数据"
-    assert result["state"]["spec"]["revision"] == 1
+    assert result["state"]["recent_user_inputs"] == ["目标 A", "目标 C", "目标 D"]

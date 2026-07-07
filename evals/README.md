@@ -8,7 +8,7 @@
 evals/
   README.md          # 本说明，提交
   context/           # Context 压缩用例、运行器与报告，提交
-  task/              # 任务状态与完成验证用例、运行器与报告，提交
+  task/              # 任务完成 judge 契约用例、运行器与报告，提交
   private/           # 原始验证证据，整体被 Git 忽略
     manifest.jsonl   # 来源、用途、敏感级别与文件哈希
     evidence/        # 按 evidence id 保存的原始副本

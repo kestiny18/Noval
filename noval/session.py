@@ -247,7 +247,7 @@ class JsonlSessionStore:
         return self._dir / "context" / f"{self.session_id}.jsonl"
 
     def task_path(self) -> Path:
-        """该会话的派生任务状态事件文件；任务事件是 append-only。"""
+        """该会话的派生任务完成判定事件文件；任务事件是 append-only。"""
         return self._dir / "task" / f"{self.session_id}.jsonl"
 
     # --- 读 ----------------------------------------------------------------

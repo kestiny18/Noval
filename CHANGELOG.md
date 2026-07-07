@@ -6,11 +6,13 @@
 
 ### Added
 
-- Task state and completion verification MVP: append-only task ledger, read-only
-  action guard, completion verifier, independent `judge_model`, and usage
-  purpose tracking for judge calls.
-- Task Eval assets for deterministic task-state replay, covering read-only
-  boundary checks, completion statuses, objective updates, and evidence capture.
+- Task completion judge MVP: the main model executes and interacts with users,
+  while an independent `judge_model` receives only the last three unique user
+  inputs plus the final visible assistant reply and returns a structured
+  completion verdict. Judge calls are tracked with a separate usage purpose.
+- Task Eval assets for offline task-completion judge contract replay, covering
+  recent input selection and `completed` / `incomplete` / `waiting_user` /
+  `blocked` / `uncertain` verdict persistence.
 
 - 持久化增量上下文压缩：按 Token 预算生成 checkpoint，恢复时复用摘要与原始尾部，并保留完整 Session 作为唯一真相源。
 - 仓库级 context Eval 脊柱：最小语义/对抗用例、结构与敏感信息硬检查、离线重放及 Markdown/JSON 报告。

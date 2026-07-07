@@ -229,12 +229,6 @@ class Agent:
                     log.info("calling tool=%s arg_keys=%s", call.name, _tool_arg_keys(call.arguments))
                     result = execute_tool_call(
                         call.name, call.arguments, self.config, self.approver, self.context,
-                        action_guard=self.task_controller.guard_action,
-                    )
-                    self.task_controller.observe_tool_result(
-                        tool_name=call.name,
-                        raw_arguments=call.arguments,
-                        result=result,
                     )
                     self._append_message(tool_message(call.id, result.content))
         except KeyboardInterrupt:

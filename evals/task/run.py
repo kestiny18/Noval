@@ -1,7 +1,8 @@
-"""Run deterministic task-state Eval cases.
+"""Run deterministic task-completion judge Eval cases.
 
-The default command is offline and zero-cost: it replays small task scenarios
-through ``noval.task`` and checks the resulting structured state.
+The default command is offline and zero-cost: it replays recent user inputs and
+synthetic judge verdicts through ``noval.task`` to keep the task layer contract
+stable without calling a real model.
 """
 from __future__ import annotations
 
@@ -14,10 +15,9 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from noval.task import ActionMode, TaskController, TaskState, TaskStatus
-from noval.tools import Risk, Tool, ToolResult
+from noval.task import CompletionVerdict, CompletionVerifier, TaskController, TaskState, TaskStatus
 
 
 DEFAULT_CASES_PATH = Path(__file__).with_name("cases.jsonl")
@@ -39,6 +39,29 @@ class TaskEvalCase:
     title: str
     events: Tuple[TaskEvalEvent, ...]
     expected: Dict[str, Any]
+
+
+class QueueJudge:
+    def __init__(self, verdicts: Sequence[Dict[str, Any]]):
+        self.verdicts = list(verdicts)
+        self.calls: List[Dict[str, Any]] = []
+
+    def judge(self, recent_user_inputs: List[str], assistant_final_reply: str) -> CompletionVerdict:
+        self.calls.append({
+            "recent_user_inputs": list(recent_user_inputs),
+            "assistant_final_reply": assistant_final_reply,
+        })
+        if not self.verdicts:
+            raise AssertionError("case reply event is missing a judge verdict")
+        data = self.verdicts.pop(0)
+        return CompletionVerdict(
+            status=_parse_status(str(data.get("status", "uncertain")), label="judge.status"),
+            confidence=_float_between_zero_one(data.get("confidence")),
+            reason=str(data.get("reason") or ""),
+            missing=_string_list(data.get("missing")),
+            source="eval_judge",
+            prompt_version="task-eval",
+        )
 
 
 def load_cases(path: Path = DEFAULT_CASES_PATH) -> List[TaskEvalCase]:
@@ -76,84 +99,61 @@ def _event(case_id: str, index: int, data: Any) -> TaskEvalEvent:
     if not isinstance(data, dict):
         raise TaskEvalFormatError(f"{case_id}: event[{index}] must be an object")
     event_type = _required_str(data, "type", label=f"{case_id}: event[{index}]")
-    if event_type not in {"user", "tool", "reply"}:
+    if event_type not in {"user", "reply"}:
         raise TaskEvalFormatError(f"{case_id}: event[{index}] has unknown type {event_type!r}")
     if event_type == "user":
         _required_str(data, "input", label=f"{case_id}: event[{index}]")
-    elif event_type == "reply":
-        _required_str(data, "content", label=f"{case_id}: event[{index}]")
     else:
-        _required_str(data, "name", label=f"{case_id}: event[{index}]")
-        risk = _required_str(data, "risk", label=f"{case_id}: event[{index}]")
-        _parse_risk(risk, label=f"{case_id}: event[{index}]")
-        if "arguments" in data and not isinstance(data["arguments"], dict):
-            raise TaskEvalFormatError(f"{case_id}: event[{index}].arguments must be an object")
-        result = data.get("result", {})
-        if result is not None and not isinstance(result, dict):
-            raise TaskEvalFormatError(f"{case_id}: event[{index}].result must be an object")
+        _required_str(data, "content", label=f"{case_id}: event[{index}]")
+        verdict = data.get("judge")
+        if verdict is not None:
+            if not isinstance(verdict, dict):
+                raise TaskEvalFormatError(f"{case_id}: event[{index}].judge must be an object")
+            _parse_status(str(verdict.get("status", "uncertain")), label=f"{case_id}: event[{index}].judge.status")
     return TaskEvalEvent(event_type=event_type, data=dict(data))
 
 
 def _validate_expected(case_id: str, expected: Dict[str, Any]) -> None:
     if "status" in expected:
         _parse_status(str(expected["status"]), label=f"{case_id}.expected.status")
-    if "action_mode" in expected:
-        _parse_action_mode(str(expected["action_mode"]), label=f"{case_id}.expected.action_mode")
     if "last_verdict_status" in expected:
         _parse_status(str(expected["last_verdict_status"]), label=f"{case_id}.expected.last_verdict_status")
     for key in (
-        "objective_match",
         "last_verdict_source_match",
+        "reason_match",
+        "assistant_final_reply_match",
     ):
         if key in expected:
             _compile_pattern(expected[key], label=f"{case_id}.expected.{key}")
     for key in (
-        "violations_match",
-        "forbidden_violations_match",
-        "evidence_match",
-        "blockers_match",
-        "remaining_match",
+        "recent_user_inputs",
+        "missing",
+        "judge_recent_user_inputs",
     ):
-        if key in expected:
-            _pattern_list(expected[key], label=f"{case_id}.expected.{key}")
-    if "revision" in expected and not _non_negative_int(expected["revision"]):
-        raise TaskEvalFormatError(f"{case_id}.expected.revision must be a non-negative integer")
-    if "min_evidence" in expected and not _non_negative_int(expected["min_evidence"]):
-        raise TaskEvalFormatError(f"{case_id}.expected.min_evidence must be a non-negative integer")
+        if key in expected and not _all_strings(expected[key]):
+            raise TaskEvalFormatError(f"{case_id}.expected.{key} must be an array of strings")
+    if "judge_call_count" in expected and not _non_negative_int(expected["judge_call_count"]):
+        raise TaskEvalFormatError(f"{case_id}.expected.judge_call_count must be a non-negative integer")
 
 
 def run_case(case: TaskEvalCase) -> Dict[str, Any]:
-    controller = TaskController()
+    verdicts = [
+        event.data["judge"]
+        for event in case.events
+        if event.event_type == "reply" and isinstance(event.data.get("judge"), dict)
+    ]
+    judge = QueueJudge(verdicts)
+    controller = TaskController(completion_verifier=CompletionVerifier(judge))
     timeline: List[Dict[str, Any]] = []
     for event in case.events:
         data = event.data
         if event.event_type == "user":
             controller.observe_user_input(data["input"])
-            timeline.append({"type": "user", "status": controller.state.status.value})
-        elif event.event_type == "tool":
-            risk = _parse_risk(data["risk"], label=f"{case.case_id}.tool.risk")
-            tool = _fake_tool(data["name"], risk)
-            arguments = dict(data.get("arguments") or {})
-            violation = controller.guard_action(tool, arguments, risk)
             timeline.append({
-                "type": "tool",
-                "name": tool.name,
-                "risk": risk.value,
-                "blocked": violation is not None,
+                "type": "user",
+                "status": controller.state.status.value,
+                "recent_user_inputs": list(controller.state.recent_user_inputs),
             })
-            if violation is None:
-                result_data = data.get("result") or {}
-                result = ToolResult(
-                    content=str(result_data.get("content", "")),
-                    is_error=bool(result_data.get("is_error", False)),
-                    truncated=bool(result_data.get("truncated", False)),
-                    meta={"tool": tool.name, "effective_risk": risk.value},
-                )
-                controller.observe_tool_result(
-                    tool_name=tool.name,
-                    raw_arguments=json.dumps(arguments, ensure_ascii=False),
-                    result=result,
-                )
         else:
             verdict = controller.verify_completion(data["content"])
             timeline.append({
@@ -164,6 +164,7 @@ def run_case(case: TaskEvalCase) -> Dict[str, Any]:
     return {
         "state": controller.state.to_dict(),
         "timeline": timeline,
+        "judge_calls": judge.calls,
     }
 
 
@@ -180,21 +181,8 @@ def evaluate_case(case: TaskEvalCase) -> Dict[str, Any]:
         wanted = _parse_status(str(expected["status"]), label=f"{case.case_id}.expected.status")
         if state.status is not wanted:
             fail("wrong_status", f"expected {wanted.value}, got {state.status.value}")
-    if "action_mode" in expected:
-        actual = state.spec.action_mode if state.spec else ActionMode.UNSPECIFIED
-        wanted = _parse_action_mode(str(expected["action_mode"]), label=f"{case.case_id}.expected.action_mode")
-        if actual is not wanted:
-            fail("wrong_action_mode", f"expected {wanted.value}, got {actual.value}")
-    if "objective_match" in expected:
-        objective = state.spec.objective if state.spec else ""
-        if not re.search(str(expected["objective_match"]), objective, re.I | re.M):
-            fail("objective_mismatch", f"objective {objective!r} did not match")
-    if "revision" in expected:
-        revision = state.spec.revision if state.spec else 0
-        if revision != expected["revision"]:
-            fail("wrong_revision", f"expected revision {expected['revision']}, got {revision}")
-    if "min_evidence" in expected and len(state.evidence) < expected["min_evidence"]:
-        fail("missing_evidence", f"expected at least {expected['min_evidence']} evidence item(s)")
+    if "recent_user_inputs" in expected and state.recent_user_inputs != expected["recent_user_inputs"]:
+        fail("wrong_recent_user_inputs", f"expected {expected['recent_user_inputs']!r}, got {state.recent_user_inputs!r}")
     if "last_verdict_status" in expected:
         actual = state.last_verdict.status if state.last_verdict else None
         wanted = _parse_status(str(expected["last_verdict_status"]), label=f"{case.case_id}.expected.last_verdict_status")
@@ -204,16 +192,24 @@ def evaluate_case(case: TaskEvalCase) -> Dict[str, Any]:
         source = state.last_verdict.source if state.last_verdict else ""
         if not re.search(str(expected["last_verdict_source_match"]), source, re.I | re.M):
             fail("wrong_verdict_source", f"source {source!r} did not match")
-
-    _check_patterns("violations_match", state.violations, expected, fail, required=True)
-    _check_patterns("forbidden_violations_match", state.violations, expected, fail, required=False)
-    evidence_text = [
-        item.summary + "\n" + json.dumps(item.meta, ensure_ascii=False, sort_keys=True)
-        for item in state.evidence
-    ]
-    _check_patterns("evidence_match", evidence_text, expected, fail, required=True)
-    _check_patterns("blockers_match", state.blockers, expected, fail, required=True)
-    _check_patterns("remaining_match", state.remaining, expected, fail, required=True)
+    if "reason_match" in expected:
+        reason = state.last_verdict.reason if state.last_verdict else ""
+        if not re.search(str(expected["reason_match"]), reason, re.I | re.M):
+            fail("wrong_reason", f"reason {reason!r} did not match")
+    if "missing" in expected:
+        missing = state.last_verdict.missing if state.last_verdict else []
+        if missing != expected["missing"]:
+            fail("wrong_missing", f"expected missing {expected['missing']!r}, got {missing!r}")
+    if "judge_call_count" in expected and len(execution["judge_calls"]) != expected["judge_call_count"]:
+        fail("wrong_judge_call_count", f"expected {expected['judge_call_count']}, got {len(execution['judge_calls'])}")
+    if "judge_recent_user_inputs" in expected:
+        actual = execution["judge_calls"][-1]["recent_user_inputs"] if execution["judge_calls"] else []
+        if actual != expected["judge_recent_user_inputs"]:
+            fail("wrong_judge_inputs", f"expected judge inputs {expected['judge_recent_user_inputs']!r}, got {actual!r}")
+    if "assistant_final_reply_match" in expected:
+        actual = execution["judge_calls"][-1]["assistant_final_reply"] if execution["judge_calls"] else ""
+        if not re.search(str(expected["assistant_final_reply_match"]), actual, re.I | re.M):
+            fail("wrong_judge_reply", f"assistant_final_reply {actual!r} did not match")
 
     return {
         "case_id": case.case_id,
@@ -222,6 +218,7 @@ def evaluate_case(case: TaskEvalCase) -> Dict[str, Any]:
         "failures": failures,
         "state": execution["state"],
         "timeline": execution["timeline"],
+        "judge_calls": execution["judge_calls"],
     }
 
 
@@ -234,7 +231,7 @@ def build_report(cases: Sequence[TaskEvalCase], results: Sequence[Dict[str, Any]
             "cases_hash": _file_hash(cases_path),
             "git_commit": _git_commit(),
             "git_dirty": _git_dirty(),
-            "method": "deterministic_task_state_replay",
+            "method": "task_completion_judge_contract_replay",
         },
         "summary": {
             "case_count": len(cases),
@@ -295,45 +292,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Noval task-state Eval")
+    parser = argparse.ArgumentParser(description="Noval task-completion judge Eval")
     parser.add_argument("--cases", type=Path, default=DEFAULT_CASES_PATH)
     parser.add_argument("--case", action="append")
     parser.add_argument("--json-report", type=Path)
     parser.add_argument("--markdown-report", type=Path)
     return parser
-
-
-def _fake_tool(name: str, risk: Risk) -> Tool:
-    def _noop() -> str:
-        return ""
-
-    return Tool(
-        name=name,
-        description="task eval synthetic tool",
-        parameters={"type": "object", "properties": {}, "required": []},
-        func=_noop,
-        risk=risk,
-    )
-
-
-def _check_patterns(
-    key: str,
-    values: Sequence[str],
-    expected: Dict[str, Any],
-    fail: Any,
-    *,
-    required: bool,
-) -> None:
-    if key not in expected:
-        return
-    patterns = _pattern_list(expected[key], label=key)
-    haystack = "\n".join(values)
-    for pattern in patterns:
-        matched = re.search(pattern, haystack, re.I | re.M) is not None
-        if required and not matched:
-            fail(f"{key}_missing", f"{pattern!r} did not match")
-        if not required and matched:
-            fail(f"{key}_present", f"{pattern!r} unexpectedly matched")
 
 
 def _required_str(data: Dict[str, Any], key: str, *, label: str) -> str:
@@ -343,25 +307,11 @@ def _required_str(data: Dict[str, Any], key: str, *, label: str) -> str:
     return value
 
 
-def _parse_risk(value: str, *, label: str) -> Risk:
-    try:
-        return Risk(value)
-    except ValueError as error:
-        raise TaskEvalFormatError(f"{label}: unknown risk {value!r}") from error
-
-
 def _parse_status(value: str, *, label: str) -> TaskStatus:
     try:
         return TaskStatus(value)
     except ValueError as error:
         raise TaskEvalFormatError(f"{label}: unknown status {value!r}") from error
-
-
-def _parse_action_mode(value: str, *, label: str) -> ActionMode:
-    try:
-        return ActionMode(value)
-    except ValueError as error:
-        raise TaskEvalFormatError(f"{label}: unknown action_mode {value!r}") from error
 
 
 def _compile_pattern(value: Any, *, label: str) -> str:
@@ -374,14 +324,24 @@ def _compile_pattern(value: Any, *, label: str) -> str:
     return value
 
 
-def _pattern_list(value: Any, *, label: str) -> List[str]:
-    if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
-        raise TaskEvalFormatError(f"{label} must be an array of non-empty regex strings")
-    return [_compile_pattern(item, label=f"{label}[]") for item in value]
+def _all_strings(value: Any) -> bool:
+    return isinstance(value, list) and all(isinstance(item, str) for item in value)
+
+
+def _string_list(value: Any) -> List[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if isinstance(item, (str, int, float))]
 
 
 def _non_negative_int(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _float_between_zero_one(value: Any) -> float:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return max(0.0, min(1.0, float(value)))
+    return 0.0
 
 
 def _file_hash(path: Path) -> str:
