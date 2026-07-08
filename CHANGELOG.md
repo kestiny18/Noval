@@ -4,8 +4,12 @@
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-08
+
 ### Added
 
+- 持久化增量上下文压缩：按 Token 预算生成 checkpoint，恢复时复用摘要与原始尾部，并保留完整 Session 作为唯一真相源。
+- 仓库级 context Eval 脊柱：最小语义/对抗用例、结构与敏感信息硬检查、离线重放及 Markdown/JSON 报告。
 - Task completion judge MVP: the main model executes and interacts with users,
   while an independent `judge_model` receives only the last three unique user
   inputs plus the final visible assistant reply and returns a structured
@@ -18,13 +22,19 @@
   index, and expose tools for loading Skill bodies, resources, and guarded
   scripts. Cursor `.cursor/skills` roots are supported; `.cursor/rules`
   directories are intentionally not scanned.
-
-- 持久化增量上下文压缩：按 Token 预算生成 checkpoint，恢复时复用摘要与原始尾部，并保留完整 Session 作为唯一真相源。
-- 仓库级 context Eval 脊柱：最小语义/对抗用例、结构与敏感信息硬检查、离线重放及 Markdown/JSON 报告。
+- Skill 运行态刷新：会话内新增、删除或修改 Skill 时，在用户回合边界用内存快照检测变化，并以临时上下文提示模型，不写入 session / settings / checkpoint。
 
 ### Changed
 
 - 上下文压缩 prompt v2 明确禁止凭据原值进入 checkpoint，并要求保留用户否决/暂停决策且不得恢复为待办。
+- Task completion judge prompt v3 明确区分 `current_user_input` 与 `context_user_inputs`，避免把最近三条输入误判为本轮全部待办。
+- `list_skills` 输出改为紧凑分页结构，并支持 `query` / `source` 过滤和 `skill` 参数别名。
+
+### Fixed
+
+- `read_file` 改为行感知输出预算，避免 executor 通用截断导致模型误以为已读完整文件。
+- 连续分片读完整个文件后，read-tracker 会升级为 full read，允许后续 `edit_file` 正常修改。
+- 已 full read 的文件再次局部读取时，不再把文件状态降级为 partial。
 
 ## [0.4.0] - 2026-07-01
 
@@ -107,7 +117,8 @@
 - 带 `max_steps` 的 Agent 循环与 CLI。
 - `MockClient` 和离线测试。
 
-[Unreleased]: https://github.com/kestiny18/Noval/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/kestiny18/Noval/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/kestiny18/Noval/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/kestiny18/Noval/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/kestiny18/Noval/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/kestiny18/Noval/compare/v0.1.0...v0.2.0
