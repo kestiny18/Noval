@@ -131,6 +131,8 @@ def discover_skills(workdir: Path, *, home: Optional[Path] = None) -> List[Skill
         ("project.claude", workdir / ".claude" / "skills"),
         ("user.codex", home / ".codex" / "skills"),
         ("project.codex", workdir / ".codex" / "skills"),
+        ("user.cursor", home / ".cursor" / "skills"),
+        ("project.cursor", workdir / ".cursor" / "skills"),
         ("user.noval", home / ".noval" / "skills"),
         ("project.noval", workdir / ".noval" / "skills"),
     ]

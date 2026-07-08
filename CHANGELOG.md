@@ -13,10 +13,11 @@
 - Task Eval assets for offline task-completion judge contract replay, covering
   recent input selection and `completed` / `incomplete` / `waiting_user` /
   `blocked` / `uncertain` verdict persistence.
-- Skill loading/runtime MVP: discover Claude/Codex-style `SKILL.md` directory
+- Skill loading/runtime MVP: discover Claude/Codex/Cursor-style `SKILL.md` directory
   packages from user and project skill roots, inject only a lightweight system
   index, and expose tools for loading Skill bodies, resources, and guarded
-  scripts. Cursor rule directories are intentionally not scanned.
+  scripts. Cursor `.cursor/skills` roots are supported; `.cursor/rules`
+  directories are intentionally not scanned.
 
 - 持久化增量上下文压缩：按 Token 预算生成 checkpoint，恢复时复用摘要与原始尾部，并保留完整 Session 作为唯一真相源。
 - 仓库级 context Eval 脊柱：最小语义/对抗用例、结构与敏感信息硬检查、离线重放及 Markdown/JSON 报告。

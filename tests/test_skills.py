@@ -29,19 +29,33 @@ def _skill(root, rel, *, name, description, body="Body", resource=True, script=T
     return d
 
 
-def test_discover_skills_from_claude_codex_and_noval_dirs(tmp_path):
+def test_discover_skills_from_claude_codex_cursor_and_noval_dirs(tmp_path):
     home = tmp_path / "home"
     workdir = tmp_path / "repo"
     _skill(home / ".claude" / "skills", "global-review", name="review", description="global review")
     _skill(workdir / ".codex" / "skills", "project-git", name="git-delivery", description="project git")
+    _skill(home / ".cursor" / "skills", "user-cursor", name="cursor-user", description="user cursor")
+    _skill(workdir / ".cursor" / "skills", "project-cursor", name="cursor-project", description="project cursor")
     _skill(workdir / ".noval" / "skills", "local", name="local-helper", description="local helper")
     _skill(workdir / ".cursor" / "rules", "ignored", name="cursor-skill", description="must not load")
 
     skills = discover_skills(workdir, home=home)
 
-    assert {item.name for item in skills} == {"review", "git-delivery", "local-helper"}
-    assert all(".cursor" not in item.location for item in skills)
-    assert {item.source for item in skills} == {"user.claude", "project.codex", "project.noval"}
+    assert {item.name for item in skills} == {
+        "review",
+        "git-delivery",
+        "cursor-user",
+        "cursor-project",
+        "local-helper",
+    }
+    assert all(".cursor/rules" not in item.location.replace("\\", "/") for item in skills)
+    assert {item.source for item in skills} == {
+        "user.claude",
+        "project.codex",
+        "user.cursor",
+        "project.cursor",
+        "project.noval",
+    }
 
 
 def test_skill_index_is_lightweight_and_does_not_include_body(tmp_path):

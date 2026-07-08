@@ -111,12 +111,12 @@ Windows 上如果 `python` 命中 Microsoft Store 占位程序，请把命令中
 
 ## Skills
 
-Noval 的 Skill 机制不发明新格式，而是复用 Claude Code / Codex 常见的目录包：每个 Skill 是一个目录，入口为 `SKILL.md`，可带 `references/`、`scripts/` 等附属文件。启动时会扫描：
+Noval 的 Skill 机制不发明新格式，而是复用 Claude Code / Codex / Cursor 常见的目录包：每个 Skill 是一个目录，入口为 `SKILL.md`，可带 `references/`、`scripts/` 等附属文件。启动时会扫描：
 
-- 用户级：`~/.claude/skills`、`~/.codex/skills`、`~/.noval/skills`
-- 项目级：`<workdir>/.claude/skills`、`<workdir>/.codex/skills`、`<workdir>/.noval/skills`
+- 用户级：`~/.claude/skills`、`~/.codex/skills`、`~/.cursor/skills`、`~/.noval/skills`
+- 项目级：`<workdir>/.claude/skills`、`<workdir>/.codex/skills`、`<workdir>/.cursor/skills`、`<workdir>/.noval/skills`
 
-Cursor 规则目录不会被扫描。Noval 只把 Skill 的 id、name、description、source 作为轻量索引放进 system prompt；完整正文、资源和脚本由模型在需要时通过工具按需加载。Skill 脚本仍然走统一权限门、timeout、日志和截断，不会绕过框架约束。
+Cursor 规则目录 `.cursor/rules` 不会被扫描。Noval 只把 Skill 的 id、name、description、source 作为轻量索引放进 system prompt；完整正文、资源和脚本由模型在需要时通过工具按需加载。Skill 脚本仍然走统一权限门、timeout、日志和截断，不会绕过框架约束。
 
 加一个工具只需要实现它的领域逻辑：
 
