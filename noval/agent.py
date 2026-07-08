@@ -26,7 +26,7 @@ from .session import (
 )
 from .runtime_log import setup_runtime_logging
 from .shell import ShellBackend, resolve_shell_backend, to_bash_path
-from .skills import SkillRegistry, skill_index_context
+from .skills import SkillRegistry, SkillSnapshotDiff, skill_index_context
 from .task import CompletionVerifier, SemanticJudge, TaskController, TaskEventStore
 from .tools import Context, Tool, all_tools
 from .usage import JsonlUsageStore, MeteredLLMClient, UsageBreakdown, UsageSummary
@@ -144,6 +144,29 @@ class TurnMetrics:
             self.thinking_detected = True
 
 
+def _skill_update_context(diff: SkillSnapshotDiff) -> str:
+    lines = [
+        "<skills_update>",
+        "Skill registry changed since last turn. This is dynamic runtime context, not a system rule.",
+    ]
+    for label, values in (
+        ("Added", diff.added),
+        ("Removed", diff.removed),
+        ("Changed", diff.changed),
+    ):
+        if values:
+            lines.append(f"{label}: {_format_skill_ids(values)}")
+    lines.append("Use list_skills for the current registry before loading a Skill.")
+    lines.append("</skills_update>")
+    return "\n".join(lines)
+
+
+def _format_skill_ids(values: List[str], *, limit: int = 12) -> str:
+    shown = values[:limit]
+    suffix = f" (+{len(values) - limit} more)" if len(values) > limit else ""
+    return ", ".join(shown) + suffix
+
+
 class Agent:
     def __init__(
         self,
@@ -172,13 +195,17 @@ class Agent:
         self.task_controller = task_controller or TaskController()
         # workdir 是 per-invocation 状态：本次启动各自决定，不存进全局 settings.json
         self.workdir = Path(workdir).resolve() if workdir else Path.cwd()
+        self._skills_auto_refresh = skill_registry is None
         self.skill_registry = skill_registry or SkillRegistry.discover(self.workdir)
+        self._skill_snapshot = self.skill_registry.snapshot()
+        self._ephemeral_turn_context: Optional[str] = None
         # 执行上下文：workdir + 跨工具调用共享的 read-tracker，注入给需要的工具
         self.context = Context(
             workdir=self.workdir,
             shell_backend=shell_backend,
             permissions=permissions or PermissionController(),
             skills=self.skill_registry,
+            skills_auto_refresh=self._skills_auto_refresh,
         )
         self.last_turn_metrics = TurnMetrics()
         self.messages: List[Dict[str, Any]] = []
@@ -214,6 +241,7 @@ class Agent:
     def send(self, user_input: str) -> str:
         """处理一条用户输入，跑完工具循环，返回最终助手文本。"""
         self.last_turn_metrics = TurnMetrics()
+        self._ephemeral_turn_context = self._refresh_skills_for_turn()
         # 当前时间随每个回合注入 user 消息(而非进 system prompt)：system 前缀因此
         # 与时间无关、跨天/跨重启不破缓存；历史里的时间戳是冻结的，不破后续前缀；
         # 且每轮刷新「现在」，长会话跨午夜也正确。
@@ -247,6 +275,8 @@ class Agent:
             # 再返回提示。否则下一轮请求会因「有 tool_call 没 tool 响应」被 API 拒绝。
             self._answer_pending_tool_calls()
             return "（已中断当前任务，会话保留。）"
+        finally:
+            self._ephemeral_turn_context = None
 
         # 触顶时模型已积累现场信息（查到了什么、卡在哪）；让它最后总结一次再停，
         # 把已执行的步骤整理成一份可用的现场报告。
@@ -269,11 +299,41 @@ class Agent:
         """经上下文预算门调用 Provider；压缩不进入原始会话消息。"""
         if self.context_manager is not None:
             self.messages = self.context_manager.prepare(self.messages, tools)
-        request_messages = self.messages
+        request_messages = self._with_ephemeral_turn_context(self.messages)
         response = self.client.complete(request_messages, tools)
         if self.context_manager is not None:
             self.context_manager.observe(request_messages, tools, response.usage)
         return response
+
+    def _refresh_skills_for_turn(self) -> Optional[str]:
+        """回合边界刷新 Skill registry；变化只作为本轮临时上下文，不落盘。"""
+        if not self._skills_auto_refresh:
+            return None
+        refreshed = SkillRegistry.discover(self.workdir)
+        refreshed_snapshot = refreshed.snapshot()
+        diff = self._skill_snapshot.diff(refreshed_snapshot)
+        self.skill_registry = refreshed
+        self.context.skills = refreshed
+        self._skill_snapshot = refreshed_snapshot
+        return _skill_update_context(diff) if diff.has_changes() else None
+
+    def _with_ephemeral_turn_context(
+        self,
+        messages: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        if not self._ephemeral_turn_context:
+            return messages
+        augmented = list(messages)
+        for index in range(len(augmented) - 1, -1, -1):
+            msg = augmented[index]
+            if msg.get("role") != "user":
+                continue
+            copy = dict(msg)
+            content = str(copy.get("content") or "")
+            copy["content"] = f"{self._ephemeral_turn_context}\n\n{content}"
+            augmented[index] = copy
+            return augmented
+        return messages
 
     def _answer_pending_tool_calls(self) -> None:
         """给最后一条 assistant 消息里「还没回填 tool 响应」的 tool_call 补上占位，

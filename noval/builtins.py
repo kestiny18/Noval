@@ -538,7 +538,7 @@ def grep(ctx: Context, pattern: str, path: str = ".", glob_filter: str = "",
 # Skills
 # ===========================================================================
 def _skill_registry(ctx: Context) -> SkillRegistry:
-    if ctx.skills is None:
+    if ctx.skills is None or ctx.skills_auto_refresh:
         ctx.skills = SkillRegistry.discover(ctx.workdir)
     return ctx.skills
 

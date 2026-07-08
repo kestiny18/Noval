@@ -116,7 +116,7 @@ Noval 的 Skill 机制不发明新格式，而是复用 Claude Code / Codex / Cu
 - 用户级：`~/.claude/skills`、`~/.codex/skills`、`~/.cursor/skills`、`~/.noval/skills`
 - 项目级：`<workdir>/.claude/skills`、`<workdir>/.codex/skills`、`<workdir>/.cursor/skills`、`<workdir>/.noval/skills`
 
-Cursor 规则目录 `.cursor/rules` 不会被扫描。Noval 只把 Skill 的 id、name、description、source 作为轻量索引放进 system prompt；完整正文、资源和脚本由模型在需要时通过工具按需加载。Skill 脚本仍然走统一权限门、timeout、日志和截断，不会绕过框架约束。
+Cursor 规则目录 `.cursor/rules` 不会被扫描。Noval 只把 Skill 的 id、name、description、source 作为轻量索引放进 system prompt；完整正文、资源和脚本由模型在需要时通过工具按需加载。会话运行中，Noval 会在用户回合边界用内存快照检测 Skill 增删改，并把变化作为本轮临时上下文提示模型；这个快照不写入 session、settings 或 checkpoint。Skill 脚本仍然走统一权限门、timeout、日志和截断，不会绕过框架约束。
 
 加一个工具只需要实现它的领域逻辑：
 

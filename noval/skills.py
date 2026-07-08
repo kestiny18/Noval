@@ -12,7 +12,8 @@ import re
 import shlex
 import subprocess
 import sys
-from dataclasses import dataclass, replace
+import hashlib
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence
 
@@ -42,6 +43,49 @@ class SkillInfo:
         }
 
 
+@dataclass(frozen=True)
+class SkillFingerprint:
+    """轻量 Skill 指纹，只用于运行态比较；不保存正文。"""
+    skill_id: str
+    name: str
+    description: str
+    source: str
+    location: str
+    skill_file: str
+    skill_md_mtime_ns: int
+    skill_md_size: int
+    skill_md_hash: str
+
+
+@dataclass(frozen=True)
+class SkillSnapshot:
+    """当前可用 Skill 集合的运行态快照。"""
+    skills: Dict[str, SkillFingerprint] = field(default_factory=dict)
+
+    def diff(self, newer: "SkillSnapshot") -> "SkillSnapshotDiff":
+        old_ids = set(self.skills)
+        new_ids = set(newer.skills)
+        common = old_ids & new_ids
+        return SkillSnapshotDiff(
+            added=sorted(new_ids - old_ids),
+            removed=sorted(old_ids - new_ids),
+            changed=sorted(
+                skill_id for skill_id in common
+                if self.skills[skill_id] != newer.skills[skill_id]
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class SkillSnapshotDiff:
+    added: List[str] = field(default_factory=list)
+    removed: List[str] = field(default_factory=list)
+    changed: List[str] = field(default_factory=list)
+
+    def has_changes(self) -> bool:
+        return bool(self.added or self.removed or self.changed)
+
+
 class SkillRegistry:
     def __init__(self, skills: Sequence[SkillInfo]):
         self.skills = list(skills)
@@ -57,6 +101,12 @@ class SkillRegistry:
 
     def list_index(self) -> List[Dict[str, str]]:
         return [item.to_index_dict() for item in self.skills]
+
+    def snapshot(self) -> SkillSnapshot:
+        return SkillSnapshot({
+            item.skill_id: _fingerprint(item)
+            for item in self.skills
+        })
 
     def resolve(self, selector: str) -> SkillInfo:
         key = selector.strip()
@@ -201,6 +251,35 @@ def _skill_info(source: str, scan_root: Path, skill_file: Path) -> SkillInfo:
         source=source,
         location=str(skill_file.parent.resolve()),
     )
+
+
+def _fingerprint(info: SkillInfo) -> SkillFingerprint:
+    stat = _safe_stat(info.skill_file)
+    return SkillFingerprint(
+        skill_id=info.skill_id,
+        name=info.name,
+        description=info.description,
+        source=info.source,
+        location=info.location,
+        skill_file=str(info.skill_file),
+        skill_md_mtime_ns=stat.st_mtime_ns if stat else -1,
+        skill_md_size=stat.st_size if stat else -1,
+        skill_md_hash=_file_hash(info.skill_file),
+    )
+
+
+def _safe_stat(path: Path):
+    try:
+        return path.stat()
+    except OSError:
+        return None
+
+
+def _file_hash(path: Path) -> str:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError as error:
+        return f"unreadable:{type(error).__name__}"
 
 
 def _frontmatter(text: str) -> Dict[str, str]:

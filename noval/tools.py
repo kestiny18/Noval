@@ -78,6 +78,7 @@ class Context:
     permissions: PermissionController = field(default_factory=PermissionController)
     shell_backend: Optional["ShellBackend"] = None
     skills: Optional["SkillRegistry"] = None
+    skills_auto_refresh: bool = False
 
 
 # ---------------------------------------------------------------------------

@@ -396,7 +396,7 @@ Judge 调用使用独立模型配置与独立 usage purpose。它不继承主模
 
 Noval 的 Skill 目标不是制定新规则，而是让 Agent 能发现并正确使用已有生态里的程序性知识。MVP 兼容 Claude Code / Codex / Cursor 常见的目录包形态：目录内有 `SKILL.md` 入口，frontmatter 提供 `name` / `description`，正文和附属文件按需读取。为避免把不同产品的隐式规则混成一锅，当前明确只扫描 Cursor 的 Skill 包目录 `.cursor/skills`，不扫描 Cursor 规则目录 `.cursor/rules`。
 
-启动时扫描用户级和项目级 `.claude/skills`、`.codex/skills`、`.cursor/skills`、`.noval/skills`，把轻量索引追加到 system prompt。这个选择牺牲了一点 system 前缀稳定性，但换来模型在第一轮就知道“有哪些技能可用”；完整正文不进 system，只有模型决定使用某个 Skill 时才调用 `load_skill`。资源文件和脚本分别通过 `read_skill_resource`、`run_skill_script` 读取/执行，路径被限制在该 Skill 目录内。
+启动时扫描用户级和项目级 `.claude/skills`、`.codex/skills`、`.cursor/skills`、`.noval/skills`，把轻量索引追加到 system prompt。这个选择牺牲了一点 system 前缀稳定性，但换来模型在第一轮就知道“有哪些技能可用”；完整正文不进 system，只有模型决定使用某个 Skill 时才调用 `load_skill`。会话运行中，Agent 在用户回合边界重新发现 Skill，并用内存态 `SkillSnapshot` 比较增删改；变化只作为本轮临时 request context 提示模型，不写入原始 session、settings 或 checkpoint。资源文件和脚本分别通过 `read_skill_resource`、`run_skill_script` 读取/执行，路径被限制在该 Skill 目录内。
 
 Skill 是上下文和工具入口，不是权限后门。Skill 内容不能覆盖 system、项目记忆、权限确认或用户指令；Skill 脚本声明为 DANGEROUS 工具，继续走统一确认门、timeout、结构化 trace 和输出截断。这保持了原来的三条接缝：Skill 发现逻辑在 `skills.py`，运行入口仍是工具注册表和 executor 管道，agent 循环只负责把索引注入上下文。
 

@@ -129,6 +129,29 @@ def test_slug_collisions_get_stable_unique_ids(tmp_path):
     ]
 
 
+def test_skill_snapshot_diff_tracks_added_removed_and_changed(tmp_path):
+    home = tmp_path / "home"
+    workdir = tmp_path / "repo"
+    kept = _skill(workdir / ".codex" / "skills", "kept", name="kept", description="old")
+    removed = _skill(workdir / ".codex" / "skills", "removed", name="removed", description="removed")
+    before = SkillRegistry.discover(workdir, home=home).snapshot()
+
+    (kept / "SKILL.md").write_text(
+        "---\nname: kept\ndescription: new\n---\n\nChanged body\n",
+        encoding="utf-8",
+    )
+    (removed / "SKILL.md").unlink()
+    _skill(workdir / ".codex" / "skills", "added", name="added", description="added")
+    after = SkillRegistry.discover(workdir, home=home).snapshot()
+
+    diff = before.diff(after)
+
+    assert diff.added == ["project.codex:added"]
+    assert diff.removed == ["project.codex:removed"]
+    assert diff.changed == ["project.codex:kept"]
+    assert diff.has_changes() is True
+
+
 def test_list_skills_supports_filter_pagination_and_skill_alias(tmp_path):
     home = tmp_path / "home"
     workdir = tmp_path / "repo"
