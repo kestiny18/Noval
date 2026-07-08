@@ -58,6 +58,43 @@ def test_truncation():
     assert r.meta["original_chars"] == 500
 
 
+def test_tool_output_redacts_common_secret_shapes():
+    @tool(name="_secrets")
+    def secrets() -> str:
+        """secrets"""
+        return "\n".join([
+            "gboat3.db.password=FAKE_DB_PASSWORD",
+            "gtm.openapi.secret=FAKE_OPENAPI_SECRET",
+            "gtm.gsignature.appSecret=FAKE_APP_SECRET",
+            "robotUrl=https://example.invalid/webhook/send?key=FAKE_WEBHOOK_KEY",
+            "normal.value=visible",
+        ])
+
+    r = execute_tool_call("_secrets", "{}", cfg(max_tool_output_chars=1000))
+
+    assert not r.is_error
+    assert r.meta["redacted"] is True
+    assert "FAKE_DB_PASSWORD" not in r.content
+    assert "FAKE_OPENAPI_SECRET" not in r.content
+    assert "FAKE_APP_SECRET" not in r.content
+    assert "FAKE_WEBHOOK_KEY" not in r.content
+    assert "normal.value=visible" in r.content
+    assert "<redacted>" in r.content
+
+
+def test_tool_output_redaction_keeps_json_valid():
+    @tool(name="_json_secret")
+    def json_secret() -> str:
+        """json secret"""
+        return json.dumps({"password": "FAKE_DB_PASSWORD", "normal": "visible"}, ensure_ascii=False)
+
+    r = execute_tool_call("_json_secret", "{}", cfg(max_tool_output_chars=1000))
+    payload = json.loads(r.content)
+
+    assert payload == {"password": "<redacted>", "normal": "visible"}
+    assert r.meta["redacted"] is True
+
+
 def test_internal_typeerror_not_mislabeled():
     @tool(name="_internal_te")
     def boom() -> str:

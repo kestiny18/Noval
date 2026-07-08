@@ -4,6 +4,20 @@
 
 ## [Unreleased]
 
+### Added
+
+- MCP client MVP: discover user/project `mcpServers` config from
+  `~/.noval/mcp.json` and `<workdir>/.mcp.json`, inject only a lightweight MCP
+  server index, refresh config changes at turn boundaries, and expose guarded
+  `list_mcp_servers` / `list_mcp_tools` / `call_mcp_tool` tools for stdio MCP
+  servers.
+- Central tool-output redaction before model/session persistence for common
+  credential shapes such as password, secret, token, privateKey, appSecret,
+  accessKey and webhook values.
+- MCP tool-call output normalization: JSON text content is parsed into
+  structured content so the model does not receive JSON wrapped inside a JSON
+  string.
+
 ## [0.5.0] - 2026-07-08
 
 ### Added

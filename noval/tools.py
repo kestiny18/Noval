@@ -24,6 +24,7 @@ from typing import (
 from .permissions import PermissionController
 
 if TYPE_CHECKING:
+    from .mcp import McpRegistry
     from .shell import ShellBackend
     from .skills import SkillRegistry
 
@@ -79,6 +80,8 @@ class Context:
     shell_backend: Optional["ShellBackend"] = None
     skills: Optional["SkillRegistry"] = None
     skills_auto_refresh: bool = False
+    mcp: Optional["McpRegistry"] = None
+    mcp_auto_refresh: bool = False
 
 
 # ---------------------------------------------------------------------------

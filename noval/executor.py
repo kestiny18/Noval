@@ -18,6 +18,7 @@ from typing import Any, Callable, Dict, Optional
 
 from .config import Config
 from .permissions import PermissionController
+from .redaction import redact_sensitive_text
 from .tools import Risk, Tool, ToolError, ToolResult, all_tools, get_tool
 
 log = logging.getLogger("noval.executor")
@@ -72,6 +73,10 @@ def execute_tool_call(
     t = {"exec_start": None}  # 真正执行的起点；在确认门之后才设，避免把「等用户点 y」算进耗时
 
     def finish(content: str, *, is_error: bool = False, truncated: bool = False, **meta: Any) -> ToolResult:
+        safe_content = redact_sensitive_text(content)
+        if safe_content != content:
+            content = safe_content
+            meta["redacted"] = True
         now = time.perf_counter()
         ref = t["exec_start"] if t["exec_start"] is not None else started
         meta.update(tool=name, duration_ms=round((now - ref) * 1000, 1))
@@ -153,6 +158,9 @@ def execute_tool_call(
 
     # 6. 输出规整：统一成字符串 + 截断
     content = raw if isinstance(raw, str) else json.dumps(raw, ensure_ascii=False, default=str)
+    safe_content = redact_sensitive_text(content)
+    redacted = safe_content != content
+    content = safe_content
     original_chars = len(content)
     content, truncated = _truncate(content, config.max_tool_output_chars)
     return finish(
@@ -160,4 +168,5 @@ def execute_tool_call(
         truncated=truncated,
         original_chars=original_chars,
         effective_risk=effective_risk.value,
+        **({"redacted": True} if redacted else {}),
     )

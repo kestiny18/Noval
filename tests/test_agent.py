@@ -337,6 +337,29 @@ def test_skill_registry_update_is_ephemeral_request_context(tmp_path):
     assert "看看当前可用 skills" in store.saved[0]["content"]
 
 
+def test_mcp_registry_update_is_ephemeral_request_context(tmp_path):
+    store = _MemoryStore()
+    client = MockClient([mock_text("ok")])
+    agent = Agent(client, cfg(), workdir=str(tmp_path), store=store)
+    (tmp_path / ".mcp.json").write_text(json.dumps({
+        "mcpServers": {
+            "runtime-mcp": {
+                "command": "python",
+                "args": ["server.py"],
+            }
+        }
+    }), encoding="utf-8")
+
+    assert agent.send("看看当前可用 MCP") == "ok"
+
+    request_text = client.seen_messages[0][-1]["content"]
+    assert "<mcp_update>" in request_text
+    assert "project.mcp:runtime-mcp" in request_text
+    assert "runtime-mcp" not in agent.messages[0]["content"]  # system 前缀不被重写
+    assert "<mcp_update>" not in store.saved[0]["content"]    # 原始 session 不存动态 diff
+    assert "看看当前可用 MCP" in store.saved[0]["content"]
+
+
 def test_resume_messages_loaded_without_rewriting_store():
     history = [
         {"role": "user", "content": "<context>当前时间: old</context>\n\nold question"},

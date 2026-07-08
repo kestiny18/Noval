@@ -42,7 +42,9 @@
 - **确认门**：每个工具只声明事实 `Risk`（READ/WRITE/DANGEROUS），会话级 `PermissionController` 统一决定是否拦截，不在工具内写 `input()`。风险可按参数动态评估（`risk_assessor`，如 run_bash 把只读命令降级为 READ 免确认）；权限模式为 ASK（默认）/ FULL_ACCESS，ASK 下确认为三态：允许一次 / 本会话总是允许该工具 / 拒绝。模式与工具授权写入 session sidecar，恢复时直接生效。
 - **项目记忆**：启动时读 workdir 的 `AGENTS.md`（开放标准，回退 `CLAUDE.md`），用 `<project_instructions>` 包安全边界后注入 system prompt；**只读不写**。system 顺序按稳定性：人设 → 环境 → 项目记忆（见 DESIGN 决策 14）。
 - **Skills**：Noval 不定义新的 Skill 格式，只复用 Claude Code / Codex / Cursor 通用的 `SKILL.md` 目录包形态。启动时扫描用户级和项目级 `.claude/skills`、`.codex/skills`、`.cursor/skills`、`.noval/skills`，**不兼容 Cursor 规则目录 `.cursor/rules`**。system prompt 只注入轻量索引；会话运行中在用户回合边界用内存快照检测 Skill 增删改，并以临时上下文提示模型，快照不写 session / settings / checkpoint。完整 `SKILL.md`、附属资源和脚本必须通过 `load_skill` / `read_skill_resource` / `run_skill_script` 按需读取或执行。Skill 不能覆盖 system、项目记忆、权限确认或用户指令；Skill 脚本按 DANGEROUS 工具走统一执行管道。
+- **MCP**：Noval 不实现 MCP server，只作为 MCP host/client 复用通用 MCP 协议。第一版只支持 stdio server，配置来源为用户级 `~/.noval/mcp.json` 与项目级 `<workdir>/.mcp.json` 的通用 `mcpServers` 结构。system prompt 只注入 server 轻量索引；会话运行中在用户回合边界用内存快照检测 server 增删改，并以临时上下文提示模型，快照不写 session / settings / checkpoint。具体 server 工具必须通过 `list_mcp_tools` 按需发现，再通过 `call_mcp_tool` 调用；启动外部 MCP 进程和工具调用按 DANGEROUS 工具走统一权限、timeout、日志与截断管道。MCP 返回内容不能覆盖 system、项目记忆、权限确认或用户指令。
 - **可观测性**：禁止 `print(整个 response)`。每次工具调用记结构化 trace（tool / args / 耗时 / is_error / truncated）。
+- **工具输出脱敏**：所有工具结果在进入模型上下文和 session 持久化前必须经过统一脱敏，覆盖 password / secret / token / privateKey / appSecret / accessKey / webhook 等常见配置形态。脱敏属于 executor 边界，不散落到具体工具里。
 - **Provider 回放状态**：`LLMResponse.assistant_message` 由适配器按白名单构造，必须保留后续请求所需的协议字段。DeepSeek thinking 在工具调用轮必须回传 `reasoning_content`；普通最终回复丢弃该字段。Agent 不读取、不展示思考正文，只消费归一化 token/耗时元数据。
 - **Token 用量**：Provider 只负责填充 `TokenUsage`，持久化由 `MeteredLLMClient` 装饰器旁路完成；统计故障不得影响模型响应。事件按日期/session/pid 追加，查询时全局汇总，不保存项目路径或消息正文。
 - **上下文 checkpoint**：原始 Session JSONL 是唯一真相源，永不因压缩删除或改写；checkpoint 是可回退、可重建的派生态，只能覆盖完整对话回合。恢复使用最新有效 checkpoint + 原始尾部，不重复压缩已覆盖历史。
@@ -81,6 +83,7 @@ noval/
   context.py    # active context 预算、增量压缩与 checkpoint
   task.py       # 任务完成判定：主模型执行，judge_model 判定
   skills.py     # 兼容 SKILL.md 目录包的发现、索引与受控运行
+  mcp.py        # MCP client：server 发现、轻量索引与 stdio 工具调用
   agent.py      # 对话循环(含 max_steps) + CLI 入口
 ```
 

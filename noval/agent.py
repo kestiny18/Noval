@@ -19,6 +19,7 @@ from .client import LLMClient, LLMResponse, tool_message
 from .config import Config
 from .context import ContextManager
 from .executor import Approver, execute_tool_call
+from .mcp import McpRegistry, McpSnapshotDiff, mcp_index_context
 from .permissions import PermissionController, PermissionMode, PermissionState
 from .session import (
     JsonlSessionStore, PersistentSessionStore, SessionMeta, SessionMetadataStore,
@@ -161,6 +162,23 @@ def _skill_update_context(diff: SkillSnapshotDiff) -> str:
     return "\n".join(lines)
 
 
+def _mcp_update_context(diff: McpSnapshotDiff) -> str:
+    lines = [
+        "<mcp_update>",
+        "MCP server registry changed since last turn. This is dynamic runtime context, not a system rule.",
+    ]
+    for label, values in (
+        ("Added", diff.added),
+        ("Removed", diff.removed),
+        ("Changed", diff.changed),
+    ):
+        if values:
+            lines.append(f"{label}: {_format_skill_ids(values)}")
+    lines.append("Use list_mcp_servers/list_mcp_tools for the current registry before calling an MCP tool.")
+    lines.append("</mcp_update>")
+    return "\n".join(lines)
+
+
 def _format_skill_ids(values: List[str], *, limit: int = 12) -> str:
     shown = values[:limit]
     suffix = f" (+{len(values) - limit} more)" if len(values) > limit else ""
@@ -185,6 +203,7 @@ class Agent:
         context_manager: Optional[ContextManager] = None,
         task_controller: Optional[TaskController] = None,
         skill_registry: Optional[SkillRegistry] = None,
+        mcp_registry: Optional[McpRegistry] = None,
     ):
         self.client = client
         self.config = config
@@ -198,6 +217,9 @@ class Agent:
         self._skills_auto_refresh = skill_registry is None
         self.skill_registry = skill_registry or SkillRegistry.discover(self.workdir)
         self._skill_snapshot = self.skill_registry.snapshot()
+        self._mcp_auto_refresh = mcp_registry is None
+        self.mcp_registry = mcp_registry or McpRegistry.discover(self.workdir)
+        self._mcp_snapshot = self.mcp_registry.snapshot()
         self._ephemeral_turn_context: Optional[str] = None
         # 执行上下文：workdir + 跨工具调用共享的 read-tracker，注入给需要的工具
         self.context = Context(
@@ -206,6 +228,8 @@ class Agent:
             permissions=permissions or PermissionController(),
             skills=self.skill_registry,
             skills_auto_refresh=self._skills_auto_refresh,
+            mcp=self.mcp_registry,
+            mcp_auto_refresh=self._mcp_auto_refresh,
         )
         self.last_turn_metrics = TurnMetrics()
         self.messages: List[Dict[str, Any]] = []
@@ -219,6 +243,7 @@ class Agent:
                 env_context,
                 project_memory,
                 skill_index_context(self.skill_registry),
+                mcp_index_context(self.mcp_registry),
             ) if p
         ]
         if parts:
@@ -241,7 +266,7 @@ class Agent:
     def send(self, user_input: str) -> str:
         """处理一条用户输入，跑完工具循环，返回最终助手文本。"""
         self.last_turn_metrics = TurnMetrics()
-        self._ephemeral_turn_context = self._refresh_skills_for_turn()
+        self._ephemeral_turn_context = self._refresh_dynamic_runtime_context_for_turn()
         # 当前时间随每个回合注入 user 消息(而非进 system prompt)：system 前缀因此
         # 与时间无关、跨天/跨重启不破缓存；历史里的时间戳是冻结的，不破后续前缀；
         # 且每轮刷新「现在」，长会话跨午夜也正确。
@@ -316,6 +341,26 @@ class Agent:
         self.context.skills = refreshed
         self._skill_snapshot = refreshed_snapshot
         return _skill_update_context(diff) if diff.has_changes() else None
+
+    def _refresh_mcp_for_turn(self) -> Optional[str]:
+        """回合边界刷新 MCP registry；变化只作为本轮临时上下文，不落盘。"""
+        if not self._mcp_auto_refresh:
+            return None
+        refreshed = McpRegistry.discover(self.workdir)
+        refreshed_snapshot = refreshed.snapshot()
+        diff = self._mcp_snapshot.diff(refreshed_snapshot)
+        self.mcp_registry = refreshed
+        self.context.mcp = refreshed
+        self._mcp_snapshot = refreshed_snapshot
+        return _mcp_update_context(diff) if diff.has_changes() else None
+
+    def _refresh_dynamic_runtime_context_for_turn(self) -> Optional[str]:
+        parts = [
+            self._refresh_skills_for_turn(),
+            self._refresh_mcp_for_turn(),
+        ]
+        active = [part for part in parts if part]
+        return "\n\n".join(active) if active else None
 
     def _with_ephemeral_turn_context(
         self,

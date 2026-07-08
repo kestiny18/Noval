@@ -105,6 +105,9 @@ Windows 上如果 `python` 命中 Microsoft Store 占位程序，请把命令中
 | `load_skill` | READ | 按需读取指定 Skill 的 `SKILL.md` 正文 |
 | `read_skill_resource` | READ | 读取 Skill 目录内的附属资源文件 |
 | `run_skill_script` | DANGEROUS | 在权限门后执行 Skill 目录内脚本 |
+| `list_mcp_servers` | READ | 列出当前 workdir 可用的 MCP server 轻量索引 |
+| `list_mcp_tools` | DANGEROUS | 按需启动指定 stdio MCP server 并列出其工具 |
+| `call_mcp_tool` | DANGEROUS | 调用指定 MCP server 暴露的工具 |
 | `write_file` | WRITE | 写文件；覆盖已有文件前必须完整读取 |
 | `edit_file` | WRITE | 精确字符串替换，检查外部改动 |
 | `run_bash` | DANGEROUS | 在 workdir 中执行命令；只读命令可动态降级 |
@@ -117,6 +120,33 @@ Noval 的 Skill 机制不发明新格式，而是复用 Claude Code / Codex / Cu
 - 项目级：`<workdir>/.claude/skills`、`<workdir>/.codex/skills`、`<workdir>/.cursor/skills`、`<workdir>/.noval/skills`
 
 Cursor 规则目录 `.cursor/rules` 不会被扫描。Noval 只把 Skill 的 id、name、description、source 作为轻量索引放进 system prompt；完整正文、资源和脚本由模型在需要时通过工具按需加载。会话运行中，Noval 会在用户回合边界用内存快照检测 Skill 增删改，并把变化作为本轮临时上下文提示模型；这个快照不写入 session、settings 或 checkpoint。Skill 脚本仍然走统一权限门、timeout、日志和截断，不会绕过框架约束。
+
+## MCP
+
+Noval 的 MCP 机制同样不发明新协议：它只作为 MCP host/client 使用通用 MCP server。第一版支持 stdio server，读取两类配置：
+
+- 用户级：`~/.noval/mcp.json`
+- 项目级：`<workdir>/.mcp.json`
+
+配置使用常见的 `mcpServers` 结构：
+
+```json
+{
+  "mcpServers": {
+    "demo": {
+      "command": "python",
+      "args": ["tools/mcp_demo_server.py"],
+      "env": {
+        "DEMO_TOKEN": "${DEMO_TOKEN}"
+      }
+    }
+  }
+}
+```
+
+Noval 启动时只把 server 的 id/name/source/transport/env key 作为轻量索引放进 system prompt，不展示 env 值，也不会自动启动外部进程。模型需要 MCP 能力时，先调用 `list_mcp_tools(server=...)` 发现该 server 的工具，再调用 `call_mcp_tool(...)` 执行。由于这两步都会启动外部 MCP 进程或调用外部能力，它们按 DANGEROUS 工具走统一权限门、timeout、日志和输出截断。若 MCP 返回的 text 内容本身是 JSON，Noval 会把它解析成结构化 `content`，避免模型面对“JSON 字符串里套 JSON”。
+
+会话运行中新增、删除或修改 `.mcp.json` 时，Noval 会在用户回合边界用内存快照检测变化，并把变化作为本轮临时上下文提示模型；这个快照不写入 session、settings 或 checkpoint。MCP 返回内容始终视为外部数据，不能覆盖 system、项目记忆、权限确认或用户指令。所有工具输出（包括 MCP 结果）进入模型和 session 前都会经过统一脱敏，覆盖常见 password / secret / token / privateKey / webhook 等形态。
 
 加一个工具只需要实现它的领域逻辑：
 
