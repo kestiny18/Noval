@@ -1,10 +1,12 @@
 """内置工具行为测试 + 文件工具状态机（read-tracker / staleness）。"""
 import os
+import re
 import subprocess
 import sys
 
 import pytest
 
+import noval.builtins as builtins
 from noval.builtins import (
     _bash_risk, _wsl_to_windows, edit_file, glob, grep, list_directory, read_file,
     run_bash, write_file,
@@ -45,6 +47,65 @@ def test_read_file_offset_limit(tmp_path):
     (tmp_path / "n.txt").write_text("\n".join(str(i) for i in range(1, 11)), encoding="utf-8")
     out = read_file(ctx(tmp_path), "n.txt", offset=3, limit=2)
     assert "3\t3" in out and "4\t4" in out and "5\t5" not in out
+
+
+def test_read_file_self_limits_visible_output_and_marks_partial(tmp_path, monkeypatch):
+    monkeypatch.setattr(builtins, "READ_FILE_OUTPUT_BUDGET", 120)
+    (tmp_path / "wide.txt").write_text("\n".join(f"line-{i:02d}-xxxxxxxxxxxx" for i in range(1, 20)), encoding="utf-8")
+    c = ctx(tmp_path)
+
+    out = read_file(c, "wide.txt")
+
+    assert "继续阅读" in out
+    assert "不要声称已完整阅读" in out
+    assert "offset=" in out
+    assert c.read_state[str((tmp_path / "wide.txt").resolve())].is_partial is True
+    with pytest.raises(ToolError):
+        write_file(c, "wide.txt", "new")
+
+
+def test_read_file_partial_window_gives_next_offset_without_executor_style_gap(tmp_path, monkeypatch):
+    monkeypatch.setattr(builtins, "READ_FILE_OUTPUT_BUDGET", 90)
+    (tmp_path / "n.txt").write_text("\n".join(f"line-{i}" for i in range(1, 30)), encoding="utf-8")
+
+    out = read_file(ctx(tmp_path), "n.txt", offset=5, limit=10)
+
+    assert "5\tline-5" in out
+    assert "继续阅读" in out
+    assert "offset=" in out
+    assert "输出过长，已省略中间" not in out
+
+
+def test_read_file_chunked_windows_can_satisfy_full_read_for_edit(tmp_path, monkeypatch):
+    monkeypatch.setattr(builtins, "READ_FILE_OUTPUT_BUDGET", 110)
+    f = tmp_path / "wide.txt"
+    f.write_text("\n".join(f"line-{i:02d}-xxxxxxxx" for i in range(1, 21)), encoding="utf-8")
+    c = ctx(tmp_path)
+
+    out = read_file(c, "wide.txt")
+    guard = 0
+    while m := re.search(r"offset=(\d+)", out):
+        guard += 1
+        assert guard < 20
+        out = read_file(c, "wide.txt", offset=int(m.group(1)), limit=5)
+
+    rec = c.read_state[str(f.resolve())]
+    assert rec.is_partial is False
+    assert rec.total_lines == 20
+    assert "Edited" in edit_file(c, "wide.txt", "line-10", "line-ten")
+    assert "line-ten-xxxxxxxx" in f.read_text(encoding="utf-8")
+
+
+def test_read_file_partial_window_after_full_read_does_not_downgrade(tmp_path):
+    f = tmp_path / "x.txt"
+    f.write_text("a\nb\nc", encoding="utf-8")
+    c = ctx(tmp_path)
+
+    read_file(c, "x.txt")
+    read_file(c, "x.txt", offset=2, limit=1)
+
+    assert c.read_state[str(f.resolve())].is_partial is False
+    assert "updated" in write_file(c, "x.txt", "new")
 
 
 def test_read_file_large_file_streams_partial(tmp_path):

@@ -81,7 +81,7 @@ def test_skill_tools_load_content_resource_and_script(tmp_path):
     ctx = Context(workdir=workdir, skills=registry)
 
     listed = json.loads(list_skills(ctx))
-    assert listed[0]["name"] == "bug-investigation"
+    assert listed["skills"][0]["name"] == "bug-investigation"
     assert "Body" in load_skill(ctx, "bug-investigation")
     assert read_skill_resource(ctx, "bug-investigation", "references/note.md") == "reference text"
     assert "hello world" in run_skill_script(ctx, "bug-investigation", "scripts/hello.py", "world")
@@ -127,3 +127,45 @@ def test_slug_collisions_get_stable_unique_ids(tmp_path):
         "project.claude:foo-bar",
         "project.claude:foo-bar-2",
     ]
+
+
+def test_list_skills_supports_filter_pagination_and_skill_alias(tmp_path):
+    home = tmp_path / "home"
+    workdir = tmp_path / "repo"
+    _skill(workdir / ".cursor" / "skills", "review", name="doc-review", description="review architecture docs")
+    _skill(workdir / ".cursor" / "skills", "mock", name="trade-mock", description="mock trade interface")
+    _skill(workdir / ".codex" / "skills", "write", name="doc-write", description="write docs")
+    registry = SkillRegistry.discover(workdir, home=home)
+    ctx = Context(workdir=workdir, skills=registry)
+
+    filtered = json.loads(list_skills(ctx, query="review"))
+    assert filtered["total"] == 1
+    assert filtered["skills"][0]["name"] == "doc-review"
+
+    source_page = json.loads(list_skills(ctx, source="project.cursor", limit=1))
+    assert source_page["total"] == 2
+    assert source_page["returned"] == 1
+    assert source_page["has_more"] is True
+
+    alias = json.loads(list_skills(ctx, skill="trade"))
+    assert alias["skills"][0]["name"] == "trade-mock"
+
+
+def test_list_skills_default_output_stays_compact(tmp_path):
+    home = tmp_path / "home"
+    workdir = tmp_path / "repo"
+    long_desc = "review " + ("very long description " * 30)
+    for i in range(40):
+        _skill(workdir / ".cursor" / "skills", f"skill-{i:02d}", name=f"skill-{i:02d}", description=long_desc)
+    registry = SkillRegistry.discover(workdir, home=home)
+    ctx = Context(workdir=workdir, skills=registry)
+
+    out = list_skills(ctx)
+    data = json.loads(out)
+
+    assert data["total"] == 40
+    assert data["returned"] == 20
+    assert data["has_more"] is True
+    assert "location" not in data["skills"][0]
+    assert len(data["skills"][0]["description"]) <= 183
+    assert len(out) < 8000

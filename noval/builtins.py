@@ -17,14 +17,20 @@ import os
 import re
 import subprocess
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from .tools import Context, Risk, ToolError, tool
 from .shell import resolve_shell_backend
 from .skills import SkillRegistry
 
-# 读取整文件的上限：超过就引导用 grep 定位，避免一口气塞爆上下文/内存
+# 读取整文件的磁盘上限：超过就引导用 grep 定位，避免一口气塞爆内存。
 MAX_READ_BYTES = 256 * 1024
+# read_file 需要自己做「行感知」的模型可见输出预算，避免被 executor 按字符
+# head+tail 截断后，模型误以为看过完整文件。默认 max_tool_output_chars 是 8000，
+# 这里留出空间给续读提示。
+READ_FILE_OUTPUT_BUDGET = 7000
+LIST_SKILLS_DEFAULT_LIMIT = 20
+LIST_SKILLS_MAX_LIMIT = 100
 # 搜索时排除的版本控制目录（噪音）
 _VCS_DIRS = {".git", ".svn", ".hg", ".bzr", ".jj", ".sl"}
 
@@ -111,6 +117,131 @@ def _with_line_numbers(lines: List[str], start: int) -> str:
     return "\n".join(f"{start + i:6d}\t{line}" for i, line in enumerate(lines))
 
 
+def _numbered_window_with_budget(lines: List[str], start: int, *, budget: Optional[int] = None) -> tuple[str, int]:
+    """返回不超过预算的带行号窗口，以及下一个尚未展示的行号。
+
+    这个函数是 read_file 的局部截断点：它知道行号，所以能给模型精确的
+    continuation offset；不能交给 executor 的通用字符截断来猜。
+    """
+    shown: List[str] = []
+    used = 0
+    safe_budget = max(200, budget if budget is not None else READ_FILE_OUTPUT_BUDGET)
+    for idx, line in enumerate(lines):
+        numbered = f"{start + idx:6d}\t{line}"
+        extra = len(numbered) + (1 if shown else 0)
+        if shown and used + extra > safe_budget:
+            return "\n".join(shown), start + idx
+        if not shown and extra > safe_budget:
+            clipped = numbered[: max(200, safe_budget - 80)]
+            return clipped + "\n...[单行过长，已截断本行]", start + idx + 1
+        shown.append(numbered)
+        used += extra
+    return "\n".join(shown), start + len(lines)
+
+
+def _merge_read_ranges(ranges: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
+    normalized = sorted((start, end) for start, end in ranges if end >= start)
+    merged: List[Tuple[int, int]] = []
+    for start, end in normalized:
+        if not merged or start > merged[-1][1] + 1:
+            merged.append((start, end))
+            continue
+        merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+    return merged
+
+
+def _covers_all_lines(ranges: List[Tuple[int, int]], total_lines: int) -> bool:
+    if total_lines <= 0:
+        return True
+    merged = _merge_read_ranges(ranges)
+    return bool(merged) and merged[0][0] <= 1 and merged[0][1] >= total_lines
+
+
+def _remember_visible_read(
+    ctx: Context,
+    p: Path,
+    visible_content: str,
+    *,
+    visible_start: Optional[int],
+    visible_end: Optional[int],
+    total_lines: Optional[int],
+) -> None:
+    """记录模型实际看过的行；连续读完整个文件后升级为 full read。
+
+    read_file 的输出现在会按模型可见预算分片。如果模型按提示用 offset 继续读，
+    read-tracker 不能只记「最后一次局部读」，否则明明已经 1..EOF 都看过，edit_file
+    仍会误判为未完整读取。这里把同一 mtime 下的已读行区间累计起来。
+    """
+    key = str(p)
+    mtime = p.stat().st_mtime
+    existing = ctx.read_state.get(key)
+
+    # 已经 full read 且文件未变时，后续局部查看不应把状态降级。
+    if existing and not existing.is_partial and existing.mtime == mtime:
+        return
+
+    ranges: List[Tuple[int, int]] = []
+    known_total = total_lines
+    if existing and existing.mtime == mtime:
+        ranges.extend(existing.read_ranges)
+        if known_total is None:
+            known_total = existing.total_lines
+
+    if visible_start is not None and visible_end is not None and visible_end >= visible_start:
+        ranges.append((visible_start, visible_end))
+    ranges = _merge_read_ranges(ranges)
+
+    if known_total is not None and _covers_all_lines(ranges, known_total):
+        full_text = _read_text(p)
+        full_range = [(1, known_total)] if known_total > 0 else []
+        ctx.read_state[key] = _make_record(
+            p,
+            full_text,
+            is_partial=False,
+            read_ranges=full_range,
+            total_lines=known_total,
+        )
+        return
+
+    ctx.read_state[key] = _make_record(
+        p,
+        visible_content,
+        is_partial=True,
+        read_ranges=ranges,
+        total_lines=known_total,
+    )
+
+
+def _read_file_window_note(
+    *,
+    path: str,
+    start: int,
+    next_offset: int,
+    total_lines: Optional[int] = None,
+    window_end: Optional[int] = None,
+    budget_cut: bool = False,
+) -> str:
+    if total_lines is not None and next_offset > total_lines:
+        return ""
+    if budget_cut:
+        reason = "输出预算已用尽"
+    else:
+        reason = "本次窗口已结束"
+    if total_lines is not None:
+        scope = f"本次仅展示第 {start}-{next_offset - 1} 行 / 共 {total_lines} 行"
+    elif window_end is not None:
+        scope = f"本次仅展示第 {start}-{next_offset - 1} 行；请求窗口截止到第 {window_end} 行"
+    else:
+        scope = f"本次仅展示第 {start}-{next_offset - 1} 行"
+    return (
+        "\n\n<system-reminder>"
+        f"{reason}，{scope}。"
+        f"如需继续阅读，调用 read_file(path=\"{path}\", offset={next_offset}, limit=...)。"
+        "在继续补读前，不要声称已完整阅读该文件。"
+        "</system-reminder>"
+    )
+
+
 def _walk_files(root: Path):
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in _VCS_DIRS]  # 原地剪枝，跳过 .git 等
@@ -150,27 +281,85 @@ def read_file(ctx: Context, path: str, offset: int = 1, limit: Optional[int] = N
         all_lines = text.split("\n")
         if all_lines and all_lines[-1] == "":   # 文件以换行结尾时去掉末尾空元素
             all_lines.pop()
-        ctx.read_state[str(p)] = _make_record(p, text, is_partial=False)
         if not all_lines:
+            ctx.read_state[str(p)] = _make_record(p, text, is_partial=False, total_lines=0)
             return "<system-reminder>文件存在但内容为空。</system-reminder>"
-        return _with_line_numbers(all_lines, 1)
+        numbered, next_offset = _numbered_window_with_budget(all_lines, 1)
+        if next_offset <= len(all_lines):
+            # 模型实际只看到了前缀窗口，不能把 read_state 标记为 full read；
+            # 否则 write/edit 的「已完整读过」安全约束会被 executor 截断绕开。
+            visible_end = next_offset - 1
+            _remember_visible_read(
+                ctx,
+                p,
+                "\n".join(all_lines[:visible_end]),
+                visible_start=1,
+                visible_end=visible_end,
+                total_lines=len(all_lines),
+            )
+            return numbered + _read_file_window_note(
+                path=path,
+                start=1,
+                next_offset=next_offset,
+                total_lines=len(all_lines),
+                budget_cut=True,
+            )
+        ctx.read_state[str(p)] = _make_record(
+            p,
+            text,
+            is_partial=False,
+            read_ranges=[(1, len(all_lines))],
+            total_lines=len(all_lines),
+        )
+        return numbered
 
     # 局部读：只流式读 [start, start+limit) 这个窗口，大文件也不爆内存。
     # 局部读 is_partial=True，不满足 write/edit 的「先完整 read」要求。
     start = max(offset, 1)
     lim = limit if limit is not None else 2000
     window: List[str] = []
+    hit_limit = False
     with p.open(encoding="utf-8", errors="replace") as fh:
         for i, line in enumerate(fh, 1):
             if i < start:
                 continue
             if i >= start + lim:
+                hit_limit = True
                 break
             window.append(line.rstrip("\n"))
-    ctx.read_state[str(p)] = _make_record(p, "\n".join(window), is_partial=True)
     if not window:
         return f"<system-reminder>从第 {start} 行起没有内容（offset 可能越界）。</system-reminder>"
-    return _with_line_numbers(window, start)
+    numbered, next_offset = _numbered_window_with_budget(window, start)
+    budget_cut = next_offset < start + len(window)
+    visible_end = next_offset - 1
+    visible_count = max(0, visible_end - start + 1)
+    known_total = start + len(window) - 1 if not hit_limit and not budget_cut else None
+    _remember_visible_read(
+        ctx,
+        p,
+        "\n".join(window[:visible_count]),
+        visible_start=start,
+        visible_end=visible_end,
+        total_lines=known_total,
+    )
+    note = ""
+    if budget_cut:
+        note = _read_file_window_note(
+            path=path,
+            start=start,
+            next_offset=next_offset,
+            window_end=start + len(window) - 1,
+            budget_cut=True,
+        )
+    elif hit_limit:
+        note = _read_file_window_note(
+            path=path,
+            start=start,
+            next_offset=start + len(window),
+            window_end=start + lim - 1,
+            budget_cut=False,
+        )
+    return numbered + note
 
 
 @tool(risk=Risk.WRITE, param_descriptions={
@@ -229,9 +418,22 @@ def edit_file(ctx: Context, path: str, old_string: str, new_string: str,
     return f"Edited {_rel(ctx, p)} ({n} replacement{'s' if n > 1 else ''})"
 
 
-def _make_record(p: Path, content: str, is_partial: bool):
+def _make_record(
+    p: Path,
+    content: str,
+    is_partial: bool,
+    *,
+    read_ranges: Optional[List[Tuple[int, int]]] = None,
+    total_lines: Optional[int] = None,
+):
     from .tools import ReadRecord
-    return ReadRecord(mtime=p.stat().st_mtime, content=content, is_partial=is_partial)
+    return ReadRecord(
+        mtime=p.stat().st_mtime,
+        content=content,
+        is_partial=is_partial,
+        read_ranges=read_ranges or [],
+        total_lines=total_lines,
+    )
 
 
 # ===========================================================================
@@ -341,13 +543,65 @@ def _skill_registry(ctx: Context) -> SkillRegistry:
     return ctx.skills
 
 
-@tool(risk=Risk.READ)
-def list_skills(ctx: Context) -> str:
-    """列出当前 workdir 可用的 Skills。只返回轻量索引；需要正文时调用 load_skill。"""
+@tool(risk=Risk.READ, param_descriptions={
+    "query": "可选。按 id/name/description/source/location 搜索，如 review、openspec、project.cursor",
+    "source": "可选。按来源过滤，如 user.codex、project.cursor",
+    "limit": "最多返回多少条，默认 20，最大 100",
+    "offset": "分页偏移，默认 0",
+    "skill": "兼容别名；如果模型误把 query 写成 skill，也会按搜索词处理",
+})
+def list_skills(
+    ctx: Context,
+    query: str = "",
+    source: str = "",
+    limit: int = LIST_SKILLS_DEFAULT_LIMIT,
+    offset: int = 0,
+    skill: str = "",
+) -> str:
+    """列出当前 workdir 可用的 Skills。只返回轻量索引；需要正文时调用 load_skill。
+
+    支持 query/source/limit/offset，避免 Skills 很多时整表输出被截断。
+    """
     items = _skill_registry(ctx).list_index()
-    if not items:
-        return "[]"
-    return json.dumps(items, ensure_ascii=False, indent=2)
+    q = (query or skill or "").strip().lower()
+    src = source.strip().lower()
+    if q:
+        items = [
+            item for item in items
+            if q in " ".join(str(item.get(k, "")) for k in ("id", "name", "description", "source", "location")).lower()
+        ]
+    if src:
+        items = [item for item in items if item.get("source", "").lower() == src]
+    total = len(items)
+    try:
+        safe_limit = max(1, min(int(limit), LIST_SKILLS_MAX_LIMIT))
+    except (TypeError, ValueError):
+        safe_limit = LIST_SKILLS_DEFAULT_LIMIT
+    try:
+        safe_offset = max(0, int(offset))
+    except (TypeError, ValueError):
+        safe_offset = 0
+    page = items[safe_offset: safe_offset + safe_limit]
+    compact_page = []
+    for item in page:
+        desc = item.get("description", "")
+        compact = {
+            "id": item.get("id", ""),
+            "name": item.get("name", ""),
+            "description": desc[:177] + "..." if len(desc) > 180 else desc,
+            "source": item.get("source", ""),
+        }
+        compact_page.append(compact)
+    payload = {
+        "total": total,
+        "offset": safe_offset,
+        "limit": safe_limit,
+        "returned": len(compact_page),
+        "has_more": safe_offset + len(compact_page) < total,
+        "skills": compact_page,
+        "hint": "用 load_skill(skill=<id 或唯一 name>) 读取完整 SKILL.md；如结果过多，用 query/source 过滤或增加 offset 翻页。",
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
 @tool(risk=Risk.READ, param_descriptions={"skill": "Skill id 或唯一 name；先用 list_skills 查看"})

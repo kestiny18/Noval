@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import (
-    TYPE_CHECKING, Any, Callable, Dict, List, Literal, Optional, Union,
+    TYPE_CHECKING, Any, Callable, Dict, List, Literal, Optional, Tuple, Union,
     get_args, get_origin, get_type_hints,
 )
 
@@ -64,6 +64,8 @@ class ReadRecord:
     mtime: float
     content: str          # 归一化(\r\n→\n)后的全文，仅 full read 有意义
     is_partial: bool      # 带 offset/limit 的局部读 → True，不满足「先 read」要求
+    read_ranges: List[Tuple[int, int]] = field(default_factory=list)  # 模型实际看过的闭区间行号
+    total_lines: Optional[int] = None  # 已知总行数；读到 EOF 或整读预算截断时可得
 
 
 @dataclass
