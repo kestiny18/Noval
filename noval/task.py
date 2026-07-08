@@ -21,7 +21,7 @@ from .client import LLMClient
 log = logging.getLogger("noval.task")
 
 TASK_EVENT_SCHEMA_VERSION = 1
-TASK_JUDGE_PROMPT_VERSION = "task-completion-judge-v2"
+TASK_JUDGE_PROMPT_VERSION = "task-completion-judge-v3"
 MAX_RECENT_USER_INPUTS = 3
 MAX_USER_INPUT_CHARS = 1200
 
@@ -200,7 +200,10 @@ class SemanticJudge:
                 "content": (
                     "你是 Noval 的独立任务完成判定模型。"
                     "你不执行任务，不调用工具，不给主模型建议，不补充事实，也不评价文风。"
-                    "只根据给定的最近用户输入和助手最后可见回复，判断最后回复是否完成了当前用户请求。"
+                    "只根据给定的用户输入和助手最后可见回复，判断最后回复是否完成了 current_user_input。"
+                    "context_user_inputs 只是理解指代和背景的上下文，不是本轮必须重新完成的任务清单。"
+                    "如果 current_user_input 是“继续、回退、标记、改一下、看下是否修复”等短指令，"
+                    "可以结合 context_user_inputs 理解它指向什么，但判定对象仍然只以 current_user_input 为主。"
                     "如果信息不足以判断，返回 uncertain。只输出严格 JSON。"
                 ),
             },
@@ -214,9 +217,13 @@ class SemanticJudge:
         return self._verdict_from_json(data)
 
     def _packet(self, recent_user_inputs: List[str], assistant_final_reply: str) -> Dict[str, Any]:
+        recent = _last_unique(recent_user_inputs)
+        current = recent[-1] if recent else ""
         return {
             "prompt_version": TASK_JUDGE_PROMPT_VERSION,
-            "recent_user_inputs": _last_unique(recent_user_inputs),
+            "current_user_input": current,
+            "context_user_inputs": recent[:-1],
+            "recent_user_inputs": recent,
             "assistant_final_reply": assistant_final_reply,
             "allowed_status": [
                 "completed",
