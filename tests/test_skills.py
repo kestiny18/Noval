@@ -1,5 +1,6 @@
 import json
 import stat
+from types import SimpleNamespace
 
 import pytest
 
@@ -85,6 +86,27 @@ def test_skill_tools_load_content_resource_and_script(tmp_path):
     assert "Body" in load_skill(ctx, "bug-investigation")
     assert read_skill_resource(ctx, "bug-investigation", "references/note.md") == "reference text"
     assert "hello world" in run_skill_script(ctx, "bug-investigation", "scripts/hello.py", "world")
+
+
+def test_skill_script_uses_runtime_frozen_in_context(tmp_path):
+    class RecordingRuntime:
+        def __init__(self):
+            self.specs = []
+
+        def run(self, spec):
+            self.specs.append(spec)
+            return SimpleNamespace(stdout="from runtime", stderr="", returncode=0)
+
+    home = tmp_path / "home"
+    workdir = tmp_path / "repo"
+    _skill(workdir / ".noval" / "skills", "demo", name="demo", description="demo")
+    registry = SkillRegistry.discover(workdir, home=home)
+    runtime = RecordingRuntime()
+    ctx = Context(workdir=workdir, skills=registry, process_runtime=runtime)
+
+    assert run_skill_script(ctx, "demo", "scripts/hello.py") == "from runtime"
+    assert runtime.specs[0].purpose == "skill-script:project.noval:demo"
+    assert runtime.specs[0].cwd == registry.skills[0].root
 
 
 def test_skill_resource_and_script_cannot_escape_root(tmp_path):

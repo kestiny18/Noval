@@ -10,7 +10,6 @@ import json
 import os
 import re
 import shlex
-import subprocess
 import sys
 import hashlib
 from dataclasses import dataclass, field, replace
@@ -41,6 +40,14 @@ class SkillInfo:
             "source": self.source,
             "location": self.location,
         }
+
+
+@dataclass(frozen=True)
+class SkillScriptInvocation:
+    skill_id: str
+    script: str
+    argv: tuple[str, ...]
+    cwd: Path
 
 
 @dataclass(frozen=True)
@@ -143,34 +150,24 @@ class SkillRegistry:
             raise ToolError(f"Skill resource '{path}' 是目录；请指定文件")
         return _read_bounded_text(target)
 
-    def run_script(self, selector: str, script: str, args: str = "", timeout: int = 120) -> str:
+    def prepare_script(
+        self,
+        selector: str,
+        script: str,
+        args: str = "",
+    ) -> SkillScriptInvocation:
         info = self.resolve(selector)
         target = _resolve_inside(info.root, script)
         if not target.exists():
             raise ToolError(f"Skill script '{script}' not found in {info.skill_id}")
         if target.is_dir():
             raise ToolError(f"Skill script '{script}' 是目录；请指定脚本文件")
-        argv = _script_argv(target, args)
-        try:
-            proc = subprocess.run(
-                argv,
-                cwd=str(info.root),
-                stdin=subprocess.DEVNULL,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=max(1, int(timeout)),
-                shell=False,
-            )
-        except subprocess.TimeoutExpired:
-            raise ToolError(f"Skill script 超时（{timeout}s）：{script}")
-        except OSError as error:
-            raise ToolError(f"无法执行 Skill script '{script}': {error}") from error
-        out = (proc.stdout or "") + (proc.stderr or "")
-        if proc.returncode != 0:
-            out += f"\n[exit code: {proc.returncode}]"
-        return out if out.strip() else "(Skill script 执行完成，无输出)"
+        return SkillScriptInvocation(
+            skill_id=info.skill_id,
+            script=script,
+            argv=tuple(_script_argv(target, args)),
+            cwd=info.root,
+        )
 
 
 def discover_skills(workdir: Path, *, home: Optional[Path] = None) -> List[SkillInfo]:

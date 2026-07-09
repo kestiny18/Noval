@@ -15,13 +15,13 @@ import glob as _glob
 import json
 import os
 import re
-import subprocess
 from pathlib import Path
 from typing import List, Optional, Tuple
 
 from .confinement import (
     PathAccess, PathConfinementError, assert_path_allowed, is_path_allowed,
 )
+from .process import ProcessRuntime, ProcessRuntimeError, ProcessSpec, ProcessTimeout
 from .tools import Context, Risk, ToolError, tool
 from .shell import resolve_shell_backend
 from .skills import SkillRegistry
@@ -677,7 +677,23 @@ def read_skill_resource(ctx: Context, skill: str, path: str) -> str:
 })
 def run_skill_script(ctx: Context, skill: str, script: str, args: str = "", timeout: int = 120) -> str:
     """受控执行 Skill 目录内脚本。脚本路径不能逃逸出 Skill 目录，执行受权限确认、timeout、日志和输出截断约束。"""
-    return _skill_registry(ctx).run_script(skill, script, args=args, timeout=timeout)
+    invocation = _skill_registry(ctx).prepare_script(skill, script, args=args)
+    runtime = ctx.process_runtime or ProcessRuntime()
+    try:
+        result = runtime.run(ProcessSpec(
+            argv=invocation.argv,
+            cwd=invocation.cwd,
+            timeout=timeout,
+            purpose=f"skill-script:{invocation.skill_id}",
+        ))
+    except ProcessTimeout:
+        raise ToolError(f"Skill script 超时（{timeout}s）：{script}")
+    except ProcessRuntimeError as error:
+        raise ToolError(f"无法执行 Skill script '{script}': {error}") from error
+    out = result.stdout + result.stderr
+    if result.returncode != 0:
+        out += f"\n[exit code: {result.returncode}]"
+    return out if out.strip() else "(Skill script 执行完成，无输出)"
 
 
 # ===========================================================================
@@ -1017,23 +1033,20 @@ def _bash_risk(args: dict) -> Risk:
 def run_bash(ctx: Context, command: str, timeout: int = 120) -> str:
     """在 workdir 下执行 shell 命令，返回合并的 stdout+stderr。
     命令非交互执行，超时会真正终止子进程。属危险操作，受确认门管控。"""
-    backend = ctx.shell_backend or resolve_shell_backend()
-    argv, use_system_shell = backend.command(command)
+    runtime = ctx.process_runtime or ProcessRuntime()
+    backend = ctx.shell_backend or resolve_shell_backend(runtime)
     try:
-        proc = subprocess.run(
-            argv,
-            cwd=str(ctx.workdir),
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
+        result = runtime.run(ProcessSpec(
+            argv=backend.command(command),
+            cwd=ctx.workdir,
             timeout=timeout,
-            shell=use_system_shell,
-        )
-    except subprocess.TimeoutExpired:
+            purpose="run-bash",
+        ))
+    except ProcessTimeout:
         raise ToolError(f"命令超时（>{timeout}s）已被终止: {command}")
-    out = (proc.stdout or "") + (proc.stderr or "")
-    if proc.returncode != 0:
-        out += f"\n[exit code: {proc.returncode}]"
+    except ProcessRuntimeError as error:
+        raise ToolError(f"命令无法执行: {error}") from error
+    out = result.stdout + result.stderr
+    if result.returncode != 0:
+        out += f"\n[exit code: {result.returncode}]"
     return out if out.strip() else "(命令执行完成，无输出)"

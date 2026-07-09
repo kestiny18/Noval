@@ -3,6 +3,7 @@ import os
 import re
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -409,7 +410,7 @@ def test_run_bash_does_not_inherit_stdin(monkeypatch, tmp_path):
         seen.update(kwargs)
         return subprocess.CompletedProcess(args[0], 0, stdout="ok", stderr="")
 
-    monkeypatch.setattr("noval.builtins.subprocess.run", fake_run)
+    monkeypatch.setattr("noval.process.subprocess.run", fake_run)
 
     assert run_bash(ctx(tmp_path), "echo ok") == "ok"
     assert seen["stdin"] is subprocess.DEVNULL
@@ -424,12 +425,33 @@ def test_run_bash_uses_backend_frozen_in_context(monkeypatch, tmp_path):
         seen.update(kwargs)
         return subprocess.CompletedProcess(argv, 0, stdout="ok", stderr="")
 
-    monkeypatch.setattr("noval.builtins.subprocess.run", fake_run)
+    monkeypatch.setattr("noval.process.subprocess.run", fake_run)
     context = Context(workdir=tmp_path, shell_backend=backend)
 
     assert run_bash(context, "pwd") == "ok"
     assert seen["argv"] == ["chosen-bash", "-c", "pwd"]
     assert seen["shell"] is False
+
+
+def test_run_bash_uses_runtime_frozen_in_context(tmp_path):
+    class RecordingRuntime:
+        def __init__(self):
+            self.specs = []
+
+        def run(self, spec):
+            self.specs.append(spec)
+            return SimpleNamespace(stdout="ok", stderr="", returncode=0)
+
+    runtime = RecordingRuntime()
+    context = Context(
+        workdir=tmp_path,
+        shell_backend=ShellBackend("chosen-bash", "Git Bash"),
+        process_runtime=runtime,
+    )
+
+    assert run_bash(context, "pwd") == "ok"
+    assert runtime.specs[0].argv == ("chosen-bash", "-c", "pwd")
+    assert runtime.specs[0].cwd == tmp_path
 
 
 def test_run_bash_cwd_is_workdir(tmp_path):
