@@ -8,6 +8,7 @@ the official protocol SDK.
 from __future__ import annotations
 
 import logging
+import platform
 import subprocess
 import time
 from dataclasses import dataclass, field, replace
@@ -158,11 +159,18 @@ class ProcessRuntime:
         backend: Optional[SandboxBackend] = None,
     ):
         self.policy = policy or SandboxPolicy()
-        detected = backend or NoSandbox()
+        detected = backend or detect_sandbox_backend()
         self.backend: SandboxBackend = (
             NoSandbox("sandbox disabled explicitly")
             if self.policy.mode is SandboxMode.OFF
             else detected
+        )
+        log.info(
+            "sandbox_mode=%s backend=%s strength=%s reason=%s",
+            self.policy.mode.value,
+            self.backend.status.backend,
+            self.backend.status.strength.value,
+            self.backend.status.reason or "<none>",
         )
 
     @property
@@ -195,9 +203,10 @@ class ProcessRuntime:
         except subprocess.TimeoutExpired as error:
             duration_ms = round((time.perf_counter() - started) * 1000, 1)
             log.info(
-                "purpose=%s backend=%s timed_out=true dur=%sms",
+                "purpose=%s backend=%s strength=%s timed_out=true dur=%sms",
                 prepared.purpose,
                 prepared.sandbox.backend,
+                prepared.sandbox.strength.value,
                 duration_ms,
             )
             raise ProcessTimeout(prepared.timeout) from error
@@ -208,9 +217,10 @@ class ProcessRuntime:
 
         duration_ms = round((time.perf_counter() - started) * 1000, 1)
         log.info(
-            "purpose=%s backend=%s returncode=%s dur=%sms",
+            "purpose=%s backend=%s strength=%s returncode=%s dur=%sms",
             prepared.purpose,
             prepared.sandbox.backend,
+            prepared.sandbox.strength.value,
             proc.returncode,
             duration_ms,
         )
@@ -221,6 +231,34 @@ class ProcessRuntime:
             duration_ms=duration_ms,
             sandbox=prepared.sandbox,
         )
+
+
+def detect_sandbox_backend() -> SandboxBackend:
+    """Detect implemented hard backends without mistaking WSL/containers for one.
+
+    v0.7.0 establishes the adapter boundary but intentionally ships no hard
+    backend. Platform adapters can replace this function as they land.
+    """
+    system = platform.system() or "unknown platform"
+    return NoSandbox(f"no hard sandbox backend is implemented for {system} in v0.7.0")
+
+
+def sandbox_status_text(runtime: ProcessRuntime) -> str:
+    status = runtime.status
+    if status.is_hard:
+        capabilities = []
+        if status.capabilities.filesystem:
+            capabilities.append("filesystem")
+        if status.capabilities.network:
+            capabilities.append("network")
+        if status.capabilities.process_tree:
+            capabilities.append("process-tree")
+        detail = ", ".join(capabilities) or "backend-defined"
+        return f"硬沙箱: {status.backend} ({detail})"
+    if runtime.policy.mode is SandboxMode.OFF:
+        return "未启用 OS 硬沙箱（已显式关闭）"
+    reason = status.reason or "hard sandbox backend unavailable"
+    return f"未启用 OS 硬沙箱（NoSandbox: {reason}）"
 
 
 def _normalize_spec(spec: ProcessSpec) -> ProcessSpec:

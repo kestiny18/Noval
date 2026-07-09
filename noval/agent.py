@@ -22,6 +22,9 @@ from .context import ContextManager
 from .executor import Approver, execute_tool_call
 from .mcp import McpRegistry, McpSnapshotDiff, mcp_index_context
 from .permissions import PermissionController, PermissionMode, PermissionState
+from .process import (
+    ProcessRuntime, SandboxMode, SandboxPolicy, sandbox_status_text,
+)
 from .session import (
     JsonlSessionStore, PersistentSessionStore, SessionMeta, SessionMetadataStore,
     SessionStore, list_sessions,
@@ -54,7 +57,11 @@ DEFAULT_SYSTEM_PROMPT = (
 # 环境探测：启动时把「脚下是什么」塞进 system prompt，省掉模型的试错
 # （真实任务里见过模型先 `ls "c:/..."` 失败花 10s，才改用 /mnt/c —— 就为消除这个）
 # ---------------------------------------------------------------------------
-def detect_environment(workdir: Path, backend: Optional[ShellBackend] = None) -> str:
+def detect_environment(
+    workdir: Path,
+    backend: Optional[ShellBackend] = None,
+    process_runtime: Optional[ProcessRuntime] = None,
+) -> str:
     """组装环境上下文块。模型据此判断 OS/路径风格/日期，而不是靠命令试错。"""
     # 注意：当前时间「不」放这里——它易变，会破坏 system 缓存前缀。
     # 时间随每个用户回合注入(见 Agent.send)，前缀只留「同机器同项目内不变」的东西。
@@ -62,13 +69,15 @@ def detect_environment(workdir: Path, backend: Optional[ShellBackend] = None) ->
         f"- Noval 主进程平台: {platform.system()} {platform.release()}（原生 Python）",
         f"- 工作目录(workdir): {workdir}",
     ]
-    selected = backend or resolve_shell_backend()
+    runtime = process_runtime or ProcessRuntime()
+    selected = backend or resolve_shell_backend(runtime)
     lines.append(
         f"- run_bash 执行后端: {selected.flavor}"
         + (f" — {selected.uname}" if selected.uname else "")
     )
     if selected.executable:
         lines.append(f"- run_bash 可执行文件: {selected.executable}")
+    lines.append(f"- 子进程隔离: {sandbox_status_text(runtime)}")
     if selected.path_hint:
         lines.append(f"- 路径映射: {selected.path_hint}")
         bash_wd = to_bash_path(str(workdir), selected.flavor)
@@ -206,6 +215,8 @@ class Agent:
         skill_registry: Optional[SkillRegistry] = None,
         mcp_registry: Optional[McpRegistry] = None,
         confinement: Optional[ConfinementPolicy] = None,
+        process_runtime: Optional[ProcessRuntime] = None,
+        sandbox_policy: Optional[SandboxPolicy] = None,
     ):
         self.client = client
         self.config = config
@@ -217,17 +228,23 @@ class Agent:
         # workdir 是 per-invocation 状态：本次启动各自决定，不存进全局 settings.json
         self.workdir = Path(workdir).resolve() if workdir else Path.cwd()
         self.confinement = confinement or ConfinementPolicy.workspace(self.workdir)
+        if process_runtime is not None and sandbox_policy is not None:
+            raise ValueError("process_runtime 与 sandbox_policy 不能同时传入")
+        self.process_runtime = process_runtime or ProcessRuntime(policy=sandbox_policy)
         self._skills_auto_refresh = skill_registry is None
         self.skill_registry = skill_registry or SkillRegistry.discover(self.workdir)
         self._skill_snapshot = self.skill_registry.snapshot()
         self._mcp_auto_refresh = mcp_registry is None
-        self.mcp_registry = mcp_registry or McpRegistry.discover(self.workdir)
+        self.mcp_registry = mcp_registry or McpRegistry.discover(
+            self.workdir, runtime=self.process_runtime
+        )
         self._mcp_snapshot = self.mcp_registry.snapshot()
         self._ephemeral_turn_context: Optional[str] = None
         # 执行上下文：workdir + 跨工具调用共享的 read-tracker，注入给需要的工具
         self.context = Context(
             workdir=self.workdir,
             shell_backend=shell_backend,
+            process_runtime=self.process_runtime,
             confinement=self.confinement,
             permissions=permissions or PermissionController(),
             skills=self.skill_registry,
@@ -353,7 +370,7 @@ class Agent:
         """回合边界刷新 MCP registry；变化只作为本轮临时上下文，不落盘。"""
         if not self._mcp_auto_refresh:
             return None
-        refreshed = McpRegistry.discover(self.workdir)
+        refreshed = McpRegistry.discover(self.workdir, runtime=self.process_runtime)
         refreshed_snapshot = refreshed.snapshot()
         diff = self._mcp_snapshot.diff(refreshed_snapshot)
         self.mcp_registry = refreshed
@@ -664,6 +681,12 @@ def run_cli(argv: Optional[List[str]] = None) -> None:
     parser = argparse.ArgumentParser(prog="noval")
     parser.add_argument("--workdir", help="工作目录；不指定则用当前启动目录(os.getcwd)")
     parser.add_argument(
+        "--sandbox",
+        choices=[mode.value for mode in SandboxMode],
+        default=SandboxMode.AUTO.value,
+        help="子进程沙箱策略：auto（默认，缺后端时诚实降级）/ required（无硬后端则拒绝）/ off",
+    )
+    parser.add_argument(
         "--resume",
         nargs="?",
         const="",
@@ -676,7 +699,12 @@ def run_cli(argv: Optional[List[str]] = None) -> None:
     workdir = Path(args.workdir).resolve() if args.workdir else Path.cwd()
     if not workdir.is_dir():
         raise SystemExit(f"--workdir 不是有效目录: {workdir}")
-    os.chdir(workdir)  # 让文件工具/将来 run_bash 的子进程，相对路径都落在 workdir
+    os.chdir(workdir)  # 让文件工具与 run_bash 子进程的相对路径都落在 workdir
+
+    sandbox_policy = SandboxPolicy(mode=SandboxMode(args.sandbox))
+    process_runtime = ProcessRuntime(policy=sandbox_policy)
+    if sandbox_policy.mode is SandboxMode.REQUIRED and not process_runtime.status.is_hard:
+        raise SystemExit(f"--sandbox required: {sandbox_status_text(process_runtime)}")
 
     config = Config.load()
     store: Optional[PersistentSessionStore] = None
@@ -709,10 +737,11 @@ def run_cli(argv: Optional[List[str]] = None) -> None:
     log.info("workdir = %s", workdir)
     if log_path:
         log.info("运行日志 = %s", log_path)
-    shell_backend = resolve_shell_backend()         # 启动时选择一次，提示与执行共用
+    log.info("subprocess isolation = %s", sandbox_status_text(process_runtime))
+    shell_backend = resolve_shell_backend(process_runtime)  # 启动时选择一次，提示与执行共用
     log.info("run_bash backend=%s executable=%s", shell_backend.flavor,
              shell_backend.executable or "<system>")
-    env_context = detect_environment(workdir, shell_backend)
+    env_context = detect_environment(workdir, shell_backend, process_runtime)
     project_memory = load_project_memory(workdir)  # 读 AGENTS.md / CLAUDE.md 一次
     api_key = config.resolve_api_key()
     client: LLMClient = OpenAICompatibleClient(
@@ -754,6 +783,7 @@ def run_cli(argv: Optional[List[str]] = None) -> None:
                   env_context=env_context, project_memory=project_memory,
                   store=store, resume_messages=resume_messages,
                   shell_backend=shell_backend, permissions=permissions,
+                  process_runtime=process_runtime,
                   context_manager=context_manager,
                   task_controller=task_controller)
 

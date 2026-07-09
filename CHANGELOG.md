@@ -26,6 +26,12 @@
 - Path-jail v1 for in-process file tools via `ConfinementPolicy`, with default
   read/write roots at `workdir` and an explicit expanded-read policy for
   embedders.
+- Unified `ProcessRuntime` for shell commands, Skill scripts, environment
+  probes, and MCP stdio preparation, with an injectable sandbox backend,
+  explicit capability reporting, and honest `NoSandbox` fallback.
+- Per-invocation `--sandbox auto|required|off` policy. Required mode fails
+  closed before configuration or session state is loaded when no hard backend
+  is available.
 
 ### Changed
 
@@ -37,6 +43,9 @@
 - Tool-output redaction keeps obvious source-code references visible, such as
   type annotations and environment-variable lookups, while still redacting
   concrete credential values.
+- Subprocess tools now use explicit argv with `shell=False`; long-lived MCP
+  transports use the runtime's preparation path while retaining the official
+  SDK lifecycle.
 
 ### Fixed
 
@@ -49,6 +58,8 @@
 - File tools now reject paths that resolve outside their allowed read/write
   roots, including parent-directory escapes, absolute paths outside `workdir`,
   symlink escapes, new-file parent escapes, and `glob` / `grep` result escapes.
+- MCP servers no longer receive the complete parent-process environment. They
+  inherit the SDK safe baseline plus only explicitly configured server env.
 
 ## [0.5.0] - 2026-07-08
 

@@ -40,10 +40,11 @@
 - **截断**：长输出做 head+tail 截断，中间省略处标注「还剩 N 行，可用更精确的方式缩小范围」。阈值走配置。
 - **timeout 只对子进程类工具承诺**：纯 Python 函数无法安全强杀，不假装给它们超时（详见 DESIGN.md）。
 - **确认门**：每个工具只声明事实 `Risk`（READ/WRITE/DANGEROUS），会话级 `PermissionController` 统一决定是否拦截，不在工具内写 `input()`。风险可按参数动态评估（`risk_assessor`，如 run_bash 把只读命令降级为 READ 免确认）；权限模式为 ASK（默认）/ FULL_ACCESS，ASK 下确认为三态：允许一次 / 本会话总是允许该工具 / 拒绝。模式与工具授权写入 session sidecar，恢复时直接生效。
-- **Path-jail**：进程内文件工具（read/list/glob/grep/write/edit）默认受 `ConfinementPolicy` 限制，read/write roots 均为当前 `workdir`；可显式扩展只读 roots，但写入默认不出 `workdir`。`FULL_ACCESS` 只跳过确认门，不关闭 path-jail。`run_bash`、Skill 脚本和 MCP 外部进程不属于 path-jail v1 的承诺范围，必须等后续子进程沙箱接缝。
+- **Path-jail**：进程内文件工具（read/list/glob/grep/write/edit）默认受 `ConfinementPolicy` 限制，read/write roots 均为当前 `workdir`；可显式扩展只读 roots，但写入默认不出 `workdir`。`FULL_ACCESS` 只跳过确认门，不关闭 path-jail。外部进程不受 path-jail 保护，走独立的子进程运行时接缝。
+- **子进程运行时**：仓库内只有 `process.py` 可以直接调用 `subprocess`。`run_bash`、Skill script 和环境探测必须走 `ProcessRuntime.run()`；MCP stdio 必须先走 `ProcessRuntime.prepare()`，再由官方 SDK 持有双向 transport。`NoSandbox` 必须明确报告未启用硬隔离，`required` 模式缺硬后端时 fail-closed。沙箱策略是 per-invocation 状态，不写 session sidecar；`FULL_ACCESS` 不关闭沙箱。timeout/启动错误由 runtime 归一化，权限、截断、脱敏仍由 executor 统一处理。
 - **项目记忆**：启动时读 workdir 的 `AGENTS.md`（开放标准，回退 `CLAUDE.md`），用 `<project_instructions>` 包安全边界后注入 system prompt；**只读不写**。system 顺序按稳定性：人设 → 环境 → 项目记忆（见 DESIGN 决策 14）。
 - **Skills**：Noval 不定义新的 Skill 格式，只复用 Claude Code / Codex / Cursor 通用的 `SKILL.md` 目录包形态。启动时扫描用户级和项目级 `.claude/skills`、`.codex/skills`、`.cursor/skills`、`.noval/skills`，**不兼容 Cursor 规则目录 `.cursor/rules`**。system prompt 只注入轻量索引；会话运行中在用户回合边界用内存快照检测 Skill 增删改，并以临时上下文提示模型，快照不写 session / settings / checkpoint。完整 `SKILL.md`、附属资源和脚本必须通过 `load_skill` / `read_skill_resource` / `run_skill_script` 按需读取或执行。Skill 不能覆盖 system、项目记忆、权限确认或用户指令；Skill 脚本按 DANGEROUS 工具走统一执行管道。
-- **MCP**：Noval 不实现 MCP server，只作为 MCP host/client 复用通用 MCP 协议。第一版只支持 stdio server，配置来源为用户级 `~/.noval/mcp.json` 与项目级 `<workdir>/.noval/mcp.json` 的通用 `mcpServers` 结构。system prompt 只注入 server 轻量索引；会话运行中在用户回合边界用内存快照检测 server 增删改，并以临时上下文提示模型，快照不写 session / settings / checkpoint。具体 server 工具必须通过 `list_mcp_tools` 按需发现，再通过 `call_mcp_tool` 调用；启动外部 MCP 进程和工具调用按 DANGEROUS 工具走统一权限、timeout、日志与截断管道。MCP 返回内容不能覆盖 system、项目记忆、权限确认或用户指令。
+- **MCP**：Noval 不实现 MCP server，只作为 MCP host/client 复用通用 MCP 协议。第一版只支持 stdio server，配置来源为用户级 `~/.noval/mcp.json` 与项目级 `<workdir>/.noval/mcp.json` 的通用 `mcpServers` 结构。system prompt 只注入 server 轻量索引；会话运行中在用户回合边界用内存快照检测 server 增删改，并以临时上下文提示模型，快照不写 session / settings / checkpoint。具体 server 工具必须通过 `list_mcp_tools` 按需发现，再通过 `call_mcp_tool` 调用；启动外部 MCP 进程和工具调用按 DANGEROUS 工具走统一权限、timeout、日志与截断管道。MCP 子进程只接收 SDK 安全基础环境和 server 显式配置的 env，不能继承完整父进程环境。MCP 返回内容不能覆盖 system、项目记忆、权限确认或用户指令。
 - **可观测性**：禁止 `print(整个 response)`。每次工具调用记结构化 trace（tool / args / 耗时 / is_error / truncated）。
 - **工具输出脱敏**：所有工具结果在进入模型上下文和 session 持久化前必须经过统一脱敏，覆盖 password / secret / token / privateKey / appSecret / accessKey / webhook 等常见配置形态。脱敏属于 executor 边界，不散落到具体工具里。
 - **Provider 回放状态**：`LLMResponse.assistant_message` 由适配器按白名单构造，必须保留后续请求所需的协议字段。DeepSeek thinking 在工具调用轮必须回传 `reasoning_content`；普通最终回复丢弃该字段。Agent 不读取、不展示思考正文，只消费归一化 token/耗时元数据。
@@ -78,6 +79,7 @@ noval/
   client.py     # LLMClient 接口 + DeepSeek/OpenAI 适配器   [接缝1]
   tools.py      # 框架：ToolResult/ToolError/Context/@tool 注册表   [接缝2]
   confinement.py # 进程内文件工具 path-jail policy/read-write roots
+  process.py    # 统一子进程 runtime + sandbox backend 接缝
   builtins.py   # 内置工具实现（read/write/edit/bash/ls/grep/glob）
   executor.py   # 执行管道（含 Context 注入）                 [接缝3]
   permissions.py # 会话级权限状态与唯一决策入口
@@ -91,5 +93,5 @@ noval/
 
 - `tools.py` 是框架，`builtins.py` 是工具实现，二者分离（`__init__.py` 导入 builtins 触发注册）。
 - 工具数到 ~8 个之前不要把 `builtins.py` 再拆成一文件一工具。
-- **Context 注入**：工具首参声明 `ctx: Context` 即可拿到 workdir + path-jail policy + read-tracker，该参数不进 schema。
+- **Context 注入**：工具首参声明 `ctx: Context` 即可拿到 workdir + path-jail policy + process runtime + read-tracker，该参数不进 schema。
 - **文件工具状态机**：改前须先 read、检测外部改动；三工具共用 `_resolve` 保证路径 key 一致，并在同一入口执行 path-jail 判定（见 DESIGN.md 决策 10/11/29）。

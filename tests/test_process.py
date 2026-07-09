@@ -1,5 +1,7 @@
+import ast
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -15,6 +17,7 @@ from noval.process import (
     SandboxStatus,
     SandboxStrength,
     SandboxUnavailable,
+    sandbox_status_text,
 )
 
 
@@ -98,6 +101,16 @@ def test_off_mode_uses_explicit_no_sandbox(tmp_path):
     assert prepared.sandbox.strength is SandboxStrength.NONE
     assert prepared.sandbox.reason == "sandbox disabled explicitly"
     assert backend.seen == []
+    assert "显式关闭" in sandbox_status_text(runtime)
+
+
+def test_auto_mode_reports_honest_no_sandbox_status():
+    runtime = ProcessRuntime()
+
+    text = sandbox_status_text(runtime)
+
+    assert "NoSandbox" in text
+    assert "v0.7.0" in text
 
 
 def test_runtime_executes_without_shell_and_captures_output(monkeypatch, tmp_path):
@@ -142,3 +155,23 @@ def test_runtime_passes_exact_environment(tmp_path):
     result = runtime.run(spec)
 
     assert result.stdout.strip() == "visible"
+
+
+def test_only_process_module_imports_subprocess():
+    package_root = Path(__file__).parents[1] / "noval"
+    offenders = []
+    for path in package_root.glob("*.py"):
+        if path.name == "process.py":
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            imports_subprocess = (
+                isinstance(node, ast.Import)
+                and any(alias.name == "subprocess" for alias in node.names)
+            )
+            if imports_subprocess:
+                offenders.append(path.name)
+            if isinstance(node, ast.ImportFrom) and node.module == "subprocess":
+                offenders.append(path.name)
+
+    assert offenders == []

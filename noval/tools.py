@@ -75,6 +75,7 @@ class ReadRecord:
 class Context:
     """per-invocation 的执行上下文。workdir 决定相对路径与子进程 cwd；
     read_state 是跨工具调用共享的文件读取状态机（read-tracker）；
+    process_runtime 冻结本次启动的子进程 backend 与沙箱策略；
     permissions 集中管理当前会话的权限模式与工具授权。"""
     workdir: Path
     read_state: Dict[str, ReadRecord] = field(default_factory=dict)

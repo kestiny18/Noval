@@ -4,18 +4,21 @@ import os
 from datetime import datetime
 from pathlib import Path
 
+import pytest
+
 from noval.agent import (
     Agent, _choose_resume_session, _create_permission_controller, _format_turn,
     _format_reasoning_summary, _handle_permissions_command, _handle_reasoning_command,
     _read_turn,
     _supports_color, _tool_arg_keys, _turn_prefix, detect_environment,
-    load_project_memory, TurnMetrics,
+    load_project_memory, run_cli, TurnMetrics,
 )
 from noval.client import (
     LLMResponse, MockClient, TokenUsage, ToolCall, mock_text, mock_tool_call,
 )
 from noval.config import Config
 from noval.permissions import PermissionController, PermissionMode
+from noval.process import ProcessRuntime
 from noval.session import JsonlSessionStore, SessionMeta
 from noval.shell import ShellBackend, to_bash_path
 from noval.skills import SkillRegistry
@@ -150,6 +153,7 @@ def test_detect_environment_has_basics(tmp_path):
     assert str(tmp_path) in env
     assert "Noval 主进程平台" in env
     assert "run_bash 执行后端: Git Bash" in env
+    assert "子进程隔离" in env and "NoSandbox" in env
     assert "C:/Git/bin/bash.exe" in env
     assert "当前日期" not in env and "当前时间" not in env       # 时间不进 system 前缀
 
@@ -158,6 +162,29 @@ def test_agent_context_keeps_selected_shell_backend():
     backend = ShellBackend("chosen-bash", "Git Bash")
     agent = Agent(MockClient([mock_text("hi")]), cfg(), shell_backend=backend)
     assert agent.context.shell_backend is backend
+
+
+def test_agent_context_keeps_single_process_runtime():
+    runtime = ProcessRuntime()
+    agent = Agent(MockClient([mock_text("hi")]), cfg(), process_runtime=runtime)
+
+    assert agent.process_runtime is runtime
+    assert agent.context.process_runtime is runtime
+    assert agent.mcp_registry._client.runtime is runtime
+
+
+def test_cli_required_sandbox_fails_before_loading_config(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "noval.config.Config.load",
+        lambda: pytest.fail("config should not load before required sandbox check"),
+    )
+
+    previous_cwd = Path.cwd()
+    try:
+        with pytest.raises(SystemExit, match="NoSandbox"):
+            run_cli(["--workdir", str(tmp_path), "--sandbox", "required"])
+    finally:
+        os.chdir(previous_cwd)
 
 
 def test_tool_arg_keys_never_include_values():
