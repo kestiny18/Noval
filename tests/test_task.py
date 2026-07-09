@@ -161,3 +161,32 @@ def test_agent_judges_final_reply_after_tool_loop(tmp_path):
     assert packet["context_user_inputs"] == []
     assert packet["recent_user_inputs"] == ["只查询问题原因"]
     assert packet["assistant_final_reply"] == "原因是缓存未刷新。"
+
+
+def test_agent_skips_completion_judge_for_direct_reply(tmp_path):
+    task_path = tmp_path / "task.jsonl"
+    judge_client = MockClient([
+        mock_text(json.dumps({
+            "status": "completed",
+            "confidence": 0.9,
+            "reason": "would be wasteful",
+            "missing": [],
+        })),
+    ])
+    controller = TaskController(
+        event_store=TaskEventStore(task_path),
+        completion_verifier=CompletionVerifier(SemanticJudge(judge_client, model="judge")),
+    )
+    agent = Agent(
+        MockClient([mock_text("你好！")]),
+        cfg(),
+        workdir=str(tmp_path),
+        task_controller=controller,
+    )
+
+    assert agent.send("hi") == "你好！"
+
+    assert judge_client.seen_messages == []
+    loaded = TaskEventStore(task_path).load_latest()
+    assert loaded.recent_user_inputs == ["hi"]
+    assert loaded.last_verdict is None

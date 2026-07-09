@@ -277,6 +277,7 @@ class Agent:
         })
         self.task_controller.observe_user_input(user_input)
 
+        used_tools = False
         try:
             for _ in range(self.config.max_steps):
                 resp = self._complete(self.tools)
@@ -285,10 +286,12 @@ class Agent:
 
                 if not resp.tool_calls:                       # 没有工具调用 → 最终回复
                     final = resp.content or ""
-                    self.task_controller.verify_completion(final)
+                    if used_tools:
+                        self.task_controller.verify_completion(final)
                     return final
 
                 # OpenAI 协议要求：每个 tool_call 都必须有对应的 tool 消息回填
+                used_tools = True
                 for call in resp.tool_calls:
                     log.info("calling tool=%s arg_keys=%s", call.name, _tool_arg_keys(call.arguments))
                     result = execute_tool_call(
@@ -709,10 +712,18 @@ def run_cli(argv: Optional[List[str]] = None) -> None:
     project_memory = load_project_memory(workdir)  # 读 AGENTS.md / CLAUDE.md 一次
     api_key = config.resolve_api_key()
     client: LLMClient = OpenAICompatibleClient(
-        config.base_url, api_key, config.model
+        config.base_url,
+        api_key,
+        config.model,
+        timeout=config.request_timeout_seconds,
+        max_retries=config.request_max_retries,
     )
     judge_client: LLMClient = OpenAICompatibleClient(
-        config.base_url, api_key, config.judge_model
+        config.base_url,
+        api_key,
+        config.judge_model,
+        timeout=config.request_timeout_seconds,
+        max_retries=config.request_max_retries,
     )
     usage_store: Optional[JsonlUsageStore] = None
     if config.persist_usage:

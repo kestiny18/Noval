@@ -1,3 +1,4 @@
+import sys
 from types import SimpleNamespace
 
 from noval.client import LLMResponse, OpenAICompatibleClient
@@ -54,6 +55,33 @@ def test_llm_response_keeps_raw_as_fourth_positional_argument():
     response = LLMResponse(None, [], {"role": "assistant", "content": None}, "raw")
     assert response.raw == "raw"
     assert response.meta == {}
+
+
+def test_openai_client_sets_timeout_and_retries(monkeypatch):
+    seen = {}
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            seen.update(kwargs)
+            self.chat = SimpleNamespace(completions=SimpleNamespace())
+
+    monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=FakeOpenAI))
+
+    client = OpenAICompatibleClient(
+        "https://example.invalid",
+        "key",
+        "model-x",
+        timeout=45.5,
+        max_retries=0,
+    )
+
+    assert client.model == "model-x"
+    assert seen == {
+        "base_url": "https://example.invalid",
+        "api_key": "key",
+        "timeout": 45.5,
+        "max_retries": 0,
+    }
 
 
 def test_reasoning_is_omitted_for_plain_assistant_message():

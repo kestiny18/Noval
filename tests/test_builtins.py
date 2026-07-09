@@ -356,6 +356,8 @@ def test_bash_risk_dangerous():
     assert _bash_risk({"command": "echo x > f"}) is Risk.DANGEROUS         # 重定向写
     assert _bash_risk({"command": "sed -i 's/a/b/' f"}) is Risk.DANGEROUS  # 原地改
     assert _bash_risk({"command": "cat $(rm x)"}) is Risk.DANGEROUS        # 命令替换
+    assert _bash_risk({"command": "grep foo bar.txt\nrm -rf junk"}) is Risk.DANGEROUS
+    assert _bash_risk({"command": "grep foo bar.txt\r\nrm -rf junk"}) is Risk.DANGEROUS
     assert _bash_risk({"command": ""}) is Risk.DANGEROUS                   # 空命令保守
 
 

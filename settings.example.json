@@ -12,5 +12,7 @@
   "log_retention_days": 14,
   "persist_usage": true,
   "usage_dir": "",
-  "context_budget_tokens": 256000
+  "context_budget_tokens": 256000,
+  "request_timeout_seconds": 120,
+  "request_max_retries": 2
 }

@@ -95,6 +95,31 @@ def test_tool_output_redaction_keeps_json_valid():
     assert r.meta["redacted"] is True
 
 
+def test_tool_output_redaction_keeps_source_references_visible():
+    @tool(name="_source_refs")
+    def source_refs() -> str:
+        """source refs"""
+        return "\n".join([
+            "const access_token: string = ...",
+            "password = input()",
+            "token: TokenType",
+            "api_key = os.getenv(\"API_KEY\")",
+            "actual_token=sk-abc123",
+            "{\"token\":\"abc\",\"normal\":\"visible\"}",
+        ])
+
+    r = execute_tool_call("_source_refs", "{}", cfg(max_tool_output_chars=1000))
+
+    assert not r.is_error
+    assert "const access_token: string = ..." in r.content
+    assert "password = input()" in r.content
+    assert "token: TokenType" in r.content
+    assert "api_key = os.getenv(\"API_KEY\")" in r.content
+    assert "actual_token=<redacted>" in r.content
+    assert "{\"token\":\"<redacted>\",\"normal\":\"visible\"}" in r.content
+    assert r.meta["redacted"] is True
+
+
 def test_internal_typeerror_not_mislabeled():
     @tool(name="_internal_te")
     def boom() -> str:

@@ -100,9 +100,22 @@ def _normalize_usage(raw_usage: Any) -> Optional[TokenUsage]:
 
 # --- 真实适配器：OpenAI 兼容端点（DeepSeek） ------------------------------
 class OpenAICompatibleClient:
-    def __init__(self, base_url: str, api_key: str, model: str):
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str,
+        model: str,
+        *,
+        timeout: float = 120.0,
+        max_retries: int = 2,
+    ):
         from openai import OpenAI  # 延迟导入：保证核心逻辑不依赖具体 SDK
-        self._client = OpenAI(base_url=base_url, api_key=api_key)
+        self._client = OpenAI(
+            base_url=base_url,
+            api_key=api_key,
+            timeout=timeout,
+            max_retries=max_retries,
+        )
         self.model = model
 
     def complete(self, messages: List[Dict[str, Any]], tools: List[Tool]) -> LLMResponse:

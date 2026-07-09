@@ -25,7 +25,7 @@ _KEY_VALUE_RE = re.compile(
     rf"(?im)^(\s*[A-Za-z0-9_.-]*(?:{_SENSITIVE_KEY})[A-Za-z0-9_.-]*\s*[:=]\s*)([^\r\n#]+)"
 )
 _JSON_VALUE_RE = re.compile(
-    rf'(?i)("?[A-Za-z0-9_.-]*(?:{_SENSITIVE_KEY})[A-Za-z0-9_.-]*"?\s*:\s*)("([^"\\]|\\.)*"|[^,\r\n}}]+)'
+    rf'(?i)("[A-Za-z0-9_.-]*(?:{_SENSITIVE_KEY})[A-Za-z0-9_.-]*"\s*:\s*)("([^"\\]|\\.)*"|[^,\r\n}}]+)'
 )
 _URL_QUERY_RE = re.compile(
     r"(?i)([?&](?:key|token|access_token|secret|password|signature)=)[^&\s\"']+"
@@ -44,9 +44,16 @@ def redact_sensitive_text(text: str) -> str:
     redacted = _PEM_PRIVATE_RE.sub("-----BEGIN PRIVATE KEY-----\n<redacted>\n-----END PRIVATE KEY-----", text)
     redacted = _AUTH_RE.sub(lambda m: m.group(1) + REDACTION, redacted)
     redacted = _URL_QUERY_RE.sub(lambda m: m.group(1) + REDACTION, redacted)
-    redacted = _KEY_VALUE_RE.sub(lambda m: m.group(1) + REDACTION, redacted)
+    redacted = _KEY_VALUE_RE.sub(_redact_key_value, redacted)
     redacted = _JSON_VALUE_RE.sub(_redact_json_value, redacted)
     return redacted
+
+
+def _redact_key_value(match: re.Match[str]) -> str:
+    value = match.group(2).strip()
+    if _looks_like_code_reference(value):
+        return match.group(0)
+    return match.group(1) + REDACTION
 
 
 def _redact_json_value(match: re.Match[str]) -> str:
@@ -54,3 +61,35 @@ def _redact_json_value(match: re.Match[str]) -> str:
     if value.startswith('"'):
         return match.group(1) + f'"{REDACTION}"'
     return match.group(1) + REDACTION
+
+
+def _looks_like_code_reference(value: str) -> bool:
+    """Avoid blinding the model when reading source types or env references."""
+    v = value.strip().rstrip(";")
+    if not v:
+        return False
+    if v in {"...", "None", "null", "undefined"}:
+        return True
+    if re.fullmatch(r"\$[{(]?[A-Za-z_][A-Za-z0-9_]*[})]?", v):
+        return True
+    if re.fullmatch(r"%[A-Za-z_][A-Za-z0-9_]*%", v):
+        return True
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.]*\([^)]*\)", v):
+        return True
+
+    # Type annotations and declarations such as:
+    # access_token: string
+    # token: TokenType
+    # const access_token: string = ...
+    type_atom = (
+        r"(?:string|str|int|float|bool|boolean|bytes|dict|list|set|tuple|"
+        r"Any|Optional|Union|Literal|"
+        r"[A-Z][A-Za-z0-9]*(?:\.[A-Z][A-Za-z0-9]*)?)"
+    )
+    type_name = rf"{type_atom}(?:\[[^\]]+\])?"
+    type_expr = rf"{type_name}(?:\s*[|,]\s*{type_name})*"
+    if re.fullmatch(type_expr, v):
+        return True
+    if re.fullmatch(rf"{type_expr}\s*=\s*(?:\.\.\.|None|null|undefined)", v):
+        return True
+    return False

@@ -27,6 +27,8 @@ DEFAULTS: Dict[str, Any] = {
     "persist_usage": True,                    # 模型返回的 token 用量：默认开启
     "usage_dir": "",                         # 空=~/.noval/usage
     "context_budget_tokens": 256000,          # active context 工作预算；可按 Provider 能力调大
+    "request_timeout_seconds": 120,           # Provider 请求超时，避免模型 API 挂起卡死循环
+    "request_max_retries": 2,                 # Provider 请求重试次数；0 表示不重试
 }
 # 注：system_prompt 不在这里——它是 agent 的行为定义(属代码)，不是「全局稳定偏好」，
 # 故不开放给 settings.json 覆盖。见 noval/agent.py 的 DEFAULT_SYSTEM_PROMPT。
@@ -64,6 +66,8 @@ class Config:
     persist_usage: bool = True
     usage_dir_setting: str = ""
     context_budget_tokens: int = 256000
+    request_timeout_seconds: float = 120.0
+    request_max_retries: int = 2
     judge_model: str = "deepseek-v4-flash"
     raw: Dict[str, Any] = field(default_factory=dict)
 
@@ -106,6 +110,18 @@ class Config:
             raise SystemExit("settings.json: log_retention_days 必须大于等于 1")
         if merged["context_budget_tokens"] < 1000:
             raise SystemExit("settings.json: context_budget_tokens 必须大于等于 1000")
+        try:
+            merged["request_timeout_seconds"] = float(merged["request_timeout_seconds"])
+        except (TypeError, ValueError):
+            raise SystemExit("settings.json: request_timeout_seconds 必须是数字")
+        if merged["request_timeout_seconds"] <= 0:
+            raise SystemExit("settings.json: request_timeout_seconds 必须大于 0")
+        try:
+            merged["request_max_retries"] = int(merged["request_max_retries"])
+        except (TypeError, ValueError):
+            raise SystemExit("settings.json: request_max_retries 必须是整数")
+        if merged["request_max_retries"] < 0:
+            raise SystemExit("settings.json: request_max_retries 必须大于等于 0")
 
         return cls(
             model=merged["model"],
@@ -123,6 +139,8 @@ class Config:
             persist_usage=merged["persist_usage"],
             usage_dir_setting=merged["usage_dir"],
             context_budget_tokens=merged["context_budget_tokens"],
+            request_timeout_seconds=merged["request_timeout_seconds"],
+            request_max_retries=merged["request_max_retries"],
             raw=merged,
         )
 

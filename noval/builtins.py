@@ -957,7 +957,7 @@ def _bash_risk(args: dict) -> Risk:
     clean = _SAFE_REDIR.sub(" ", cmd)
     if ">" in clean or any(tok in clean for tok in _DANGER_SUBSTR):  # 剩下的 > 才是真写文件
         return Risk.DANGEROUS
-    segments = [s for s in re.split(r"[|&;]+", clean) if s.strip()]
+    segments = [s for s in re.split(r"[|&;\r\n]+", clean) if s.strip()]
     if segments and all(_is_readonly_segment(s) for s in segments):
         return Risk.READ
     return Risk.DANGEROUS
