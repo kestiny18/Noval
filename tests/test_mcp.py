@@ -71,7 +71,7 @@ def _fake_registry(tmp_path, client=None):
         args=["server.py"],
         env={"TOKEN": "SECRET"},
         cwd=tmp_path,
-        location=str(tmp_path / ".mcp.json"),
+        location=str(tmp_path / ".noval" / "mcp.json"),
     )
     return McpRegistry([server], client=client or FakeMcpClient())
 
@@ -88,7 +88,7 @@ def test_discover_mcp_servers_from_user_and_project_config(tmp_path):
             }
         }
     })
-    _mcp_file(workdir / ".mcp.json", {
+    _mcp_file(workdir / ".noval" / "mcp.json", {
         "mcpServers": {
             "local-db": {
                 "command": "python",
@@ -114,9 +114,24 @@ def test_discover_mcp_servers_from_user_and_project_config(tmp_path):
     assert "SECRET_TOKEN" not in index
 
 
+def test_project_root_mcp_json_is_not_discovered(tmp_path):
+    workdir = tmp_path / "work"
+    _mcp_file(workdir / ".mcp.json", {
+        "mcpServers": {"legacy-root": {"command": "python", "args": ["legacy.py"]}}
+    })
+    _mcp_file(workdir / ".noval" / "mcp.json", {
+        "mcpServers": {"project-local": {"command": "python", "args": ["server.py"]}}
+    })
+
+    servers, errors = discover_mcp_servers(workdir, home=tmp_path / "home")
+
+    assert errors == []
+    assert [item.server_id for item in servers] == ["project.mcp:project-local"]
+
+
 def test_mcp_snapshot_detects_config_changes(tmp_path):
     workdir = tmp_path / "work"
-    config = workdir / ".mcp.json"
+    config = workdir / ".noval" / "mcp.json"
     _mcp_file(config, {"mcpServers": {"demo": {"command": "python", "args": ["a.py"]}}})
     before = McpRegistry.discover(workdir, home=tmp_path / "home").snapshot()
 

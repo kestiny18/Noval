@@ -341,7 +341,9 @@ def test_mcp_registry_update_is_ephemeral_request_context(tmp_path):
     store = _MemoryStore()
     client = MockClient([mock_text("ok")])
     agent = Agent(client, cfg(), workdir=str(tmp_path), store=store)
-    (tmp_path / ".mcp.json").write_text(json.dumps({
+    mcp_config = tmp_path / ".noval" / "mcp.json"
+    mcp_config.parent.mkdir(parents=True)
+    mcp_config.write_text(json.dumps({
         "mcpServers": {
             "runtime-mcp": {
                 "command": "python",

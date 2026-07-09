@@ -257,7 +257,7 @@ def discover_mcp_servers(
     home = Path(home).expanduser().resolve() if home else Path.home().resolve()
     config_paths = [
         ("user.mcp", home / ".noval" / "mcp.json"),
-        ("project.mcp", workdir / ".mcp.json"),
+        ("project.mcp", workdir / ".noval" / "mcp.json"),
     ]
     found: List[McpServerInfo] = []
     errors: List[str] = []
