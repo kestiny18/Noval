@@ -1,9 +1,16 @@
 import json
+import os
 
 import pytest
 
 from noval.builtins import call_mcp_tool, list_mcp_servers, list_mcp_tools
-from noval.mcp import McpRegistry, McpServerInfo, discover_mcp_servers, mcp_index_context
+from noval.mcp import (
+    McpRegistry, McpServerInfo, _configured_env, _prepare_stdio_process,
+    discover_mcp_servers, mcp_index_context,
+)
+from noval.process import (
+    PreparedProcess, SandboxStatus, SandboxStrength,
+)
 from noval.tools import Context, Risk, ToolError, get_tool
 
 
@@ -194,3 +201,40 @@ def test_mcp_execution_tools_are_dangerous():
     assert get_tool("list_mcp_servers").risk is Risk.READ
     assert get_tool("list_mcp_tools").risk is Risk.DANGEROUS
     assert get_tool("call_mcp_tool").risk is Risk.DANGEROUS
+
+
+def test_mcp_stdio_launch_is_prepared_by_process_runtime(tmp_path):
+    class RecordingRuntime:
+        def __init__(self):
+            self.specs = []
+
+        def prepare(self, spec):
+            self.specs.append(spec)
+            return PreparedProcess(
+                argv=("sandbox-wrapper", "--", *spec.argv),
+                cwd=spec.cwd,
+                env=spec.env,
+                timeout=spec.timeout,
+                purpose=spec.purpose,
+                sandbox=SandboxStatus("fake", SandboxStrength.HARD),
+            )
+
+    server = _fake_registry(tmp_path).servers[0]
+    runtime = RecordingRuntime()
+
+    prepared = _prepare_stdio_process(server, runtime, 17)
+
+    assert runtime.specs[0].argv == ("python", "server.py")
+    assert runtime.specs[0].purpose == "mcp:project.mcp:demo"
+    assert prepared.argv == ("sandbox-wrapper", "--", "python", "server.py")
+
+
+def test_mcp_configured_env_does_not_copy_unrelated_parent_secrets(monkeypatch):
+    monkeypatch.setenv("NOVAL_MCP_EXPLICIT", "visible")
+    monkeypatch.setenv("NOVAL_MCP_UNRELATED_SECRET", "must-not-leak")
+    reference = "%NOVAL_MCP_EXPLICIT%" if os.name == "nt" else "$NOVAL_MCP_EXPLICIT"
+
+    env = _configured_env({"TOKEN": reference})
+
+    assert env == {"TOKEN": "visible"}
+    assert "NOVAL_MCP_UNRELATED_SECRET" not in env

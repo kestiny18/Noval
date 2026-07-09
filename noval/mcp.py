@@ -15,6 +15,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Protocol, Sequence
 
+from .process import PreparedProcess, ProcessRuntime, ProcessRuntimeError, ProcessSpec
 from .tools import ToolError
 
 
@@ -108,9 +109,12 @@ class McpClient(Protocol):
 class McpStdioClient:
     """Synchronous wrapper around the official async MCP Python SDK."""
 
+    def __init__(self, runtime: Optional[ProcessRuntime] = None):
+        self.runtime = runtime or ProcessRuntime()
+
     def list_tools(self, server: McpServerInfo, *, timeout: int) -> List[Dict[str, Any]]:
         async def run() -> List[Dict[str, Any]]:
-            async with _stdio_session(server) as session:
+            async with _stdio_session(server, self.runtime, timeout) as session:
                 result = await session.list_tools()
                 return [_model_dump(tool) for tool in result.tools]
 
@@ -125,7 +129,7 @@ class McpStdioClient:
         timeout: int,
     ) -> Dict[str, Any]:
         async def run() -> Dict[str, Any]:
-            async with _stdio_session(server) as session:
+            async with _stdio_session(server, self.runtime, timeout) as session:
                 result = await session.call_tool(tool_name, arguments)
                 return _model_dump(result)
 
@@ -133,8 +137,10 @@ class McpStdioClient:
 
 
 class _stdio_session:
-    def __init__(self, server: McpServerInfo):
+    def __init__(self, server: McpServerInfo, runtime: ProcessRuntime, timeout: int):
         self.server = server
+        self.runtime = runtime
+        self.timeout = timeout
         self._errlog = None
         self._stdio_cm = None
         self._session_cm = None
@@ -149,11 +155,18 @@ class _stdio_session:
                 "MCP SDK 未安装；请安装项目依赖，或执行: pip install 'mcp>=1,<2'"
             ) from error
 
+        try:
+            prepared = _prepare_stdio_process(self.server, self.runtime, self.timeout)
+        except ProcessRuntimeError as error:
+            raise ToolError(
+                f"MCP server '{self.server.server_id}' 无法启动: {error}"
+            ) from error
+
         params = StdioServerParameters(
-            command=self.server.command,
-            args=list(self.server.args),
-            env=_merged_env(self.server.env),
-            cwd=str(self.server.cwd) if self.server.cwd else None,
+            command=prepared.argv[0],
+            args=list(prepared.argv[1:]),
+            env=dict(prepared.env or {}),
+            cwd=str(prepared.cwd),
             encoding="utf-8",
             encoding_error_handler="replace",
         )
@@ -183,10 +196,11 @@ class McpRegistry:
         *,
         errors: Optional[Sequence[str]] = None,
         client: Optional[McpClient] = None,
+        runtime: Optional[ProcessRuntime] = None,
     ):
         self.servers = list(servers)
         self.errors = list(errors or [])
-        self._client = client or McpStdioClient()
+        self._client = client or McpStdioClient(runtime)
         self._by_id: Dict[str, McpServerInfo] = {}
         for item in self.servers:
             if item.server_id in self._by_id:
@@ -194,9 +208,15 @@ class McpRegistry:
             self._by_id[item.server_id] = item
 
     @classmethod
-    def discover(cls, workdir: Path, *, home: Optional[Path] = None) -> "McpRegistry":
+    def discover(
+        cls,
+        workdir: Path,
+        *,
+        home: Optional[Path] = None,
+        runtime: Optional[ProcessRuntime] = None,
+    ) -> "McpRegistry":
         servers, errors = discover_mcp_servers(workdir, home=home)
-        return cls(servers, errors=errors)
+        return cls(servers, errors=errors, runtime=runtime)
 
     def list_index(self) -> List[Dict[str, Any]]:
         return [item.to_index_dict() for item in self.servers]
@@ -394,11 +414,28 @@ def _fingerprint(info: McpServerInfo) -> McpServerFingerprint:
     )
 
 
-def _merged_env(extra: Dict[str, str]) -> Dict[str, str]:
-    env = dict(os.environ)
-    for key, value in extra.items():
-        env[key] = os.path.expandvars(value)
-    return env
+def _prepare_stdio_process(
+    server: McpServerInfo,
+    runtime: ProcessRuntime,
+    timeout: int,
+) -> PreparedProcess:
+    """Prepare MCP argv without taking lifecycle ownership from the SDK."""
+    return runtime.prepare(ProcessSpec(
+        argv=(server.command, *server.args),
+        cwd=server.cwd or Path.cwd(),
+        env=_configured_env(server.env),
+        timeout=timeout,
+        purpose=f"mcp:{server.server_id}",
+    ))
+
+
+def _configured_env(extra: Dict[str, str]) -> Dict[str, str]:
+    """Expand only explicitly configured MCP env values.
+
+    The official SDK adds its own safe baseline. Passing the complete parent
+    environment here would leak unrelated credentials to every MCP server.
+    """
+    return {key: os.path.expandvars(value) for key, value in extra.items()}
 
 
 def _hash_json(value: Any) -> str:
