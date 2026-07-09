@@ -11,12 +11,128 @@ from noval.builtins import (
     _bash_risk, _wsl_to_windows, edit_file, glob, grep, list_directory, read_file,
     run_bash, write_file,
 )
+from noval.confinement import ConfinementPolicy
+from noval.permissions import PermissionController, PermissionMode
 from noval.tools import Context, Risk, ToolError
 from noval.shell import ShellBackend, resolve_shell_backend
 
 
 def ctx(tmp_path):
     return Context(workdir=tmp_path)
+
+
+def symlink_or_skip(target, link, *, target_is_directory=False):
+    try:
+        os.symlink(target, link, target_is_directory=target_is_directory)
+    except (OSError, NotImplementedError) as e:
+        pytest.skip(f"symlink unavailable on this platform: {e}")
+
+
+# --- path-jail ------------------------------------------------------------
+def test_path_jail_blocks_parent_read_escape(tmp_path):
+    workdir = tmp_path / "repo"
+    workdir.mkdir()
+    (tmp_path / "secret.txt").write_text("secret", encoding="utf-8")
+
+    with pytest.raises(ToolError) as e:
+        read_file(ctx(workdir), "../secret.txt")
+
+    msg = str(e.value)
+    assert "path-jail" in msg
+    assert "allowed read roots" in msg.lower()
+    assert str(workdir.resolve()) in msg
+
+
+def test_path_jail_blocks_new_file_write_escape(tmp_path):
+    workdir = tmp_path / "repo"
+    workdir.mkdir()
+    outside = tmp_path / "outside.txt"
+
+    with pytest.raises(ToolError) as e:
+        write_file(ctx(workdir), "../outside.txt", "nope")
+
+    assert "path-jail" in str(e.value)
+    assert "write" in str(e.value)
+    assert not outside.exists()
+
+
+def test_path_jail_full_access_does_not_disable_file_boundary(tmp_path):
+    workdir = tmp_path / "repo"
+    workdir.mkdir()
+    outside = tmp_path / "secret.txt"
+    outside.write_text("secret", encoding="utf-8")
+    permissions = PermissionController()
+    permissions.set_mode(PermissionMode.FULL_ACCESS)
+
+    with pytest.raises(ToolError):
+        read_file(Context(workdir=workdir, permissions=permissions), str(outside))
+
+
+def test_path_jail_expanded_read_keeps_write_inside_workdir(tmp_path):
+    workdir = tmp_path / "repo"
+    docs = tmp_path / "docs"
+    workdir.mkdir()
+    docs.mkdir()
+    note = docs / "note.txt"
+    note.write_text("hello", encoding="utf-8")
+    c = Context(workdir=workdir, confinement=ConfinementPolicy.expanded_read(workdir, [docs]))
+
+    assert "hello" in read_file(c, str(note))
+    with pytest.raises(ToolError):
+        write_file(c, str(note), "changed")
+    assert note.read_text(encoding="utf-8") == "hello"
+
+
+def test_path_jail_blocks_symlink_file_escape(tmp_path):
+    workdir = tmp_path / "repo"
+    workdir.mkdir()
+    outside = tmp_path / "secret.txt"
+    outside.write_text("secret", encoding="utf-8")
+    symlink_or_skip(outside, workdir / "link.txt")
+
+    with pytest.raises(ToolError) as e:
+        read_file(ctx(workdir), "link.txt")
+
+    assert "path-jail" in str(e.value)
+
+
+def test_path_jail_blocks_symlink_parent_write_escape(tmp_path):
+    workdir = tmp_path / "repo"
+    outside_dir = tmp_path / "outside"
+    workdir.mkdir()
+    outside_dir.mkdir()
+    symlink_or_skip(outside_dir, workdir / "outside-link", target_is_directory=True)
+
+    with pytest.raises(ToolError):
+        write_file(ctx(workdir), "outside-link/new.txt", "nope")
+
+    assert not (outside_dir / "new.txt").exists()
+
+
+def test_path_jail_glob_omits_symlinked_file_escape(tmp_path):
+    workdir = tmp_path / "repo"
+    workdir.mkdir()
+    outside = tmp_path / "secret.py"
+    outside.write_text("SECRET", encoding="utf-8")
+    symlink_or_skip(outside, workdir / "secret.py")
+
+    out = glob(ctx(workdir), "*.py")
+
+    assert "secret.py" not in out
+    assert "path-jail" in out
+
+
+def test_path_jail_grep_omits_symlinked_file_escape(tmp_path):
+    workdir = tmp_path / "repo"
+    workdir.mkdir()
+    outside = tmp_path / "secret.txt"
+    outside.write_text("SECRET", encoding="utf-8")
+    symlink_or_skip(outside, workdir / "secret.txt")
+
+    out = grep(ctx(workdir), "SECRET")
+
+    assert "SECRET" not in out
+    assert "path-jail" in out
 
 
 # --- read_file ------------------------------------------------------------

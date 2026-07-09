@@ -147,7 +147,7 @@ def read_file(path: str) -> str:
 其余借鉴的可纠错细节：read 带行号 + 空文件警告 + not-found「did you mean」；edit 唯一匹配或 `replace_all`、`old==new` 拒绝；glob/grep 按 mtime 排序、排除 `.git`、结果相对化省 token、截断给翻页提示。
 
 **明确不纳入核心**：LSP/诊断、git diff、file-history 备份、技能发现、analytics、smart-quote 归一化、图片/PDF/notebook、UNC 防护。这些属于产品层能力，不是通用内核当前阶段的职责。
-**本轮 defer**（记 TODO）：grep 的 `-A/-B/-C` 上下文行 / `multiline` / `type`；用 ripgrep 加速（接口已对齐，可无痛替换）；read 的 dedup 桩；path-jail 边界。
+**本轮 defer**（记 TODO）：grep 的 `-A/-B/-C` 上下文行 / `multiline` / `type`；用 ripgrep 加速（接口已对齐，可无痛替换）；read 的 dedup 桩。
 
 **结果**：横切关注点集中在框架层和共享状态机后，每个具体工具可以保持精简，同时继承一致的错误、安全和状态约束。
 
@@ -414,6 +414,19 @@ MCP 与 Skill 一样属于“复用成熟生态”的能力，但它的位置不
 
 因此脱敏放在 executor 的统一出口：工具返回原始内容，框架在截断和持久化前先做敏感形态替换，并在 `ToolResult.meta.redacted` 中记录本次是否发生脱敏。这样新增第 N 个工具仍自动继承安全边界，且脱敏策略不会散落在 MCP、shell、文件读取等具体工具里。
 
+## 决策 29：path-jail = 进程内文件工具围栏
+
+path-jail 不是 OS 沙箱，而是给进程内 Python 文件工具补上的逻辑边界。第一版只管 `read_file` / `list_directory` / `glob` / `grep` / `write_file` / `edit_file`，统一从 `builtins._resolve` 进入 `ConfinementPolicy` 判定；`run_bash`、Skill 脚本和 MCP 外部进程不会因此变安全，它们等后续 `confined_run` 与平台沙箱接缝。
+
+默认策略是 `workspace`：read roots = write roots = 当前 `workdir`。读不能默认全放开，因为工具返回会进入模型上下文和 session，越界读同样可能泄露用户目录、密钥或历史材料。需要更大阅读半径时，用显式 `expanded_read(workdir, extra_read_roots)` 增加只读根；写入根仍默认只在 `workdir`。真正完全信任的嵌入场景才传 `ConfinementPolicy.disabled()`，它不是权限模式的副作用。
+
+几条硬边界：
+- `FULL_ACCESS` 只跳过确认门，不关闭 path-jail。
+- 相对路径、绝对路径、Windows 上的 `/mnt/c/...` 兼容路径都会先规范化再判定。
+- 判定用解析后的真实路径，符号链接指向根外会被拒绝。
+- `glob` / `grep` 不只检查搜索起点，还会对每个产物二次检查；越界产物被省略并返回可纠正提示。
+- 新文件写入也检查解析后的父路径，防止通过 symlink 目录把文件写到根外。
+
 ## 施工顺序
 
 1. `tools.py`：`ToolResult` / `ToolError` / `@tool` 注册表 —— 地基
@@ -441,6 +454,7 @@ MCP 与 Skill 一样属于“复用成熟生态”的能力，但它的位置不
 - [x] **任务完成验证（MVP）**：主模型负责执行、工具调用与用户交互；独立 `judge_model` 只接收最近三个不重复用户输入和主模型最后可见回复，返回结构化完成 verdict。任务层不推断行动范围、不维护执行计划、不拦截工具。
 - [x] **Skill 加载运行（MVP）**：复用 Claude Code / Codex / Cursor 风格 `SKILL.md` 目录包；system 只注入轻量索引，完整正文、资源与脚本按需通过工具加载，脚本不绕过权限门。
 - [x] **MCP client（MVP）**：复用通用 MCP server；system 只注入 server 轻量索引，stdio server 工具按需发现/调用，外部进程启动和 MCP tool 调用不绕过权限门。
+- [x] **Path-jail v1**：进程内文件工具默认限制在 `workdir`，支持显式扩展只读 roots；越界路径、符号链接逃逸、新文件父目录逃逸和 glob/grep 产物逃逸均有回归覆盖。
 
 版本化主线：
 

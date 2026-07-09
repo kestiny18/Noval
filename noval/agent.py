@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional
 
 from .client import LLMClient, LLMResponse, tool_message
 from .config import Config
+from .confinement import ConfinementPolicy
 from .context import ContextManager
 from .executor import Approver, execute_tool_call
 from .mcp import McpRegistry, McpSnapshotDiff, mcp_index_context
@@ -204,6 +205,7 @@ class Agent:
         task_controller: Optional[TaskController] = None,
         skill_registry: Optional[SkillRegistry] = None,
         mcp_registry: Optional[McpRegistry] = None,
+        confinement: Optional[ConfinementPolicy] = None,
     ):
         self.client = client
         self.config = config
@@ -214,6 +216,7 @@ class Agent:
         self.task_controller = task_controller or TaskController()
         # workdir 是 per-invocation 状态：本次启动各自决定，不存进全局 settings.json
         self.workdir = Path(workdir).resolve() if workdir else Path.cwd()
+        self.confinement = confinement or ConfinementPolicy.workspace(self.workdir)
         self._skills_auto_refresh = skill_registry is None
         self.skill_registry = skill_registry or SkillRegistry.discover(self.workdir)
         self._skill_snapshot = self.skill_registry.snapshot()
@@ -225,6 +228,7 @@ class Agent:
         self.context = Context(
             workdir=self.workdir,
             shell_backend=shell_backend,
+            confinement=self.confinement,
             permissions=permissions or PermissionController(),
             skills=self.skill_registry,
             skills_auto_refresh=self._skills_auto_refresh,

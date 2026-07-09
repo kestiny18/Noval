@@ -19,6 +19,9 @@ import subprocess
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+from .confinement import (
+    PathAccess, PathConfinementError, assert_path_allowed, is_path_allowed,
+)
 from .tools import Context, Risk, ToolError, tool
 from .shell import resolve_shell_backend
 from .skills import SkillRegistry
@@ -50,18 +53,45 @@ def _wsl_to_windows(s: str) -> str:
     return f"{m.group(1).upper()}:{m.group(2) or '/'}" if m else s
 
 
-def _resolve(ctx: Context, path: str) -> Path:
+def _resolve(ctx: Context, path: str, access: PathAccess = PathAccess.READ) -> Path:
     """统一路径归一化：相对路径基于 workdir，展开 ~，返回绝对规范路径。
     Read/Write/Edit/grep/glob 全走它，保证路径 key 一致。
     run_bash 用 WSL 路径(/mnt/e/..)，但本类工具是原生 Python——在 Windows 上把模型
-    顺手给的 /mnt 路径翻译回盘符路径，让工具对两种约定都「forgiving」。"""
+    顺手给的 /mnt 路径翻译回盘符路径，让工具对两种约定都「forgiving」。
+    path-jail 也在这里统一判定，避免每个工具散落自己的边界检查。"""
     s = str(path)
     if os.name == "nt":
         s = _wsl_to_windows(s)
     p = Path(s).expanduser()
     if not p.is_absolute():
         p = ctx.workdir / p
-    return p.resolve()
+    resolved = p.resolve(strict=False)
+    try:
+        assert_path_allowed(ctx.confinement, ctx.workdir, resolved, access)
+    except PathConfinementError as e:
+        raise _path_denied(path, e)
+    return resolved
+
+
+def _path_denied(path: str, err: PathConfinementError) -> ToolError:
+    label = "read" if err.access == PathAccess.READ else "write"
+    roots = "\n".join(f"- {root}" for root in err.roots) or "- (none)"
+    return ToolError(
+        f"path-jail 拒绝 {label} '{path}'；解析后路径为 {err.path}，"
+        f"不在允许的 {label} roots 内。\n"
+        f"Allowed {label} roots / 允许的 {label} roots:\n{roots}\n"
+        "请改用 workdir 内路径，或用更合适的 --workdir / ConfinementPolicy 启动 Noval。"
+    )
+
+
+def _allowed_for_read(ctx: Context, p: Path) -> bool:
+    return is_path_allowed(ctx.confinement, ctx.workdir, p, PathAccess.READ)
+
+
+def _jail_omitted_note(count: int) -> str:
+    if count <= 0:
+        return ""
+    return f"\n\n[path-jail: 已省略 {count} 个越界结果；如需访问，请调整 workdir 或 ConfinementPolicy]"
 
 
 def _read_text(p: Path) -> str:
@@ -372,7 +402,7 @@ def read_file(ctx: Context, path: str, offset: int = 1, limit: Optional[int] = N
 def write_file(ctx: Context, path: str, content: str) -> str:
     """把内容写入文件（全量覆盖）。已存在的文件必须先用 read_file 读过；新文件免。
     自动创建父目录。内容按原样落盘（不改写换行）。"""
-    p = _resolve(ctx, path)
+    p = _resolve(ctx, path, PathAccess.WRITE)
     if p.is_dir():
         raise ToolError(f"'{path}' 是目录，无法作为文件写入")
     existed = p.exists()
@@ -397,7 +427,7 @@ def edit_file(ctx: Context, path: str, old_string: str, new_string: str,
     改前须先用 read_file 读过该文件。"""
     if old_string == new_string:
         raise ToolError("old_string 与 new_string 相同，无需修改")
-    p = _resolve(ctx, path)
+    p = _resolve(ctx, path, PathAccess.WRITE)
     if not p.exists():
         raise _not_found(ctx, path, p)
     if p.is_dir():
@@ -465,15 +495,24 @@ def glob(ctx: Context, pattern: str, path: str = ".") -> str:
     if not root.is_dir():
         raise ToolError(f"'{path}' 不是有效目录")
     hits = [Path(m) for m in _glob.glob(str(root / pattern), recursive=True)]
-    files = [m for m in hits if m.is_file()]
+    omitted = 0
+    files = []
+    for m in hits:
+        if not m.is_file():
+            continue
+        if not _allowed_for_read(ctx, m):
+            omitted += 1
+            continue
+        files.append(m.resolve(strict=False))
     files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
     if not files:
-        return "未找到匹配的文件。"
+        return "未找到匹配的文件。" + _jail_omitted_note(omitted)
     limit = 100
     truncated = len(files) > limit
     out = "\n".join(_rel(ctx, f) for f in files[:limit])
     if truncated:
         out += f"\n\n[结果已截断到 {limit} 条，用更具体的 pattern/path 缩小范围]"
+    out += _jail_omitted_note(omitted)
     return out
 
 
@@ -498,7 +537,14 @@ def grep(ctx: Context, pattern: str, path: str = ".", glob_filter: str = "",
     if not root.exists():
         raise _not_found(ctx, path, root)
 
-    files = [root] if root.is_file() else list(_walk_files(root))
+    raw_files = [root] if root.is_file() else list(_walk_files(root))
+    omitted = 0
+    files = []
+    for f in raw_files:
+        if not _allowed_for_read(ctx, f):
+            omitted += 1
+            continue
+        files.append(f.resolve(strict=False))
     if glob_filter:
         files = [f for f in files if fnmatch.fnmatch(f.name, glob_filter)]
     files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
@@ -527,13 +573,14 @@ def grep(ctx: Context, pattern: str, path: str = ".", glob_filter: str = "",
 
     items = {"content": content_lines, "count": counts}.get(output_mode, file_hits)
     if not items:
-        return "未找到匹配。"
+        return "未找到匹配。" + _jail_omitted_note(omitted)
     truncated = head_limit > 0 and len(items) > head_limit
     shown = items[:head_limit] if head_limit > 0 else items
     header = "" if output_mode == "content" else f"Found {len(file_hits)} file(s):\n"
     out = header + "\n".join(shown)
     if truncated:
         out += f"\n\n[结果已截断到 {head_limit} 条，用更精确的 pattern/path/glob_filter，或调 head_limit]"
+    out += _jail_omitted_note(omitted)
     return out
 
 

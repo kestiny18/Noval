@@ -23,6 +23,9 @@
 - MCP tool-call output normalization: JSON text content is parsed into
   structured content so the model does not receive JSON wrapped inside a JSON
   string.
+- Path-jail v1 for in-process file tools via `ConfinementPolicy`, with default
+  read/write roots at `workdir` and an explicit expanded-read policy for
+  embedders.
 
 ### Changed
 
@@ -40,6 +43,12 @@
 - `run_bash` risk assessment now treats newline and carriage-return separators
   as command boundaries, preventing read-only command chains from hiding a later
   mutating command.
+
+### Security
+
+- File tools now reject paths that resolve outside their allowed read/write
+  roots, including parent-directory escapes, absolute paths outside `workdir`,
+  symlink escapes, new-file parent escapes, and `glob` / `grep` result escapes.
 
 ## [0.5.0] - 2026-07-08
 

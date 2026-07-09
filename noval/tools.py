@@ -24,6 +24,7 @@ from typing import (
 from .permissions import PermissionController
 
 if TYPE_CHECKING:
+    from .confinement import ConfinementPolicy
     from .mcp import McpRegistry
     from .shell import ShellBackend
     from .skills import SkillRegistry
@@ -78,6 +79,7 @@ class Context:
     read_state: Dict[str, ReadRecord] = field(default_factory=dict)
     permissions: PermissionController = field(default_factory=PermissionController)
     shell_backend: Optional["ShellBackend"] = None
+    confinement: Optional["ConfinementPolicy"] = None
     skills: Optional["SkillRegistry"] = None
     skills_auto_refresh: bool = False
     mcp: Optional["McpRegistry"] = None

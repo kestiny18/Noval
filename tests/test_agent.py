@@ -46,7 +46,7 @@ def test_full_tool_loop(tmp_path):
         mock_tool_call("c1", "read_file", json.dumps({"path": str(f)})),
         mock_text("文件里写着：机密内容"),
     ])
-    agent = Agent(client, cfg())
+    agent = Agent(client, cfg(), workdir=str(tmp_path))
 
     reply = agent.send("看看 doc.txt 写了什么")
     assert reply == "文件里写着：机密内容"
