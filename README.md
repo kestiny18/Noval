@@ -251,16 +251,11 @@ python -m evals.context.run
 
 真实模型生成、离线重放和报告命令见 [`evals/context/README.md`](evals/context/README.md)。真实模型 Eval 不进入普通 CI。
 
-## 路线图
+## 当前状态与方向
 
-1. ✅ 评测脊柱 MVP：结构、语义、冷恢复、对话内继续、受控行动与模型 Judge；真实切片、阈值回放和确定性安全后处理持续增强。
-2. ✅ 任务完成验证 MVP：主模型执行任务，独立 judge_model 只根据最近三个不重复用户输入和最后回复判定是否完成。
-3. ✅ Skill 加载运行 MVP：复用 `SKILL.md` 目录包，轻量索引注入 system，正文/资源/脚本按需加载。
-4. ⏳ 长任务与记忆：暂停/恢复、取消、唤醒和有来源的分层记忆。
-5. ⏳ 模型路由：按能力、成本、延迟和风险选择 Provider/模型。
-6. ⏳ 多 Agent：共享预算、结果合并和独立复核。
+Noval 当前处于 `0.x` 阶段，核心能力包括工具注册表、统一 executor、会话持久化、上下文 checkpoint、Skills/MCP MVP、任务完成 judge、运行日志和 Token 用量统计。它已经不是一次性原型，但公共接口仍会继续演进。
 
-详细阶段边界与出口标准见 [DESIGN.md](DESIGN.md#能力演进路线)。
+接下来的重点不是堆更多工具，而是继续加固内核边界：安全热修、path-jail、子进程沙箱接缝、hooks 验证闭环，以及真正 Provider 中立的内部消息模型。详细路线、版本门槛和设计权衡见 [DESIGN.md](DESIGN.md#能力演进路线)。
 
 ## 参与项目
 

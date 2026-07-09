@@ -427,15 +427,36 @@ MCP 与 Skill 一样属于“复用成熟生态”的能力，但它的位置不
 
 ## 能力演进路线
 
-按“先建立可测量闭环，再扩大行动半径”的顺序推进。每一阶段都继续复用并扩展 Eval，不能因为进入下一阶段就停止回归。
+按“先建立可测量闭环，再扩大行动半径”的顺序推进。每一阶段都继续复用并扩展 Eval，不能因为进入下一阶段就停止回归。外部评审、对标顶级 agent 和公开基准都只作为输入：**批判性吸收**，不照单全收。
 
+吸收原则：
+- 已经在代码中复现的问题优先于路线愿望；安全与成本问题可插队。
+- 触碰核心接缝（Provider / Registry / Executor / Session / Confinement）的能力优先于叶子功能。
+- 能被测试、Eval 或回放验证的能力优先；无法验证的能力先留在 backlog。
+- 公开 benchmark 是测量仪器，不是北极星；不得为了提分破坏“通用内核、场景解耦”的边界。
+- 产品层能力（IDE、PR 自动化、浏览器、多模态 UI、市场生态）默认不进内核路线，除非它们先被抽象成通用接缝。
+
+已完成的地基：
 - [x] **评测脊柱（MVP）**：已覆盖 checkpoint 结构/状态事实、真实模型摘要、对话内继续、冷恢复理解、受控工具行动、重复采样与不同模型 Judge。持续项包括摘要生成后的确定性安全校验、3 个匿名真实会话切片和阈值回放；这些作为 Eval backlog 并行推进，不阻塞下一阶段，但发现硬失败时必须优先修复。
 - [x] **任务完成验证（MVP）**：主模型负责执行、工具调用与用户交互；独立 `judge_model` 只接收最近三个不重复用户输入和主模型最后可见回复，返回结构化完成 verdict。任务层不推断行动范围、不维护执行计划、不拦截工具。
 - [x] **Skill 加载运行（MVP）**：复用 Claude Code / Codex / Cursor 风格 `SKILL.md` 目录包；system 只注入轻量索引，完整正文、资源与脚本按需通过工具加载，脚本不绕过权限门。
 - [x] **MCP client（MVP）**：复用通用 MCP server；system 只注入 server 轻量索引，stdio server 工具按需发现/调用，外部进程启动和 MCP tool 调用不绕过权限门。
-- [ ] **长任务与记忆**：支持持久任务、暂停/恢复、取消、唤醒条件与分层记忆；所有记忆有来源、时效、冲突与删除边界。
-- [ ] **模型路由**：按任务、成本、延迟、上下文和风险选择模型；统一 Provider 契约与指标，保留可回放、可比较的路由决策。
-- [ ] **多 Agent**：仅在单 Agent 的完成验证、恢复和权限闭环稳定后引入；要求共享预算、结果合并、冲突处理和独立复核。
+
+版本化主线：
+
+| 版本 | 主线 | 能力范围 | 出口标准 |
+|---|---|---|---|
+| `v0.5.x` | 安全热修线 | 修复 `run_bash` 换行/回车绕过确认门；补对抗性回归；降低脱敏误伤；为 Provider 请求加显式 timeout/必要重试 | 安全回归与现有测试全绿；不引入新架构面 |
+| `v0.6.0` | 行动边界硬化 | 引入 `ConfinementPolicy`；path-jail v1 只接入 `_resolve`；文件工具按 read/write roots 判定；越界返回可纠正 `ToolError` | read/write/edit/glob/grep 继承同一边界；符号链接逃逸、新文件父目录、glob/grep 产物均有测试 |
+| `v0.7.0` | 子进程沙箱接缝 | 把 `run_bash`、`run_skill_script`、MCP 外部进程收束到 `confined_run`；实现 `NoSandbox` 诚实降级与后端探测；后续接 Bubblewrap / 平台 backend | 仓库里没有散落的外部进程执行入口；timeout、trace、截断、脱敏和权限复用 executor 边界 |
+| `v0.8.0` | Hooks 与验证闭环 | 生命周期事件 `PreToolUse` / `PostToolUse` / `Stop`；hook outcome 严格限定为 `allow` / `deny(reason)` / `context(text)`；CommandHook 复用 `confined_run`；PostToolUse 可跑 lint/test 并回喂诊断 | hook 不能覆盖 system、权限、脱敏、用户指令或 session 历史；失败隔离可观测；改后验证闭环可测 |
+| `v0.9.0` | Provider 真中立 | 内部 canonical message；各 Provider adapter 做双向翻译；session/checkpoint 不再直接持有 OpenAI wire；路由决策可回放 | agent 循环、context、session 只依赖 canonical message；Provider 特有字段只存在 adapter 层 |
+| `v1.0.0` | 可嵌入稳定内核 | headless API / SDK；精确重建第 N 步模型 request；Eval 成为发布门槛；Terminal-Bench 小切片作为客观回归信号 | 公共契约稳定；公开基准只做回归测量，不驱动内核变形 |
+
+被版本门约束的长期能力：
+- **长任务与记忆**：等 `v0.6`/`v0.7` 的硬边界与 `v0.8` 的验证闭环稳定后推进；所有记忆必须有来源、时效、冲突与删除边界。
+- **模型路由**：等 `v0.9` canonical Provider 完成后推进；按任务、成本、延迟、上下文和风险选择模型，并保留可回放、可比较的路由决策。
+- **多 Agent**：等单 Agent 的完成验证、恢复、权限、沙箱和 hooks 闭环稳定后再引入；要求共享预算、结果合并、冲突处理和独立复核。
 
 阶段出口不是“代码已经写完”，而是对应能力已有确定性测试、代表性 Eval、失败回归样本和可观察指标。
 
@@ -444,7 +465,7 @@ MCP 与 Skill 一样属于“复用成熟生态”的能力，但它的位置不
 - 会话持久化：核心已落地（JSONL store + Agent 接入 + CLI `--resume`），后续可补 UI/标题编辑/归档等体验层。
 - 上下文压缩与 Eval 脊柱 MVP 已落地；继续补齐确定性安全后处理、真实切片和阈值回放。
 - 系统提示词的管理与版本化。
-- 多 provider 适配器（目前仅 DeepSeek）。
+- Provider canonical message 与多 provider 适配器（目前仅 DeepSeek / OpenAI-compatible wire）。
 - 工具数 >8 后 `tools.py` 的拆分。
 - **原地打转检测**：识别"连续 N 次完全相同的工具调用（同名 + 同参）"，比 max_steps 更早止损，
   并反馈给模型"你在重复"。max_steps 是总闸，这是更细的"卡在同一动作"识别（评审建议，优化项不急）。
