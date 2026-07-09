@@ -6,8 +6,14 @@
 
 ### Added
 
+- Versioned roadmap for post-`0.5.0` work, including the safety hotfix line,
+  path-jail/confinement, unified subprocess execution, hooks, Provider-neutral
+  canonical messages, and `v1.0.0` embedding criteria.
+- Provider request timeout and retry settings (`request_timeout_seconds`,
+  `request_max_retries`) so a hung model API call does not block the agent loop
+  indefinitely.
 - MCP client MVP: discover user/project `mcpServers` config from
-  `~/.noval/mcp.json` and `<workdir>/.mcp.json`, inject only a lightweight MCP
+  `~/.noval/mcp.json` and `<workdir>/.noval/mcp.json`, inject only a lightweight MCP
   server index, refresh config changes at turn boundaries, and expose guarded
   `list_mcp_servers` / `list_mcp_tools` / `call_mcp_tool` tools for stdio MCP
   servers.
@@ -17,6 +23,23 @@
 - MCP tool-call output normalization: JSON text content is parsed into
   structured content so the model does not receive JSON wrapped inside a JSON
   string.
+
+### Changed
+
+- Project-level MCP config now lives at `<workdir>/.noval/mcp.json` instead of
+  the repository root `.mcp.json`, matching the user-level `mcp.json` file name
+  and keeping Noval project metadata under `.noval/`.
+- Completion judge calls now run only after a turn actually used tools, avoiding
+  unnecessary judge-model spend for direct conversational replies.
+- Tool-output redaction keeps obvious source-code references visible, such as
+  type annotations and environment-variable lookups, while still redacting
+  concrete credential values.
+
+### Fixed
+
+- `run_bash` risk assessment now treats newline and carriage-return separators
+  as command boundaries, preventing read-only command chains from hiding a later
+  mutating command.
 
 ## [0.5.0] - 2026-07-08
 
