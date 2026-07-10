@@ -5,13 +5,13 @@
 [![CI](https://github.com/kestiny18/Noval/actions/workflows/ci.yml/badge.svg)](https://github.com/kestiny18/Noval/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
-[![Release](https://img.shields.io/badge/release-v0.5.0-brightgreen.svg)](https://github.com/kestiny18/Noval/releases/tag/v0.5.0)
+[![Release](https://img.shields.io/badge/release-v0.7.0-brightgreen.svg)](https://github.com/kestiny18/Noval/releases/tag/v0.7.0)
 
 一个与具体场景解耦的 Python Agent 小核心：负责模型调用、工具注册与执行、安全确认、项目上下文和会话恢复，不绑定 coding、搜索或任何单一应用。
 
 Noval 关注的不是“再包一层聊天接口”，而是 Agent 真正容易失控的地基：模型怎样可靠地感知工具结果、怎样从错误中自我纠正、怎样限制危险操作，以及怎样在中断后恢复合法的对话历史。
 
-> **当前状态**：`v0.5.0` 是当前稳定里程碑，在运行治理基础上补齐了 context Eval 脊柱、任务完成 judge、增量上下文压缩和 Skills 加载运行机制。
+> **当前状态**：`v0.7.0` 是当前稳定里程碑，在可扩展 Agent 内核之上补齐了 MCP client、path-jail、统一子进程运行时，以及 Linux Bubblewrap 硬沙箱。
 
 ## 核心设计
 
@@ -243,6 +243,7 @@ project.json
 | `v0.3.0` | 会话持久化与恢复：多项目隔离、append-only 日志、中断自愈 | `v0.3.0` |
 | `v0.4.0` | 运行治理与可观测性：会话权限、脱敏日志、thinking 协议、Token 统计 | `v0.4.0` |
 | `v0.5.0` | 评测与可扩展能力：context Eval、任务完成 judge、增量压缩、Skills 运行机制 | `v0.5.0` |
+| `v0.7.0` | 行动边界与进程隔离：MCP client、path-jail、统一子进程运行时、Linux Bubblewrap | `v0.7.0` |
 
 详细变化见 [CHANGELOG.md](CHANGELOG.md)。
 
@@ -253,7 +254,7 @@ pip install -e ".[dev]"
 python -m pytest -q
 ```
 
-CI 覆盖 Python 3.10-3.13，并在 Windows 上额外验证当前主版本。
+CI 覆盖 Python 3.10-3.13，并在 Windows 上额外验证当前主版本；专用 Linux job 会安装 Bubblewrap 并执行真实逃逸测试。
 
 上下文 checkpoint 的确定性 Eval 资产可零成本校验：
 

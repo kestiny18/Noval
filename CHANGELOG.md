@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-10
+
 ### Added
 
 - Versioned roadmap for post-`0.5.0` work, including the safety hotfix line,
@@ -178,7 +180,8 @@
 - 带 `max_steps` 的 Agent 循环与 CLI。
 - `MockClient` 和离线测试。
 
-[Unreleased]: https://github.com/kestiny18/Noval/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/kestiny18/Noval/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/kestiny18/Noval/compare/v0.5.0...v0.7.0
 [0.5.0]: https://github.com/kestiny18/Noval/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/kestiny18/Noval/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/kestiny18/Noval/compare/v0.2.0...v0.3.0
