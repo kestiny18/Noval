@@ -18,7 +18,7 @@ from noval.client import (
 )
 from noval.config import Config
 from noval.permissions import PermissionController, PermissionMode
-from noval.process import ProcessRuntime
+from noval.process import NoSandbox, ProcessRuntime
 from noval.session import JsonlSessionStore, SessionMeta
 from noval.shell import ShellBackend, to_bash_path
 from noval.skills import SkillRegistry
@@ -173,7 +173,18 @@ def test_agent_context_keeps_single_process_runtime():
     assert agent.mcp_registry._client.runtime is runtime
 
 
+def test_agent_derives_subprocess_roots_from_workdir(tmp_path):
+    agent = Agent(MockClient([mock_text("hi")]), cfg(), workdir=str(tmp_path))
+
+    assert agent.process_runtime.policy.read_roots == (tmp_path.resolve(),)
+    assert agent.process_runtime.policy.write_roots == (tmp_path.resolve(),)
+
+
 def test_cli_required_sandbox_fails_before_loading_config(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "noval.process.detect_sandbox_backend",
+        lambda: NoSandbox("test fallback"),
+    )
     monkeypatch.setattr(
         "noval.config.Config.load",
         lambda: pytest.fail("config should not load before required sandbox check"),

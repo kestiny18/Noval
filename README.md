@@ -1,4 +1,6 @@
-# Noval
+<p align="center">
+  <img alt="Noval" src="assets/brand/logo/noval-logo-primary.png" width="582">
+</p>
 
 [![CI](https://github.com/kestiny18/Noval/actions/workflows/ci.yml/badge.svg)](https://github.com/kestiny18/Noval/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
@@ -87,6 +89,9 @@ python -m noval --workdir C:/path/to/project
 # 没有硬沙箱后端时拒绝启动外部进程
 python -m noval --sandbox required
 
+# 在硬沙箱中禁用网络
+python -m noval --sandbox required --sandbox-network deny
+
 # 恢复当前 workdir 的历史会话
 python -m noval --resume
 
@@ -117,7 +122,7 @@ Windows 上如果 `python` 命中 Microsoft Store 占位程序，请把命令中
 
 文件类工具默认受 path-jail 限制：`read_file` / `list_directory` / `glob` / `grep` 只能读取解析后位于允许 read roots 内的路径，`write_file` / `edit_file` 只能写入允许 write roots 内的路径。默认 read/write roots 都是当前 `workdir`；嵌入方可用 `ConfinementPolicy.expanded_read(...)` 显式增加只读根。`FULL_ACCESS` 只跳过确认门，不关闭 path-jail。
 
-`run_bash`、Skill 脚本、shell 探测和 MCP stdio 启动统一经过 `ProcessRuntime`。一次性命令使用 `run()`，MCP 由 `prepare()` 包装 command/args/env/cwd 后继续交给官方 SDK 管理双向 stdio。`v0.7.0` 只提供 `NoSandbox` 与可替换后端接缝，默认 `--sandbox auto` 会明确报告未启用 OS 硬沙箱；`--sandbox required` 在没有硬后端时 fail-closed；`--sandbox off` 表示显式关闭。沙箱策略是本次启动状态，不写入 session sidecar，`FULL_ACCESS` 也不会改变它。Bubblewrap 等真实平台后端属于后续 `v0.7.x`。
+`run_bash`、Skill 脚本、shell 探测和 MCP stdio 启动统一经过 `ProcessRuntime`。一次性命令使用 `run()`，MCP 由 `prepare()` 包装 command/args/env/cwd 后继续交给官方 SDK 管理双向 stdio。Linux 上会探测 Bubblewrap 的实际可用性，通过后才启用硬沙箱：系统运行目录只读、工作区可写、未授权宿主路径不可见，并使用独立 PID namespace；`--sandbox-network deny` 还会隔离网络 namespace。默认 `--sandbox auto` 在缺少可用后端时明确降级为 `NoSandbox`，`--sandbox required` 则 fail-closed，`--sandbox off` 表示显式关闭。策略是本次启动状态，不写入 session sidecar，`FULL_ACCESS` 也不会改变它。
 
 ## Skills
 
@@ -262,7 +267,7 @@ python -m evals.context.run
 
 Noval 当前处于 `0.x` 阶段，核心能力包括工具注册表、统一 executor、会话持久化、上下文 checkpoint、Skills/MCP MVP、任务完成 judge、运行日志和 Token 用量统计。它已经不是一次性原型，但公共接口仍会继续演进。
 
-接下来的重点不是堆更多工具，而是继续加固内核边界：平台硬沙箱后端、hooks 验证闭环，以及真正 Provider 中立的内部消息模型。详细路线、版本门槛和设计权衡见 [DESIGN.md](DESIGN.md#能力演进路线)。
+接下来的重点不是堆更多工具，而是继续扩展其它平台硬沙箱、建设 hooks 验证闭环，以及实现真正 Provider 中立的内部消息模型。详细路线、版本门槛和设计权衡见 [DESIGN.md](DESIGN.md#能力演进路线)。
 
 ## 参与项目
 

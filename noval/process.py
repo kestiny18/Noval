@@ -8,13 +8,16 @@ the official protocol SDK.
 from __future__ import annotations
 
 import logging
+import os
 import platform
+import shutil
 import subprocess
 import time
 from dataclasses import dataclass, field, replace
 from enum import Enum
+from functools import lru_cache
 from pathlib import Path
-from typing import Mapping, Optional, Protocol, Tuple
+from typing import Iterable, Mapping, Optional, Protocol, Tuple
 
 
 log = logging.getLogger("noval.process")
@@ -42,6 +45,26 @@ class SandboxPolicy:
 
     mode: SandboxMode = SandboxMode.AUTO
     network: NetworkAccess = NetworkAccess.INHERIT
+    read_roots: Tuple[Path, ...] = field(default_factory=tuple)
+    write_roots: Tuple[Path, ...] = field(default_factory=tuple)
+
+    @classmethod
+    def workspace(
+        cls,
+        workdir: Path,
+        *,
+        mode: SandboxMode = SandboxMode.AUTO,
+        network: NetworkAccess = NetworkAccess.INHERIT,
+        extra_read_roots: Iterable[Path] = (),
+    ) -> "SandboxPolicy":
+        root = _normalize_path(workdir)
+        extras = tuple(_normalize_path(path) for path in extra_read_roots)
+        return cls(
+            mode=mode,
+            network=network,
+            read_roots=_deduplicate_paths((root, *extras)),
+            write_roots=(root,),
+        )
 
 
 @dataclass(frozen=True)
@@ -149,6 +172,83 @@ class NoSandbox:
         )
 
 
+class BubblewrapBackend:
+    """Linux namespace sandbox implemented by the Bubblewrap policy builder."""
+
+    _SYSTEM_READ_ROOTS = (
+        Path("/usr"),
+        Path("/bin"),
+        Path("/sbin"),
+        Path("/lib"),
+        Path("/lib64"),
+        Path("/etc"),
+        Path("/nix/store"),
+    )
+
+    def __init__(self, executable: Path):
+        self.executable = _normalize_path(executable)
+        self._status = SandboxStatus(
+            backend="bubblewrap",
+            strength=SandboxStrength.HARD,
+            capabilities=SandboxCapabilities(
+                filesystem=True,
+                network=True,
+                process_tree=True,
+            ),
+            reason=f"usable Bubblewrap at {self.executable}",
+        )
+
+    @property
+    def status(self) -> SandboxStatus:
+        return self._status
+
+    def prepare(self, spec: ProcessSpec, policy: SandboxPolicy) -> PreparedProcess:
+        read_roots, write_roots = _effective_sandbox_roots(spec, policy)
+        executable_root = _executable_mount_root(spec)
+        if executable_root is not None:
+            read_roots = _deduplicate_paths((*read_roots, executable_root))
+
+        system_roots = tuple(path for path in self._SYSTEM_READ_ROOTS if path.exists())
+        visible_roots = _deduplicate_paths((*system_roots, *read_roots, *write_roots))
+        argv = [
+            str(self.executable),
+            "--unshare-all",
+            "--die-with-parent",
+            "--new-session",
+        ]
+        if policy.network is NetworkAccess.INHERIT:
+            argv.append("--share-net")
+
+        argv.extend((
+            "--proc", "/proc",
+            "--dev", "/dev",
+            "--tmpfs", "/tmp",
+        ))
+        for directory in _mount_parent_directories(visible_roots):
+            argv.extend(("--dir", str(directory)))
+        for root in system_roots:
+            argv.extend(("--ro-bind", str(root), str(root)))
+        for root in read_roots:
+            if not any(_contains(write_root, root) for write_root in write_roots):
+                argv.extend(("--ro-bind", str(root), str(root)))
+        for root in write_roots:
+            argv.extend(("--bind", str(root), str(root)))
+
+        argv.extend((
+            "--chdir", str(spec.cwd),
+            "--",
+            *spec.argv,
+        ))
+        return PreparedProcess(
+            argv=tuple(argv),
+            cwd=spec.cwd,
+            env=spec.env,
+            timeout=spec.timeout,
+            purpose=spec.purpose,
+            sandbox=self.status,
+        )
+
+
 class ProcessRuntime:
     """Single process boundary shared by shell, Skills, probes, and MCP."""
 
@@ -159,12 +259,10 @@ class ProcessRuntime:
         backend: Optional[SandboxBackend] = None,
     ):
         self.policy = policy or SandboxPolicy()
-        detected = backend or detect_sandbox_backend()
-        self.backend: SandboxBackend = (
-            NoSandbox("sandbox disabled explicitly")
-            if self.policy.mode is SandboxMode.OFF
-            else detected
-        )
+        if self.policy.mode is SandboxMode.OFF:
+            self.backend: SandboxBackend = NoSandbox("sandbox disabled explicitly")
+        else:
+            self.backend = backend or detect_sandbox_backend()
         log.info(
             "sandbox_mode=%s backend=%s strength=%s reason=%s",
             self.policy.mode.value,
@@ -233,14 +331,46 @@ class ProcessRuntime:
         )
 
 
+@lru_cache(maxsize=1)
 def detect_sandbox_backend() -> SandboxBackend:
-    """Detect implemented hard backends without mistaking WSL/containers for one.
-
-    v0.7.0 establishes the adapter boundary but intentionally ships no hard
-    backend. Platform adapters can replace this function as they land.
-    """
+    """Return Bubblewrap only after its required namespace features work."""
     system = platform.system() or "unknown platform"
-    return NoSandbox(f"no hard sandbox backend is implemented for {system} in v0.7.0")
+    if system != "Linux":
+        return NoSandbox(f"Bubblewrap is only supported on Linux (host: {system})")
+
+    executable = shutil.which("bwrap")
+    if executable is None:
+        return NoSandbox("Bubblewrap executable 'bwrap' was not found on PATH")
+
+    probe = (
+        executable,
+        "--unshare-all",
+        "--die-with-parent",
+        "--new-session",
+        "--ro-bind", "/", "/",
+        "--proc", "/proc",
+        "--dev", "/dev",
+        "--",
+        "/bin/true",
+    )
+    try:
+        result = subprocess.run(
+            list(probe),
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+            shell=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return NoSandbox(f"Bubblewrap usability probe failed: {error}")
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "unknown error").strip().splitlines()
+        reason = detail[-1] if detail else "unknown error"
+        return NoSandbox(f"Bubblewrap usability probe failed: {reason}")
+    return BubblewrapBackend(Path(executable))
 
 
 def sandbox_status_text(runtime: ProcessRuntime) -> str:
@@ -254,7 +384,10 @@ def sandbox_status_text(runtime: ProcessRuntime) -> str:
         if status.capabilities.process_tree:
             capabilities.append("process-tree")
         detail = ", ".join(capabilities) or "backend-defined"
-        return f"硬沙箱: {status.backend} ({detail})"
+        return (
+            f"硬沙箱: {status.backend} ({detail}; "
+            f"network={runtime.policy.network.value})"
+        )
     if runtime.policy.mode is SandboxMode.OFF:
         return "未启用 OS 硬沙箱（已显式关闭）"
     reason = status.reason or "hard sandbox backend unavailable"
@@ -280,3 +413,69 @@ def _normalize_spec(spec: ProcessSpec) -> ProcessSpec:
         timeout=timeout,
         purpose=str(spec.purpose or "subprocess"),
     )
+
+
+def _effective_sandbox_roots(
+    spec: ProcessSpec,
+    policy: SandboxPolicy,
+) -> Tuple[Tuple[Path, ...], Tuple[Path, ...]]:
+    write_roots = _deduplicate_paths(policy.write_roots or (spec.cwd,))
+    read_roots = _deduplicate_paths(policy.read_roots or write_roots)
+    for root in (*read_roots, *write_roots):
+        if not root.is_dir():
+            raise ProcessLaunchError(f"sandbox root is not a directory: {root}")
+    if not any(_contains(root, spec.cwd) for root in (*read_roots, *write_roots)):
+        read_roots = _deduplicate_paths((*read_roots, spec.cwd))
+    return read_roots, write_roots
+
+
+def _executable_mount_root(spec: ProcessSpec) -> Optional[Path]:
+    executable = spec.argv[0]
+    if os.path.isabs(executable):
+        candidate: Optional[str] = executable
+    else:
+        path = spec.env.get("PATH") if spec.env is not None else None
+        candidate = shutil.which(executable, path=path)
+    if not candidate:
+        return None
+
+    executable_path = _normalize_path(Path(candidate))
+    if any(_contains(root, executable_path) for root in BubblewrapBackend._SYSTEM_READ_ROOTS):
+        return None
+    parent = executable_path.parent
+    return parent.parent if parent.name in {"bin", "sbin"} else parent
+
+
+def _mount_parent_directories(roots: Iterable[Path]) -> Tuple[Path, ...]:
+    parents = set()
+    precreated = {Path("/tmp"), Path("/proc"), Path("/dev")}
+    for root in roots:
+        current = root.parent
+        while current != current.parent:
+            if current.exists() and current not in precreated:
+                parents.add(current)
+            current = current.parent
+    return tuple(sorted(parents, key=lambda path: (len(path.parts), str(path))))
+
+
+def _deduplicate_paths(paths: Iterable[Path]) -> Tuple[Path, ...]:
+    unique = []
+    seen = set()
+    for path in paths:
+        normalized = _normalize_path(path)
+        key = os.path.normcase(os.path.normpath(str(normalized)))
+        if key not in seen:
+            seen.add(key)
+            unique.append(normalized)
+    return tuple(unique)
+
+
+def _contains(root: Path, candidate: Path) -> bool:
+    try:
+        return os.path.commonpath((str(root), str(candidate))) == str(root)
+    except ValueError:
+        return False
+
+
+def _normalize_path(path: Path) -> Path:
+    return Path(path).expanduser().resolve(strict=False)

@@ -17,13 +17,13 @@ from typing import Any, Dict, List, Optional
 
 from .client import LLMClient, LLMResponse, tool_message
 from .config import Config
-from .confinement import ConfinementPolicy
+from .confinement import ConfinementPolicy, PathAccess
 from .context import ContextManager
 from .executor import Approver, execute_tool_call
 from .mcp import McpRegistry, McpSnapshotDiff, mcp_index_context
 from .permissions import PermissionController, PermissionMode, PermissionState
 from .process import (
-    ProcessRuntime, SandboxMode, SandboxPolicy, sandbox_status_text,
+    NetworkAccess, ProcessRuntime, SandboxMode, SandboxPolicy, sandbox_status_text,
 )
 from .session import (
     JsonlSessionStore, PersistentSessionStore, SessionMeta, SessionMetadataStore,
@@ -230,7 +230,21 @@ class Agent:
         self.confinement = confinement or ConfinementPolicy.workspace(self.workdir)
         if process_runtime is not None and sandbox_policy is not None:
             raise ValueError("process_runtime 与 sandbox_policy 不能同时传入")
-        self.process_runtime = process_runtime or ProcessRuntime(policy=sandbox_policy)
+        if process_runtime is not None:
+            self.process_runtime = process_runtime
+        else:
+            policy = sandbox_policy or SandboxPolicy()
+            policy = SandboxPolicy(
+                mode=policy.mode,
+                network=policy.network,
+                read_roots=policy.read_roots or self.confinement.roots_for(
+                    self.workdir, PathAccess.READ
+                ),
+                write_roots=policy.write_roots or self.confinement.roots_for(
+                    self.workdir, PathAccess.WRITE
+                ),
+            )
+            self.process_runtime = ProcessRuntime(policy=policy)
         self._skills_auto_refresh = skill_registry is None
         self.skill_registry = skill_registry or SkillRegistry.discover(self.workdir)
         self._skill_snapshot = self.skill_registry.snapshot()
@@ -687,6 +701,12 @@ def run_cli(argv: Optional[List[str]] = None) -> None:
         help="子进程沙箱策略：auto（默认，缺后端时诚实降级）/ required（无硬后端则拒绝）/ off",
     )
     parser.add_argument(
+        "--sandbox-network",
+        choices=[access.value for access in NetworkAccess],
+        default=NetworkAccess.INHERIT.value,
+        help="硬沙箱网络策略：inherit（默认）/ deny（隔离网络 namespace）",
+    )
+    parser.add_argument(
         "--resume",
         nargs="?",
         const="",
@@ -701,7 +721,11 @@ def run_cli(argv: Optional[List[str]] = None) -> None:
         raise SystemExit(f"--workdir 不是有效目录: {workdir}")
     os.chdir(workdir)  # 让文件工具与 run_bash 子进程的相对路径都落在 workdir
 
-    sandbox_policy = SandboxPolicy(mode=SandboxMode(args.sandbox))
+    sandbox_policy = SandboxPolicy.workspace(
+        workdir,
+        mode=SandboxMode(args.sandbox),
+        network=NetworkAccess(args.sandbox_network),
+    )
     process_runtime = ProcessRuntime(policy=sandbox_policy)
     if sandbox_policy.mode is SandboxMode.REQUIRED and not process_runtime.status.is_hard:
         raise SystemExit(f"--sandbox required: {sandbox_status_text(process_runtime)}")

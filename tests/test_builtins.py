@@ -14,7 +14,7 @@ from noval.builtins import (
 )
 from noval.confinement import ConfinementPolicy
 from noval.permissions import PermissionController, PermissionMode
-from noval.process import ProcessRuntime, SandboxMode, SandboxPolicy
+from noval.process import NoSandbox, ProcessRuntime, SandboxMode, SandboxPolicy
 from noval.tools import Context, Risk, ToolError
 from noval.shell import ShellBackend, resolve_shell_backend
 
@@ -458,7 +458,10 @@ def test_run_bash_uses_runtime_frozen_in_context(tmp_path):
 def test_full_access_does_not_disable_required_sandbox(tmp_path):
     permissions = PermissionController()
     permissions.set_mode(PermissionMode.FULL_ACCESS)
-    runtime = ProcessRuntime(policy=SandboxPolicy(mode=SandboxMode.REQUIRED))
+    runtime = ProcessRuntime(
+        policy=SandboxPolicy(mode=SandboxMode.REQUIRED),
+        backend=NoSandbox("test fallback"),
+    )
     context = Context(
         workdir=tmp_path,
         shell_backend=ShellBackend("chosen-bash", "Git Bash"),

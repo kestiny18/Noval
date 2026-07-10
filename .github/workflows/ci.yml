@@ -31,3 +31,19 @@ jobs:
           cache: pip
       - run: python -m pip install -e ".[dev]"
       - run: python -m pytest -q
+
+  bubblewrap:
+    runs-on: ubuntu-latest
+    env:
+      NOVAL_REQUIRE_BUBBLEWRAP: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install Bubblewrap
+        run: sudo apt-get update && sudo apt-get install --yes bubblewrap
+      - run: python -m pip install -e ".[dev]"
+      - name: Run real sandbox escape tests
+        run: python -m pytest -q tests/test_bubblewrap.py

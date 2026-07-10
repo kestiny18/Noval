@@ -32,6 +32,10 @@
 - Per-invocation `--sandbox auto|required|off` policy. Required mode fails
   closed before configuration or session state is loaded when no hard backend
   is available.
+- Linux Bubblewrap hard-sandbox backend with an actual namespace usability
+  probe, explicit read/write mounts, fresh `/tmp` and PID namespace, optional
+  network isolation, and dedicated CI escape tests.
+- Per-invocation `--sandbox-network inherit|deny` policy for hard backends.
 
 ### Changed
 
