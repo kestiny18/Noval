@@ -58,6 +58,9 @@
 - `run_bash` risk assessment now treats newline and carriage-return separators
   as command boundaries, preventing read-only command chains from hiding a later
   mutating command.
+- Bubblewrap detection now reports the Ubuntu/AppArmor user-namespace profile
+  prerequisite when loopback setup is denied; Linux CI loads the targeted
+  distro profile instead of disabling AppArmor globally.
 
 ### Security
 

@@ -43,7 +43,13 @@ jobs:
           python-version: "3.13"
           cache: pip
       - name: Install Bubblewrap
-        run: sudo apt-get update && sudo apt-get install --yes bubblewrap
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes bubblewrap apparmor-profiles apparmor-utils
+          sudo install -m 0644 \
+            /usr/share/apparmor/extra-profiles/bwrap-userns-restrict \
+            /etc/apparmor.d/bwrap-userns-restrict
+          sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
       - run: python -m pip install -e ".[dev]"
       - name: Run real sandbox escape tests
         run: python -m pytest -q tests/test_bubblewrap.py

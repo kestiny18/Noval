@@ -252,6 +252,28 @@ def test_detector_downgrades_when_bubblewrap_probe_fails(monkeypatch):
     assert "user namespaces disabled" in backend.status.reason
 
 
+def test_detector_explains_ubuntu_apparmor_loopback_failure(monkeypatch):
+    detect_sandbox_backend.cache_clear()
+    monkeypatch.setattr("noval.process.platform.system", lambda: "Linux")
+    monkeypatch.setattr("noval.process.shutil.which", lambda name: "/usr/bin/bwrap")
+    monkeypatch.setattr(
+        "noval.process.subprocess.run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0],
+            1,
+            "",
+            "bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted\n",
+        ),
+    )
+    try:
+        backend = detect_sandbox_backend()
+    finally:
+        detect_sandbox_backend.cache_clear()
+
+    assert isinstance(backend, NoSandbox)
+    assert "bwrap-userns-restrict profile" in backend.status.reason
+
+
 def test_only_process_module_imports_subprocess():
     package_root = Path(__file__).parents[1] / "noval"
     offenders = []

@@ -124,6 +124,8 @@ Windows 上如果 `python` 命中 Microsoft Store 占位程序，请把命令中
 
 `run_bash`、Skill 脚本、shell 探测和 MCP stdio 启动统一经过 `ProcessRuntime`。一次性命令使用 `run()`，MCP 由 `prepare()` 包装 command/args/env/cwd 后继续交给官方 SDK 管理双向 stdio。Linux 上会探测 Bubblewrap 的实际可用性，通过后才启用硬沙箱：系统运行目录只读、工作区可写、未授权宿主路径不可见，并使用独立 PID namespace；`--sandbox-network deny` 还会隔离网络 namespace。默认 `--sandbox auto` 在缺少可用后端时明确降级为 `NoSandbox`，`--sandbox required` 则 fail-closed，`--sandbox off` 表示显式关闭。策略是本次启动状态，不写入 session sidecar，`FULL_ACCESS` 也不会改变它。
 
+Ubuntu 24.04+ 若启用了 AppArmor 的 unprivileged user namespace 限制，需要安装并加载发行版提供的 `bwrap-userns-restrict` profile；Noval 的启动探测会把该问题作为 `NoSandbox` 原因明确报告。不要为了启用 Bubblewrap 而全局关闭 AppArmor 限制。
+
 ## Skills
 
 Noval 的 Skill 机制不发明新格式，而是复用 Claude Code / Codex / Cursor 常见的目录包：每个 Skill 是一个目录，入口为 `SKILL.md`，可带 `references/`、`scripts/` 等附属文件。启动时会扫描：

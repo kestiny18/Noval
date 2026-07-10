@@ -369,6 +369,11 @@ def detect_sandbox_backend() -> SandboxBackend:
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "unknown error").strip().splitlines()
         reason = detail[-1] if detail else "unknown error"
+        if "RTM_NEWADDR" in reason:
+            reason += (
+                "; Ubuntu/AppArmor may require the distro "
+                "bwrap-userns-restrict profile"
+            )
         return NoSandbox(f"Bubblewrap usability probe failed: {reason}")
     return BubblewrapBackend(Path(executable))
 
