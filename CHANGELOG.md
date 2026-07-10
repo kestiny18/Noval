@@ -4,6 +4,21 @@
 
 ## [Unreleased]
 
+### Added
+
+- Project-scoped lifecycle Hooks configured through grouped
+  `<workdir>/.noval/hooks.json` `PreToolUse`, `PostToolUse`, and `Stop` arrays.
+- CommandHook execution through the existing permission controller and
+  `ProcessRuntime`, with deterministic ordering, timeout, redaction, truncation,
+  config-fingerprint approvals, and exit-code or structured JSON outcomes.
+- Stop validation feedback that can withhold a candidate final response, return
+  diagnostics to the model for repair, and prevent unchanged failure loops.
+
+### Changed
+
+- The executor now exposes a guarded pre-execution callback after target-tool
+  approval and before invocation, and records whether the tool actually ran.
+
 ## [0.7.0] - 2026-07-10
 
 ### Added

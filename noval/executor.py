@@ -26,6 +26,7 @@ log = logging.getLogger("noval.executor")
 # 确认门回调：框架问「要不要执行这个工具」，由调用方（CLI/测试）决定怎么答。
 # 返回 True/"yes" 允许一次；"always" 本会话总是允许该工具；其余拒绝。
 Approver = Callable[[Tool, Dict[str, Any]], object]
+BeforeToolExecute = Callable[[Tool, Dict[str, Any], Risk], Optional[str]]
 
 
 def _normalize_decision(raw: object) -> str:
@@ -67,10 +68,15 @@ def execute_tool_call(
     config: Config,
     approver: Optional[Approver] = None,
     context: Optional["Context"] = None,
+    before_execute: Optional[BeforeToolExecute] = None,
 ) -> ToolResult:
     """执行单次工具调用，永远返回 ToolResult（绝不抛异常给上层）。"""
     started = time.perf_counter()
-    t = {"exec_start": None}  # 真正执行的起点；在确认门之后才设，避免把「等用户点 y」算进耗时
+    t = {
+        "approval_end": None,
+        "exec_start": None,
+        "executed": False,
+    }  # 真正执行的起点；在确认门之后才设，避免把「等用户点 y」算进耗时
 
     def finish(content: str, *, is_error: bool = False, truncated: bool = False, **meta: Any) -> ToolResult:
         safe_content = redact_sensitive_text(content)
@@ -78,10 +84,11 @@ def execute_tool_call(
             content = safe_content
             meta["redacted"] = True
         now = time.perf_counter()
-        ref = t["exec_start"] if t["exec_start"] is not None else started
+        ref = t["exec_start"] or t["approval_end"] or started
         meta.update(tool=name, duration_ms=round((now - ref) * 1000, 1))
-        if t["exec_start"] is not None:  # 确认等待时间单独记，不污染执行耗时
-            wait = round((t["exec_start"] - started) * 1000, 1)
+        meta.setdefault("executed", t["executed"])
+        if t["approval_end"] is not None:  # 确认等待时间单独记，不污染执行耗时
+            wait = round((t["approval_end"] - started) * 1000, 1)
             if wait >= 1.0:
                 meta["approval_wait_ms"] = wait
         log.info("tool=%s is_error=%s truncated=%s dur=%sms",
@@ -121,6 +128,7 @@ def execute_tool_call(
                 is_error=True,
                 effective_risk=effective_risk.value,
             )
+    t["approval_end"] = time.perf_counter()
 
     # 上下文注入：声明了 ctx: Context 的工具，由框架把 context 作为首个位置参传入
     if tool.wants_context and context is None:
@@ -130,7 +138,6 @@ def execute_tool_call(
             effective_risk=effective_risk.value,
         )
     extra = (context,) if tool.wants_context else ()
-    t["exec_start"] = time.perf_counter()  # 确认门已过，从这里开始计真正的执行耗时
 
     # 5a. 先做签名绑定校验：把「参数对不上签名」与「工具内部抛 TypeError」区分开，
     #     否则工具体内的 TypeError 会被误报成「参数错误」，把模型带去改本来正确的参数。
@@ -143,7 +150,30 @@ def execute_tool_call(
             effective_risk=effective_risk.value,
         )
 
+    # PreToolUse 接缝位于目标工具确认门之后、真正执行之前。回调只能允许继续
+    # 或返回模型可纠正的阻断说明，不能改写工具参数。
+    if before_execute is not None:
+        try:
+            blocked = before_execute(tool, args, effective_risk)
+        except Exception as e:
+            log.exception("工具 %s 的 PreToolUse callback 异常", name)
+            return finish(
+                f"Error: PreToolUse callback 异常 ({type(e).__name__}): {e}",
+                is_error=True,
+                effective_risk=effective_risk.value,
+                pre_tool_hook_error=True,
+            )
+        if blocked:
+            return finish(
+                f"Error: PreToolUse Hook 阻止了工具执行。\n\n{blocked}",
+                is_error=True,
+                effective_risk=effective_risk.value,
+                pre_tool_hook_blocked=True,
+            )
+
     # 5b. 执行：统一 try/except —— 任何失败都转成模型可纠错的结果，而不是让程序崩
+    t["exec_start"] = time.perf_counter()
+    t["executed"] = True
     try:
         raw = tool.func(*extra, **args)
     except ToolError as e:                       # 工具主动抛出的领域错误（信息最丰富）

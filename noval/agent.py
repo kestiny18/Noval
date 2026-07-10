@@ -20,6 +20,9 @@ from .config import Config
 from .confinement import ConfinementPolicy, PathAccess
 from .context import ContextManager
 from .executor import Approver, execute_tool_call
+from .hooks import (
+    HookBatchResult, HookEvent, HookRegistry, hook_index_context, hook_update_context,
+)
 from .mcp import McpRegistry, McpSnapshotDiff, mcp_index_context
 from .permissions import PermissionController, PermissionMode, PermissionState
 from .process import (
@@ -214,6 +217,7 @@ class Agent:
         task_controller: Optional[TaskController] = None,
         skill_registry: Optional[SkillRegistry] = None,
         mcp_registry: Optional[McpRegistry] = None,
+        hook_registry: Optional[HookRegistry] = None,
         confinement: Optional[ConfinementPolicy] = None,
         process_runtime: Optional[ProcessRuntime] = None,
         sandbox_policy: Optional[SandboxPolicy] = None,
@@ -253,6 +257,11 @@ class Agent:
             self.workdir, runtime=self.process_runtime
         )
         self._mcp_snapshot = self.mcp_registry.snapshot()
+        self._hooks_auto_refresh = hook_registry is None
+        self.hook_registry = hook_registry or HookRegistry.discover(self.workdir)
+        self._hook_snapshot = self.hook_registry.snapshot()
+        for error in self.hook_registry.errors:
+            log.warning("hook config: %s", error)
         self._ephemeral_turn_context: Optional[str] = None
         # 执行上下文：workdir + 跨工具调用共享的 read-tracker，注入给需要的工具
         self.context = Context(
@@ -266,6 +275,7 @@ class Agent:
             mcp=self.mcp_registry,
             mcp_auto_refresh=self._mcp_auto_refresh,
         )
+        self._reconcile_hook_permissions()
         self.last_turn_metrics = TurnMetrics()
         self.messages: List[Dict[str, Any]] = []
         # system 消息按「稳定性从高到低」排，让缓存前缀尽量长：
@@ -279,6 +289,7 @@ class Agent:
                 project_memory,
                 skill_index_context(self.skill_registry),
                 mcp_index_context(self.mcp_registry),
+                hook_index_context(self.hook_registry),
             ) if p
         ]
         if parts:
@@ -313,6 +324,9 @@ class Agent:
         self.task_controller.observe_user_input(user_input)
 
         used_tools = False
+        executed_tool_names: set[str] = set()
+        last_stop_feedback: Optional[str] = None
+        tool_activity_since_stop_feedback = True
         try:
             for _ in range(self.config.max_steps):
                 resp = self._complete(self.tools)
@@ -321,6 +335,39 @@ class Agent:
 
                 if not resp.tool_calls:                       # 没有工具调用 → 最终回复
                     final = resp.content or ""
+                    stop_batch = self._run_hooks(
+                        HookEvent.STOP,
+                        after_tools=executed_tool_names,
+                    ) if executed_tool_names else HookBatchResult(HookEvent.STOP)
+                    stop_feedback = stop_batch.feedback()
+                    if stop_feedback:
+                        if (
+                            stop_feedback == last_stop_feedback
+                            and not tool_activity_since_stop_feedback
+                        ):
+                            repeated = (
+                                "<hook_feedback source=\"framework\" event=\"Stop\">\n"
+                                "同一 Stop 验证失败后没有执行新的工具修复，已停止重复验证。\n"
+                                "</hook_feedback>"
+                            )
+                            self._append_message({"role": "user", "content": repeated})
+                            blocked = (
+                                "任务结束验证仍未通过，且收到相同诊断后没有执行新的修复操作。\n\n"
+                                + stop_feedback
+                            )
+                            self._append_message({"role": "assistant", "content": blocked})
+                            return blocked
+                        self._append_message({
+                            "role": "user",
+                            "content": (
+                                f"{stop_feedback}\n\n"
+                                "这是框架生成的结束验证反馈。请根据诊断继续使用工具修复；"
+                                "不要把尚未通过的任务宣称为完成。"
+                            ),
+                        })
+                        last_stop_feedback = stop_feedback
+                        tool_activity_since_stop_feedback = False
+                        continue
                     if used_tools:
                         self.task_controller.verify_completion(final)
                     return final
@@ -329,10 +376,41 @@ class Agent:
                 used_tools = True
                 for call in resp.tool_calls:
                     log.info("calling tool=%s arg_keys=%s", call.name, _tool_arg_keys(call.arguments))
+                    pre_batches: List[HookBatchResult] = []
+
+                    def before_execute(tool, args, effective_risk):
+                        batch = self._run_hooks(
+                            HookEvent.PRE_TOOL_USE,
+                            tool_name=tool.name,
+                        )
+                        pre_batches.append(batch)
+                        return batch.feedback() if batch.blocked else None
+
                     result = execute_tool_call(
                         call.name, call.arguments, self.config, self.approver, self.context,
+                        before_execute=before_execute,
                     )
-                    self._append_message(tool_message(call.id, result.content))
+                    feedback_parts = []
+                    if pre_batches and not pre_batches[0].blocked:
+                        pre_feedback = pre_batches[0].feedback()
+                        if pre_feedback:
+                            feedback_parts.append(pre_feedback)
+                    if result.meta.get("executed"):
+                        executed_tool_names.add(call.name)
+                        if self.hook_registry.is_stop_repair_tool(call.name):
+                            tool_activity_since_stop_feedback = True
+                        post_batch = self._run_hooks(
+                            HookEvent.POST_TOOL_USE,
+                            tool_name=call.name,
+                            status="error" if result.is_error else "success",
+                        )
+                        post_feedback = post_batch.feedback()
+                        if post_feedback:
+                            feedback_parts.append(post_feedback)
+                    content = result.content
+                    if feedback_parts:
+                        content += "\n\n" + "\n\n".join(feedback_parts)
+                    self._append_message(tool_message(call.id, content))
         except KeyboardInterrupt:
             # Ctrl+C 中断「当前任务」而非「整个会话」：补齐未回填的 tool 响应让历史合法，
             # 再返回提示。否则下一轮请求会因「有 tool_call 没 tool 响应」被 API 拒绝。
@@ -355,8 +433,52 @@ class Agent:
         self.last_turn_metrics.observe(resp)
         self._append_message(resp.assistant_message)
         final = resp.content or "（已达到最大工具调用步数，已停止。）"
+        stop_batch = self._run_hooks(
+            HookEvent.STOP,
+            after_tools=executed_tool_names,
+        ) if executed_tool_names else HookBatchResult(HookEvent.STOP)
+        stop_feedback = stop_batch.feedback()
+        if stop_feedback:
+            self._append_message({
+                "role": "user",
+                "content": (
+                    f"{stop_feedback}\n\n"
+                    "已达到最大工具调用步数，无法继续自动修复；请保留未通过状态。"
+                ),
+            })
+            final = "已达到最大工具调用步数，且 Stop 验证仍未通过。\n\n" + stop_feedback
+            self._append_message({"role": "assistant", "content": final})
+            return final
         self.task_controller.verify_completion(final)
         return final
+
+    def _run_hooks(
+        self,
+        event: HookEvent,
+        *,
+        tool_name: Optional[str] = None,
+        status: Optional[str] = None,
+        after_tools: Optional[set[str]] = None,
+    ) -> HookBatchResult:
+        return self.hook_registry.run(
+            event,
+            runtime=self.process_runtime,
+            permissions=self.context.permissions,
+            approver=self.approver,
+            max_output_chars=self.config.max_tool_output_chars,
+            tool_name=tool_name,
+            status=status,
+            after_tools=tuple(sorted(after_tools or ())),
+        )
+
+    def _reconcile_hook_permissions(self) -> None:
+        active = self.hook_registry.approval_keys()
+        stale = [
+            name for name in self.context.permissions.approved_tools
+            if name.startswith("hook:") and name not in active
+        ]
+        for name in stale:
+            self.context.permissions.revoke_tool(name)
 
     def _complete(self, tools: List[Tool]) -> LLMResponse:
         """经上下文预算门调用 Provider；压缩不进入原始会话消息。"""
@@ -392,10 +514,25 @@ class Agent:
         self._mcp_snapshot = refreshed_snapshot
         return _mcp_update_context(diff) if diff.has_changes() else None
 
+    def _refresh_hooks_for_turn(self) -> Optional[str]:
+        """回合边界刷新项目 Hook 配置；不在工具链执行中途切换。"""
+        if not self._hooks_auto_refresh:
+            return None
+        refreshed = HookRegistry.discover(self.workdir)
+        refreshed_snapshot = refreshed.snapshot()
+        update = hook_update_context(self._hook_snapshot, refreshed_snapshot)
+        self.hook_registry = refreshed
+        self._hook_snapshot = refreshed_snapshot
+        self._reconcile_hook_permissions()
+        for error in refreshed.errors:
+            log.warning("hook config: %s", error)
+        return update
+
     def _refresh_dynamic_runtime_context_for_turn(self) -> Optional[str]:
         parts = [
             self._refresh_skills_for_turn(),
             self._refresh_mcp_for_turn(),
+            self._refresh_hooks_for_turn(),
         ]
         active = [part for part in parts if part]
         return "\n\n".join(active) if active else None

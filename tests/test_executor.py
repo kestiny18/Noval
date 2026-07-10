@@ -241,3 +241,52 @@ def test_duration_excludes_approval_wait():
     assert not r.is_error
     assert r.meta["duration_ms"] < 40            # 执行本身很快，不含那 50ms 等待
     assert r.meta.get("approval_wait_ms", 0) >= 40
+
+
+def test_pre_execute_callback_runs_after_approval_before_tool():
+    events = []
+
+    @tool(name="_pre_order", risk=Risk.DANGEROUS)
+    def target() -> str:
+        """target"""
+        events.append("tool")
+        return "ok"
+
+    def approve(tool, args):
+        events.append("approval")
+        return "yes"
+
+    def before(tool, args, risk):
+        events.append("pre")
+        return None
+
+    result = execute_tool_call(
+        "_pre_order", "{}", cfg(), approver=approve, before_execute=before
+    )
+
+    assert not result.is_error
+    assert result.meta["executed"] is True
+    assert events == ["approval", "pre", "tool"]
+
+
+def test_pre_execute_callback_can_block_without_marking_tool_executed():
+    called = []
+
+    @tool(name="_pre_block")
+    def target() -> str:
+        """target"""
+        called.append(True)
+        return "ok"
+
+    result = execute_tool_call(
+        "_pre_block",
+        "{}",
+        cfg(),
+        before_execute=lambda tool, args, risk: "policy denied",
+    )
+
+    assert result.is_error
+    assert result.meta["executed"] is False
+    assert result.meta["pre_tool_hook_blocked"] is True
+    assert "policy denied" in result.content
+    assert called == []

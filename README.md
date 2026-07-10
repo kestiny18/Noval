@@ -126,6 +126,47 @@ Windows 上如果 `python` 命中 Microsoft Store 占位程序，请把命令中
 
 Ubuntu 24.04+ 若启用了 AppArmor 的 unprivileged user namespace 限制，需要安装并加载发行版提供的 `bwrap-userns-restrict` profile；Noval 的启动探测会把该问题作为 `NoSandbox` 原因明确报告。不要为了启用 Bubblewrap 而全局关闭 AppArmor 限制。
 
+## Hooks
+
+项目可以在 `<workdir>/.noval/hooks.json` 配置验证 Hooks。v0.8 第一版只读取项目级文件，不读取用户级 Hooks；事件按 `PreToolUse`、`PostToolUse`、`Stop` 分组，每组数组的声明顺序就是串行执行顺序。
+
+```json
+{
+  "version": 1,
+  "hooks": {
+    "PostToolUse": [
+      {
+        "id": "lint-after-edit",
+        "type": "command",
+        "match": {
+          "tools": ["write_file", "edit_file"],
+          "status": ["success"]
+        },
+        "command": "python",
+        "args": ["-m", "ruff", "check", "."],
+        "timeout": 60
+      }
+    ],
+    "Stop": [
+      {
+        "id": "tests-before-stop",
+        "type": "command",
+        "match": {
+          "afterTools": ["write_file", "edit_file", "run_bash"]
+        },
+        "command": "python",
+        "args": ["-m", "pytest", "-q"],
+        "timeout": 300
+      }
+    ]
+  }
+}
+```
+
+CommandHook 不默认经过 shell，始终以显式 `command + args` 在 workdir 中通过 `ProcessRuntime` 执行。默认 `exit-code` 协议把退出码 0 视为 `allow`、非 0 视为 `deny` 并把截断、脱敏后的诊断交给模型；`protocol: "json"` 可显式返回 `allow`、`deny(reason)` 或 `context(text)`。Pre Hook 首个 deny 会阻止目标工具；Post Hook 全部运行并把失败附到对应 tool result；Stop 表示模型尝试结束任务，任一 deny/context 都会隐藏该版最终回复并要求模型继续修复。相同 Stop 失败后若模型没有执行新的工具操作，框架会停止重复验证。
+
+项目 Hook 命令按 DANGEROUS 操作确认，授权绑定 Hook id 与配置内容 hash；配置变化后旧授权不会沿用。配置只在用户回合边界刷新，Hook 命令本身不会递归触发 Hooks。Hooks 是验证扩展，不是权限、path-jail 或硬沙箱的替代品。
+
 ## Skills
 
 Noval 的 Skill 机制不发明新格式，而是复用 Claude Code / Codex / Cursor 常见的目录包：每个 Skill 是一个目录，入口为 `SKILL.md`，可带 `references/`、`scripts/` 等附属文件。启动时会扫描：

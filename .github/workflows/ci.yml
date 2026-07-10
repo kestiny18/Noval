@@ -52,4 +52,4 @@ jobs:
           sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
       - run: python -m pip install -e ".[dev]"
       - name: Run real sandbox escape tests
-        run: python -m pytest -q tests/test_bubblewrap.py
+        run: python -m pytest -q tests/test_bubblewrap.py tests/test_hooks.py
