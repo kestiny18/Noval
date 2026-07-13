@@ -5,13 +5,13 @@
 [![CI](https://github.com/kestiny18/Noval/actions/workflows/ci.yml/badge.svg)](https://github.com/kestiny18/Noval/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
-[![Release](https://img.shields.io/badge/release-v0.7.0-brightgreen.svg)](https://github.com/kestiny18/Noval/releases/tag/v0.7.0)
+[![Release](https://img.shields.io/badge/release-v0.8.0-brightgreen.svg)](https://github.com/kestiny18/Noval/releases/tag/v0.8.0)
 
 一个与具体场景解耦的 Python Agent 小核心：负责模型调用、工具注册与执行、安全确认、项目上下文和会话恢复，不绑定 coding、搜索或任何单一应用。
 
 Noval 关注的不是“再包一层聊天接口”，而是 Agent 真正容易失控的地基：模型怎样可靠地感知工具结果、怎样从错误中自我纠正、怎样限制危险操作，以及怎样在中断后恢复合法的对话历史。
 
-> **当前状态**：`v0.7.0` 是当前稳定里程碑，在可扩展 Agent 内核之上补齐了 MCP client、path-jail、统一子进程运行时，以及 Linux Bubblewrap 硬沙箱。
+> **当前状态**：`v0.8.0` 是当前稳定里程碑，在 MCP、path-jail 与 Linux Bubblewrap 硬沙箱之上补齐了可否决、可反馈、可重复验证的项目级 Hooks 闭环。
 
 ## 核心设计
 
@@ -287,6 +287,7 @@ project.json
 | `v0.4.0` | 运行治理与可观测性：会话权限、脱敏日志、thinking 协议、Token 统计 | `v0.4.0` |
 | `v0.5.0` | 评测与可扩展能力：context Eval、任务完成 judge、增量压缩、Skills 运行机制 | `v0.5.0` |
 | `v0.7.0` | 行动边界与进程隔离：MCP client、path-jail、统一子进程运行时、Linux Bubblewrap | `v0.7.0` |
+| `v0.8.0` | Hooks 与验证闭环：Pre 阻断、Post 诊断回流、Stop 修复再验证、配置指纹授权 | `v0.8.0` |
 
 详细变化见 [CHANGELOG.md](CHANGELOG.md)。
 
@@ -309,9 +310,9 @@ python -m evals.context.run
 
 ## 当前状态与方向
 
-Noval 当前处于 `0.x` 阶段，核心能力包括工具注册表、统一 executor、会话持久化、上下文 checkpoint、Skills/MCP MVP、任务完成 judge、运行日志和 Token 用量统计。它已经不是一次性原型，但公共接口仍会继续演进。
+Noval 当前处于 `0.x` 阶段，核心能力包括工具注册表、统一 executor、会话持久化、上下文 checkpoint、Skills/MCP MVP、任务完成 judge、项目级 Hooks、运行日志和 Token 用量统计。它已经不是一次性原型，但公共接口仍会继续演进。
 
-接下来的重点不是堆更多工具，而是继续扩展其它平台硬沙箱、建设 hooks 验证闭环，以及实现真正 Provider 中立的内部消息模型。详细路线、版本门槛和设计权衡见 [DESIGN.md](DESIGN.md#能力演进路线)。
+接下来的重点不是堆更多工具，而是继续扩展其它平台硬沙箱、推进长任务与记忆，以及实现真正 Provider 中立的内部消息模型。详细路线、版本门槛和设计权衡见 [DESIGN.md](DESIGN.md#能力演进路线)。
 
 ## 参与项目
 
