@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import re
 from dataclasses import dataclass, field
 from enum import Enum
@@ -404,9 +405,9 @@ def _parse_hook(
     try:
         timeout = float(raw_timeout)
     except (TypeError, ValueError) as error:
-        raise ValueError(f"{location}: timeout 必须是正数") from error
-    if timeout <= 0:
-        raise ValueError(f"{location}: timeout 必须是正数")
+        raise ValueError(f"{location}: timeout 必须是有限正数") from error
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError(f"{location}: timeout 必须是有限正数")
     protocol = data.get("protocol", "exit-code")
     if protocol not in {"exit-code", "json"}:
         raise ValueError(f"{location}: protocol 必须是 'exit-code' 或 'json'")

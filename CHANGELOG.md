@@ -4,6 +4,18 @@
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-07-13
+
+### Changed
+
+- Stop Hooks now evaluate every candidate final response; `afterTools` remains
+  the explicit filter for projects that only validate after selected tools ran.
+
+### Fixed
+
+- Reject non-finite Hook timeouts such as `NaN` and `Infinity` during config
+  validation instead of deferring failure to process execution.
+
 ## [0.8.0] - 2026-07-13
 
 ### Added
@@ -200,7 +212,8 @@
 - 带 `max_steps` 的 Agent 循环与 CLI。
 - `MockClient` 和离线测试。
 
-[Unreleased]: https://github.com/kestiny18/Noval/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/kestiny18/Noval/compare/v0.8.1...HEAD
+[0.8.1]: https://github.com/kestiny18/Noval/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/kestiny18/Noval/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/kestiny18/Noval/compare/v0.5.0...v0.7.0
 [0.5.0]: https://github.com/kestiny18/Noval/compare/v0.4.0...v0.5.0

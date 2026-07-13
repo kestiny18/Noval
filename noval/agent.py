@@ -338,7 +338,7 @@ class Agent:
                     stop_batch = self._run_hooks(
                         HookEvent.STOP,
                         after_tools=executed_tool_names,
-                    ) if executed_tool_names else HookBatchResult(HookEvent.STOP)
+                    )
                     stop_feedback = stop_batch.feedback()
                     if stop_feedback:
                         if (
@@ -436,7 +436,7 @@ class Agent:
         stop_batch = self._run_hooks(
             HookEvent.STOP,
             after_tools=executed_tool_names,
-        ) if executed_tool_names else HookBatchResult(HookEvent.STOP)
+        )
         stop_feedback = stop_batch.feedback()
         if stop_feedback:
             self._append_message({

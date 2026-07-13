@@ -126,6 +126,23 @@ def test_unknown_config_version_disables_all_hooks(tmp_path):
     assert any("version 必须是 1" in error for error in registry.errors)
 
 
+@pytest.mark.parametrize("timeout", ["NaN", "Infinity", "-Infinity"])
+def test_non_finite_timeout_is_rejected(tmp_path, timeout):
+    config_dir = tmp_path / ".noval"
+    config_dir.mkdir()
+    (config_dir / "hooks.json").write_text(
+        '{"version":1,"hooks":{"Stop":['
+        f'{{"id":"tests","command":"check","timeout":{timeout}}}'
+        ']}}',
+        encoding="utf-8",
+    )
+
+    registry = HookRegistry.discover(tmp_path)
+
+    assert not registry.has_hooks()
+    assert any("timeout 必须是有限正数" in error for error in registry.errors)
+
+
 def test_hook_config_symlink_cannot_escape_workdir(tmp_path):
     project = tmp_path / "project"
     external = tmp_path / "external-hooks.json"
@@ -411,6 +428,57 @@ def test_stop_hook_failure_returns_to_model_then_passes_after_repair(tmp_path):
         message.get("role") == "user" and "compile failed" in message.get("content", "")
         for message in store.saved
     )
+
+
+def test_unfiltered_stop_hook_runs_for_direct_reply_without_tool_use(tmp_path):
+    marker = tmp_path / "stop-ran.marker"
+    write_hooks(tmp_path, {
+        "Stop": [{
+            "id": "always-stop",
+            "command": sys.executable,
+            "args": [
+                "-c",
+                "from pathlib import Path; Path('stop-ran.marker').write_text('ok')",
+            ],
+        }]
+    })
+    client = MockClient([mock_text("direct reply")])
+
+    agent = Agent(
+        client,
+        cfg(),
+        workdir=str(tmp_path),
+        permissions=full_access(),
+    )
+
+    assert agent.send("hello") == "direct reply"
+    assert marker.read_text(encoding="utf-8") == "ok"
+
+
+def test_filtered_stop_hook_skips_direct_reply_without_matching_tool(tmp_path):
+    marker = tmp_path / "stop-ran.marker"
+    write_hooks(tmp_path, {
+        "Stop": [{
+            "id": "after-edit",
+            "match": {"afterTools": ["edit_file"]},
+            "command": sys.executable,
+            "args": [
+                "-c",
+                "from pathlib import Path; Path('stop-ran.marker').write_text('ok')",
+            ],
+        }]
+    })
+    client = MockClient([mock_text("direct reply")])
+
+    agent = Agent(
+        client,
+        cfg(),
+        workdir=str(tmp_path),
+        permissions=full_access(),
+    )
+
+    assert agent.send("hello") == "direct reply"
+    assert not marker.exists()
 
 
 def test_repeated_stop_failure_without_tool_activity_stops_loop(tmp_path):

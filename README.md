@@ -5,13 +5,13 @@
 [![CI](https://github.com/kestiny18/Noval/actions/workflows/ci.yml/badge.svg)](https://github.com/kestiny18/Noval/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
-[![Release](https://img.shields.io/badge/release-v0.8.0-brightgreen.svg)](https://github.com/kestiny18/Noval/releases/tag/v0.8.0)
+[![Release](https://img.shields.io/badge/release-v0.8.1-brightgreen.svg)](https://github.com/kestiny18/Noval/releases/tag/v0.8.1)
 
 一个与具体场景解耦的 Python Agent 小核心：负责模型调用、工具注册与执行、安全确认、项目上下文和会话恢复，不绑定 coding、搜索或任何单一应用。
 
 Noval 关注的不是“再包一层聊天接口”，而是 Agent 真正容易失控的地基：模型怎样可靠地感知工具结果、怎样从错误中自我纠正、怎样限制危险操作，以及怎样在中断后恢复合法的对话历史。
 
-> **当前状态**：`v0.8.0` 是当前稳定里程碑，在 MCP、path-jail 与 Linux Bubblewrap 硬沙箱之上补齐了可否决、可反馈、可重复验证的项目级 Hooks 闭环。
+> **当前状态**：`v0.8.1` 是当前稳定版本，在 MCP、path-jail 与 Linux Bubblewrap 硬沙箱之上补齐了可否决、可反馈、可重复验证的项目级 Hooks 闭环。
 
 ## 核心设计
 
@@ -163,7 +163,7 @@ Ubuntu 24.04+ 若启用了 AppArmor 的 unprivileged user namespace 限制，需
 }
 ```
 
-CommandHook 不默认经过 shell，始终以显式 `command + args` 在 workdir 中通过 `ProcessRuntime` 执行。默认 `exit-code` 协议把退出码 0 视为 `allow`、非 0 视为 `deny` 并把截断、脱敏后的诊断交给模型；`protocol: "json"` 可显式返回 `allow`、`deny(reason)` 或 `context(text)`。Pre Hook 首个 deny 会阻止目标工具；Post Hook 全部运行并把失败附到对应 tool result；Stop 表示模型尝试结束任务，任一 deny/context 都会隐藏该版最终回复并要求模型继续修复。相同 Stop 失败后若模型没有执行新的工具操作，框架会停止重复验证。
+CommandHook 不默认经过 shell，始终以显式 `command + args` 在 workdir 中通过 `ProcessRuntime` 执行。默认 `exit-code` 协议把退出码 0 视为 `allow`、非 0 视为 `deny` 并把截断、脱敏后的诊断交给模型；`protocol: "json"` 可显式返回 `allow`、`deny(reason)` 或 `context(text)`。Pre Hook 首个 deny 会阻止目标工具；Post Hook 全部运行并把失败附到对应 tool result；每个候选最终回复都会进入 Stop，`afterTools` 用于只匹配执行过指定工具的回合，任一 deny/context 都会隐藏该版最终回复并要求模型继续修复。相同 Stop 失败后若模型没有执行新的工具操作，框架会停止重复验证。
 
 项目 Hook 命令按 DANGEROUS 操作确认，授权绑定 Hook id 与配置内容 hash；配置变化后旧授权不会沿用。配置只在用户回合边界刷新，Hook 命令本身不会递归触发 Hooks。Hooks 是验证扩展，不是权限、path-jail 或硬沙箱的替代品。
 
@@ -288,6 +288,7 @@ project.json
 | `v0.5.0` | 评测与可扩展能力：context Eval、任务完成 judge、增量压缩、Skills 运行机制 | `v0.5.0` |
 | `v0.7.0` | 行动边界与进程隔离：MCP client、path-jail、统一子进程运行时、Linux Bubblewrap | `v0.7.0` |
 | `v0.8.0` | Hooks 与验证闭环：Pre 阻断、Post 诊断回流、Stop 修复再验证、配置指纹授权 | `v0.8.0` |
+| `v0.8.1` | Hooks 发布加固：所有候选结束均进入 Stop，严格校验 timeout 有限值 | `v0.8.1` |
 
 详细变化见 [CHANGELOG.md](CHANGELOG.md)。
 
