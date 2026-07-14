@@ -7,9 +7,28 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
 [![Release](https://img.shields.io/badge/release-v0.8.1-brightgreen.svg)](https://github.com/kestiny18/Noval/releases/tag/v0.8.1)
 
-一个与具体场景解耦的 Python Agent 小核心：负责模型调用、工具注册与执行、安全确认、项目上下文和会话恢复，不绑定 coding、搜索或任何单一应用。
+<p align="center">
+  <strong>模型负责思考。Noval 负责让它安全、可恢复、可验证地行动。</strong><br>
+  <sub>Models think. Noval makes their actions trustworthy.</sub>
+</p>
 
-Noval 关注的不是“再包一层聊天接口”，而是 Agent 真正容易失控的地基：模型怎样可靠地感知工具结果、怎样从错误中自我纠正、怎样限制危险操作，以及怎样在中断后恢复合法的对话历史。
+## 为什么还需要一个 Agent？
+
+Agent 的“大脑”正在迅速变强，真正脆弱的部分却发生在模型之外：参数错了会不会崩、命令失控时谁来拦、输出太长时模型还能看见什么、进程中断后能否继续，以及模型说“完成了”时有没有人真正验证。
+
+Noval 起源于一次最朴素的 tool-calling 实验：由人亲自扮演工具后端，把现实结果递回模型。那次实验暴露了一个常被忽略的事实——**模型只能通过工具返回值感知世界；执行层就是 Agent 的感官与身体。** Noval 做的，是把那个“人肉执行器”工程化。
+
+它不和其它框架比赛谁有更多 Agent、工作流或集成。它专注于一条更窄、也更难替代的接缝：**模型与真实世界之间，怎样可靠地执行一次行动。**
+
+| 常见原型的做法 | Noval 的选择 |
+|---|---|
+| 循环直接绑定某家模型 SDK | `LLMClient` 隔离 Provider，核心不依赖厂商 SDK |
+| 每个工具各写一套 schema、异常、确认和日志 | `@tool` 只写领域逻辑，横切关注点统一进入 executor |
+| 用提示词要求模型“小心一点” | 权限门、path-jail、子进程 runtime 与硬沙箱在模型之外执行 |
+| 模型输出最终回复就算完成 | Hooks 可以否决结束，把诊断送回模型继续修复 |
+| 崩溃后丢失现场，或用摘要覆盖原始历史 | append-only Session 是真相源，checkpoint 可回退、可重建 |
+
+如果你正在构建自己的 Code Agent 或领域 Agent，希望保留完全可读、可替换、可测试的执行内核，而不是把产品交给一个巨型黑盒，Noval 就是为你准备的。它仍处于 `0.x`，不提供拖拽式工作流或“一键自治团队”；它提供的是一块可以长期演进的地基。
 
 > **当前状态**：`v0.8.1` 是当前稳定版本，在 MCP、path-jail 与 Linux Bubblewrap 硬沙箱之上补齐了可否决、可反馈、可重复验证的项目级 Hooks 闭环。
 
