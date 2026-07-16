@@ -3,6 +3,7 @@ import json
 from noval.agent import Agent
 from noval.client import MockClient, mock_text, mock_tool_call
 from noval.config import Config
+from noval.messages import MessageRole
 from noval.task import (
     CompletionVerifier,
     CompletionVerdict,
@@ -94,18 +95,21 @@ def test_semantic_judge_uses_only_recent_inputs_and_final_reply():
 
     assert verdict.status is TaskStatus.COMPLETED
     messages = client.seen_messages[0]
-    assert [m["role"] for m in messages] == ["system", "user"]
-    packet = json.loads(messages[1]["content"])
+    assert [m.role for m in messages] == [MessageRole.SYSTEM, MessageRole.USER]
+    packet = json.loads(messages[1].text)
     assert packet["current_user_input"] == "解释错误原因"
     assert packet["context_user_inputs"] == ["旧任务", "排查重复数据"]
     assert packet["recent_user_inputs"] == ["旧任务", "排查重复数据", "解释错误原因"]
     assert packet["assistant_final_reply"] == "原因是远程分支不存在。"
     assert "evidence" not in packet
     assert "reasoning" not in json.dumps(packet, ensure_ascii=False).lower()
-    assert "工具" in messages[0]["content"]
-    assert "current_user_input" in messages[0]["content"]
-    assert "context_user_inputs 只是" in messages[0]["content"]
-    assert "不是本轮必须重新完成的任务清单" in messages[0]["content"]
+    assert "工具" in messages[0].text
+    assert "current_user_input" in messages[0].text
+    assert "context_user_inputs 只是" in messages[0].text
+    assert "不是本轮必须重新完成的任务清单" in messages[0].text
+    assert "不得声称某项操作实际上执行过或没有执行" in messages[0].text
+    assert "最后回复未提供充分证据" in messages[0].text
+    assert "must not claim that an unobserved action" in packet["instruction"]
 
 
 def test_completion_verifier_handles_invalid_judge_json_as_uncertain():
@@ -156,7 +160,7 @@ def test_agent_judges_final_reply_after_tool_loop(tmp_path):
     assert loaded.recent_user_inputs == ["只查询问题原因"]
     assert loaded.last_verdict is not None
     assert loaded.last_verdict.source == "judge:judge"
-    packet = json.loads(judge_client.seen_messages[0][1]["content"])
+    packet = json.loads(judge_client.seen_messages[0][1].text)
     assert packet["current_user_input"] == "只查询问题原因"
     assert packet["context_user_inputs"] == []
     assert packet["recent_user_inputs"] == ["只查询问题原因"]

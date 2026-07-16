@@ -3,6 +3,7 @@ import json
 
 from noval.config import Config
 from noval.executor import execute_tool_call
+from noval.messages import user_message
 from noval.permissions import PermissionController, PermissionMode, PermissionState
 from noval.session import JsonlSessionStore
 from noval.tools import Context, Risk, tool
@@ -45,6 +46,38 @@ def test_tool_error_surfaced(tmp_path):
     r = execute_tool_call("read_file", json.dumps({"path": "nope.txt"}),
                           cfg(), context=Context(workdir=tmp_path))
     assert r.is_error and "not found" in r.content
+
+
+def test_tool_error_is_truncated():
+    @tool(name="_big_error")
+    def big_error() -> str:
+        """big error"""
+        from noval.tools import ToolError
+
+        raise ToolError("x" * 500)
+
+    r = execute_tool_call("_big_error", "{}", cfg(max_tool_output_chars=100))
+
+    assert r.is_error
+    assert r.truncated
+    assert "省略" in r.content
+    assert r.meta["original_chars"] == 507
+
+
+def test_tool_error_redaction_is_reported():
+    @tool(name="_secret_error")
+    def secret_error() -> str:
+        """secret error"""
+        from noval.tools import ToolError
+
+        raise ToolError("password=FAKE_PASSWORD")
+
+    r = execute_tool_call("_secret_error", "{}", cfg(max_tool_output_chars=1000))
+
+    assert r.is_error
+    assert "FAKE_PASSWORD" not in r.content
+    assert "password=<redacted>" in r.content
+    assert r.meta["redacted"] is True
 
 
 def test_truncation():
@@ -194,7 +227,7 @@ def test_always_decision_persists_across_resume(tmp_path):
     workdir = tmp_path / "project"
     workdir.mkdir()
     store = JsonlSessionStore.create(tmp_path / "sessions", workdir, "m")
-    store.append({"role": "user", "content": "create session"})
+    store.append(user_message("create session"))
     permissions = PermissionController(on_change=lambda snapshot: store.update_metadata({
         "permissions": snapshot,
     }))

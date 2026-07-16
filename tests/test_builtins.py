@@ -430,7 +430,7 @@ def test_run_bash_uses_backend_frozen_in_context(monkeypatch, tmp_path):
     context = Context(workdir=tmp_path, shell_backend=backend)
 
     assert run_bash(context, "pwd") == "ok"
-    assert seen["argv"] == ["chosen-bash", "-c", "pwd"]
+    assert seen["argv"] == ["chosen-bash", "-o", "pipefail", "-c", "pwd"]
     assert seen["shell"] is False
 
 
@@ -451,8 +451,30 @@ def test_run_bash_uses_runtime_frozen_in_context(tmp_path):
     )
 
     assert run_bash(context, "pwd") == "ok"
-    assert runtime.specs[0].argv == ("chosen-bash", "-c", "pwd")
+    assert runtime.specs[0].argv == (
+        "chosen-bash", "-o", "pipefail", "-c", "pwd",
+    )
     assert runtime.specs[0].cwd == tmp_path
+
+
+def test_run_bash_nonzero_exit_is_tool_error(tmp_path):
+    class FailingRuntime:
+        def run(self, spec):
+            return SimpleNamespace(stdout="build output\n", stderr="compile failed\n", returncode=7)
+
+    context = Context(
+        workdir=tmp_path,
+        shell_backend=ShellBackend("chosen-bash", "Git Bash"),
+        process_runtime=FailingRuntime(),
+    )
+
+    with pytest.raises(ToolError) as error:
+        run_bash(context, "build | tail -20")
+
+    message = str(error.value)
+    assert "exit code 7" in message
+    assert "build output" in message
+    assert "compile failed" in message
 
 
 def test_full_access_does_not_disable_required_sandbox(tmp_path):

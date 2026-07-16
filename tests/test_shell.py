@@ -1,7 +1,31 @@
 import subprocess
 
+import pytest
+
 from noval import shell
 from noval.shell import ShellBackend
+
+
+def test_bash_command_enables_pipefail():
+    assert ShellBackend("bash", "bash").command("build | tail -20") == (
+        "bash", "-o", "pipefail", "-c", "build | tail -20",
+    )
+
+
+def test_selected_bash_reports_failed_pipeline():
+    backend = shell.resolve_shell_backend()
+    if not backend.executable:
+        pytest.skip("no Bash-compatible backend available")
+
+    result = subprocess.run(
+        backend.command("exit 7 | cat"),
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        shell=False,
+    )
+
+    assert result.returncode == 7
 
 
 def test_probe_bash_does_not_inherit_stdin(monkeypatch):

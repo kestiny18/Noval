@@ -1,9 +1,8 @@
 import json
 from datetime import date, datetime, timezone
-from types import SimpleNamespace
 
 from noval.agent import _format_usage_summary, _handle_usage_command
-from noval.client import MockClient, TokenUsage, mock_text
+from noval.client import MockClient, ProviderIdentity, TokenUsage, mock_text
 from noval.usage import JsonlUsageStore, MeteredLLMClient
 
 
@@ -71,12 +70,12 @@ def test_store_uses_actual_event_day_and_skips_corrupt_lines(tmp_path, caplog):
 
 def test_metered_client_records_actual_response_model(tmp_path):
     response = mock_text("ok", usage=usage())
-    response.raw = SimpleNamespace(model="provider-model")
+    response.provider = ProviderIdentity("test", "provider-model", "test")
     inner = MockClient([response])
     store = JsonlUsageStore(tmp_path, "session", now=lambda: NOW)
     client = MeteredLLMClient(inner, store, "configured-model")
 
-    assert client.complete([], []).content == "ok"
+    assert client.complete([], []).message.text == "ok"
 
     assert set(store.summarize().by_model) == {"provider-model"}
 
@@ -103,7 +102,7 @@ def test_metered_client_records_configured_purpose(tmp_path):
         inner, store, "judge-model", purpose="completion_judge"
     )
 
-    assert client.complete([], []).content == "ok"
+    assert client.complete([], []).message.text == "ok"
 
     event = json.loads(next((tmp_path / "2026-06-30").glob("*.jsonl")).read_text())
     assert event["purpose"] == "completion_judge"
@@ -117,7 +116,7 @@ def test_metering_failure_does_not_hide_model_response(caplog):
     response = mock_text("still works", usage=usage())
     client = MeteredLLMClient(MockClient([response]), BrokenStore(), "model")
 
-    assert client.complete([], []).content == "still works"
+    assert client.complete([], []).message.text == "still works"
     assert "持久化失败" in caplog.text
 
 

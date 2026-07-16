@@ -1048,5 +1048,8 @@ def run_bash(ctx: Context, command: str, timeout: int = 120) -> str:
         raise ToolError(f"命令无法执行: {error}") from error
     out = result.stdout + result.stderr
     if result.returncode != 0:
-        out += f"\n[exit code: {result.returncode}]"
+        diagnostic = out.strip() or "(命令没有输出)"
+        raise ToolError(
+            f"命令执行失败（exit code {result.returncode}）：\n{diagnostic}"
+        )
     return out if out.strip() else "(命令执行完成，无输出)"

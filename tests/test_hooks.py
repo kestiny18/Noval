@@ -10,6 +10,8 @@ from noval.config import Config
 from noval.hooks import HookEvent, HookOutcome, HookRegistry
 from noval.permissions import PermissionController, PermissionMode
 from noval.process import NoSandbox, ProcessResult, SandboxStatus
+from noval.messages import MessageRole
+from noval.shell import ShellBackend
 from noval.tools import Context, Risk, tool
 
 
@@ -54,7 +56,7 @@ class RecordingStore:
         self.saved = []
 
     def append(self, message):
-        self.saved.append(dict(message))
+        self.saved.append(message)
 
 
 def full_access():
@@ -335,10 +337,10 @@ def test_pre_hook_denial_prevents_target_tool_and_reaches_model(tmp_path):
     assert called == []
     tool_messages = [
         message for message in client.seen_messages[1]
-        if message.get("role") == "tool"
+        if message.role is MessageRole.TOOL
     ]
-    assert "project policy denied" in tool_messages[-1]["content"]
-    assert "PreToolUse" in tool_messages[-1]["content"]
+    assert "project policy denied" in tool_messages[-1].tool_results[0].content
+    assert "PreToolUse" in tool_messages[-1].tool_results[0].content
 
 
 def test_post_hook_failure_is_attached_to_tool_result(tmp_path):
@@ -368,12 +370,49 @@ def test_post_hook_failure_is_attached_to_tool_result(tmp_path):
 
     assert agent.send("run target") == "fixed response"
     tool_message_content = next(
-        message["content"] for message in client.seen_messages[1]
-        if message.get("role") == "tool"
+        message.tool_results[0].content for message in client.seen_messages[1]
+        if message.role is MessageRole.TOOL
     )
     assert "tool succeeded" in tool_message_content
     assert "lint failed" in tool_message_content
     assert 'event="PostToolUse"' in tool_message_content
+
+
+def test_run_bash_nonzero_exit_triggers_error_post_hook(tmp_path):
+    write_hooks(tmp_path, {
+        "PostToolUse": [{
+            "id": "diagnose-build-failure",
+            "match": {"tools": ["run_bash"], "status": ["error"]},
+            "command": "post-check",
+        }]
+    })
+    runtime = RecordingRuntime([
+        ("", "compile failed", 7),
+        ("post hook ran", "", 0),
+    ])
+    client = MockClient([
+        mock_tool_call("c1", "run_bash", json.dumps({"command": "compile"})),
+        mock_text("reported failure"),
+    ])
+    agent = Agent(
+        client,
+        cfg(),
+        workdir=str(tmp_path),
+        permissions=full_access(),
+        process_runtime=runtime,
+        shell_backend=ShellBackend("bash", "test"),
+    )
+
+    assert agent.send("compile the project") == "reported failure"
+    assert len(runtime.specs) == 2
+    assert runtime.specs[0].purpose == "run-bash"
+    assert runtime.specs[1].argv == ("post-check",)
+    tool_message_content = next(
+        message.tool_results[0].content for message in client.seen_messages[1]
+        if message.role is MessageRole.TOOL
+    )
+    assert "exit code 7" in tool_message_content
+    assert "compile failed" in tool_message_content
 
 
 def test_stop_hook_failure_returns_to_model_then_passes_after_repair(tmp_path):
@@ -420,12 +459,12 @@ def test_stop_hook_failure_returns_to_model_then_passes_after_repair(tmp_path):
     assert (tmp_path / "fixed.marker").is_file()
     stop_feedback = [
         message for message in client.seen_messages[2]
-        if message.get("role") == "user" and "hook_feedback" in message.get("content", "")
+        if message.role is MessageRole.USER and "hook_feedback" in message.text
     ]
     assert stop_feedback
-    assert "compile failed" in stop_feedback[-1]["content"]
+    assert "compile failed" in stop_feedback[-1].text
     assert any(
-        message.get("role") == "user" and "compile failed" in message.get("content", "")
+        message.role is MessageRole.USER and "compile failed" in message.text
         for message in store.saved
     )
 
@@ -525,7 +564,7 @@ def test_hook_config_refreshes_only_at_user_turn_boundary(tmp_path):
 
     request_user = next(
         message for message in client.seen_messages[0]
-        if message.get("role") == "user"
+        if message.role is MessageRole.USER
     )
-    assert "<hook_update>" in request_user["content"]
-    assert "PostToolUse/new-hook" in request_user["content"]
+    assert "<hook_update>" in request_user.text
+    assert "PostToolUse/new-hook" in request_user.text

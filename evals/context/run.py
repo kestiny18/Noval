@@ -23,6 +23,12 @@ from noval.context import (
     SUMMARY_HEADINGS,
     build_compaction_messages,
 )
+from noval.client import LLMClient, create_provider_client
+from noval.config import Config
+from noval.messages import (
+    ConversationMessage, MessageRole, ToolCallBlock, assistant_message,
+    system_message, tool_result_message, user_message,
+)
 from noval.session import SessionRecord
 
 from .report import render_markdown, write_json_report
@@ -148,7 +154,7 @@ def _records(data: Dict[str, Any], *, case_id: str, previous_through_seq: int) -
             SessionRecord(
                 seq=start + index,
                 ts=f"2026-01-01T00:00:{index:02d}+00:00",
-                msg=message,
+                message=_canonical_fixture_message(message, case_id=case_id),
             )
             for index, message in enumerate(raw_messages)
             if isinstance(message, dict)
@@ -165,7 +171,11 @@ def _records(data: Dict[str, Any], *, case_id: str, previous_through_seq: int) -
             seq, ts, msg = raw.get("seq"), raw.get("ts"), raw.get("msg")
             if not isinstance(seq, int) or not isinstance(ts, str) or not isinstance(msg, dict):
                 raise CaseFormatError(f"{case_id}: record 需要合法的 seq/ts/msg")
-            records.append(SessionRecord(seq=seq, ts=ts, msg=msg))
+            records.append(SessionRecord(
+                seq=seq,
+                ts=ts,
+                message=_canonical_fixture_message(msg, case_id=case_id),
+            ))
 
     expected_seq = list(range(previous_through_seq + 1, previous_through_seq + 1 + len(records)))
     actual_seq = [record.seq for record in records]
@@ -181,27 +191,55 @@ def _validate_tool_protocol(case_id: str, records: Sequence[SessionRecord]) -> N
     pending: Dict[str, int] = {}
     answered: set[str] = set()
     for record in records:
-        message = record.msg
-        role = message.get("role")
-        if role == "assistant":
-            for call in message.get("tool_calls") or []:
-                call_id = call.get("id") if isinstance(call, dict) else None
-                if not isinstance(call_id, str) or not call_id:
-                    raise CaseFormatError(f"{case_id}: seq {record.seq} 的 tool_call 缺少 id")
+        message = record.message
+        if message.role is MessageRole.ASSISTANT:
+            for call in message.tool_calls:
+                call_id = call.id
                 if call_id in pending or call_id in answered:
                     raise CaseFormatError(f"{case_id}: tool_call id {call_id!r} 重复")
                 pending[call_id] = record.seq
-        elif role == "tool":
-            call_id = message.get("tool_call_id")
-            if call_id not in pending:
-                raise CaseFormatError(
-                    f"{case_id}: seq {record.seq} 是孤立 tool 结果 {call_id!r}"
-                )
-            pending.pop(call_id)
-            answered.add(call_id)
+        elif message.role is MessageRole.TOOL:
+            for result in message.tool_results:
+                call_id = result.call_id
+                if call_id not in pending:
+                    raise CaseFormatError(
+                        f"{case_id}: seq {record.seq} 是孤立 tool 结果 {call_id!r}"
+                    )
+                pending.pop(call_id)
+                answered.add(call_id)
     if pending:
         detail = ", ".join(f"{call_id}@seq{seq}" for call_id, seq in pending.items())
         raise CaseFormatError(f"{case_id}: source 拆断 tool-call 协议: {detail}")
+
+
+def _canonical_fixture_message(data: Dict[str, Any], *, case_id: str) -> ConversationMessage:
+    """Translate legacy Eval fixtures; this is not a Session v1 decoder."""
+    role = data.get("role")
+    content = data.get("content")
+    text = content if isinstance(content, str) else None
+    if role == "system":
+        return system_message(text or "")
+    if role == "user":
+        return user_message(text or "")
+    if role == "assistant":
+        calls = []
+        for raw_call in data.get("tool_calls") or []:
+            function = raw_call.get("function") if isinstance(raw_call, dict) else None
+            if not isinstance(function, dict):
+                raise CaseFormatError(f"{case_id}: assistant tool_call 格式非法")
+            call_id, name, arguments = (
+                raw_call.get("id"), function.get("name"), function.get("arguments"),
+            )
+            if not all(isinstance(value, str) for value in (call_id, name, arguments)):
+                raise CaseFormatError(f"{case_id}: assistant tool_call 字段非法")
+            calls.append(ToolCallBlock(call_id, name, arguments))
+        return assistant_message(text, tool_calls=calls)
+    if role == "tool":
+        call_id = data.get("tool_call_id")
+        if not isinstance(call_id, str) or not call_id:
+            raise CaseFormatError(f"{case_id}: tool 结果缺少 tool_call_id")
+        return tool_result_message(call_id, text or "")
+    raise CaseFormatError(f"{case_id}: 未知消息 role {role!r}")
 
 
 def load_cases(path: Path = DEFAULT_CASES_PATH) -> List[EvalCase]:
@@ -300,7 +338,7 @@ def _source_chars(case: EvalCase) -> int:
     payload = {
         "previous_summary": case.previous_summary,
         "records": [
-            {"seq": record.seq, "ts": record.ts, "msg": record.msg}
+            {"seq": record.seq, "ts": record.ts, "message": record.message.semantic_dict()}
             for record in case.records
         ],
     }
@@ -422,11 +460,8 @@ def evaluate_case(case: EvalCase, candidate: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _generate(cases: Sequence[EvalCase]) -> Tuple[Dict[str, Dict[str, Any]], str]:
-    from noval.client import OpenAICompatibleClient
-    from noval.config import Config
-
     config = Config.load()
-    client = OpenAICompatibleClient(config.base_url, config.resolve_api_key(), config.model)
+    client = configured_client(config, config.model)
     candidates: Dict[str, Dict[str, Any]] = {}
     for index, case in enumerate(cases, 1):
         print(f"[{index}/{len(cases)}] {case.case_id}", file=sys.stderr, flush=True)
@@ -435,7 +470,7 @@ def _generate(cases: Sequence[EvalCase]) -> Tuple[Dict[str, Dict[str, Any]], str
             build_compaction_messages(case.previous_summary, case.records),
             [],
         )
-        if not response.content:
+        if not response.message.text:
             raise RuntimeError(f"{case.case_id}: 模型返回空摘要")
         usage = None
         if response.usage is not None:
@@ -446,12 +481,25 @@ def _generate(cases: Sequence[EvalCase]) -> Tuple[Dict[str, Dict[str, Any]], str
             }
         candidates[case.case_id] = {
             "case_id": case.case_id,
-            "summary": response.content.strip(),
+            "summary": response.message.text.strip(),
             "model": config.model,
             "duration_ms": round((time.perf_counter() - started) * 1000, 1),
             "usage": usage,
         }
     return candidates, config.model
+
+
+def configured_client(config: Config, model: str) -> LLMClient:
+    return create_provider_client(
+        config.provider,
+        api_key=config.resolve_api_key(),
+        model=model,
+        base_url=config.base_url,
+        anthropic_base_url=config.anthropic_base_url,
+        timeout=config.request_timeout_seconds,
+        max_retries=config.request_max_retries,
+        anthropic_max_tokens=config.anthropic_max_tokens,
+    )
 
 
 def _write_candidates(path: Path, candidates: Iterable[Dict[str, Any]]) -> None:
@@ -491,7 +539,7 @@ def _file_hash(path: Path) -> str:
 
 def _prompt_hash() -> str:
     payload = json.dumps(
-        build_compaction_messages(None, []),
+        [message.to_dict() for message in build_compaction_messages(None, [])],
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),

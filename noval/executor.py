@@ -177,7 +177,20 @@ def execute_tool_call(
     try:
         raw = tool.func(*extra, **args)
     except ToolError as e:                       # 工具主动抛出的领域错误（信息最丰富）
-        return finish(f"Error: {e}", is_error=True, effective_risk=effective_risk.value)
+        content = f"Error: {e}"
+        safe_content = redact_sensitive_text(content)
+        redacted = safe_content != content
+        content = safe_content
+        original_chars = len(content)
+        content, truncated = _truncate(content, config.max_tool_output_chars)
+        return finish(
+            content,
+            is_error=True,
+            truncated=truncated,
+            original_chars=original_chars,
+            effective_risk=effective_risk.value,
+            **({"redacted": True} if redacted else {}),
+        )
     except Exception as e:                         # 兜底：任何未预期异常（含工具内部 TypeError）
         log.exception("工具 %s 执行异常", name)
         return finish(

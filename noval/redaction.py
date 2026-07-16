@@ -22,7 +22,7 @@ _SENSITIVE_KEY = (
 )
 
 _KEY_VALUE_RE = re.compile(
-    rf"(?im)^(\s*[A-Za-z0-9_.-]*(?:{_SENSITIVE_KEY})[A-Za-z0-9_.-]*\s*[:=]\s*)([^\r\n#]+)"
+    rf"(?im)^(\s*(?:Error:\s*)?[A-Za-z0-9_.-]*(?:{_SENSITIVE_KEY})[A-Za-z0-9_.-]*\s*[:=]\s*)([^\r\n#]+)"
 )
 _JSON_VALUE_RE = re.compile(
     rf'(?i)("[A-Za-z0-9_.-]*(?:{_SENSITIVE_KEY})[A-Za-z0-9_.-]*"\s*:\s*)("([^"\\]|\\.)*"|[^,\r\n}}]+)'

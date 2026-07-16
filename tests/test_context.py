@@ -8,6 +8,10 @@ from noval.config import Config
 from noval.context import (
     ContextLimitError, ContextManager, JsonlCheckpointStore,
 )
+from noval.messages import (
+    AdapterReplayState, MessageRole, ToolCallBlock, assistant_message,
+    system_message, tool_result_message, user_message,
+)
 from noval.session import JsonlSessionStore
 
 
@@ -37,26 +41,18 @@ def make_store(tmp_path):
 
 
 def append_turn(store, number, *, tool=False):
-    store.append({"role": "user", "content": f"question-{number}"})
+    store.append(user_message(f"question-{number}"))
     if tool:
-        store.append({
-            "role": "assistant",
-            "content": None,
-            "tool_calls": [{
-                "id": f"call-{number}",
-                "type": "function",
-                "function": {"name": "read_file", "arguments": "{}"},
-            }],
-            "reasoning_content": "protocol state",
-        })
-        store.append({
-            "role": "tool", "tool_call_id": f"call-{number}", "content": "result",
-        })
-    store.append({"role": "assistant", "content": f"answer-{number}"})
+        store.append(assistant_message(
+            tool_calls=(ToolCallBlock(f"call-{number}", "read_file", "{}"),),
+            replay_state=AdapterReplayState("test", 1, {"private": "protocol state"}),
+        ))
+        store.append(tool_result_message(f"call-{number}", "result"))
+    store.append(assistant_message(f"answer-{number}"))
 
 
 def active_messages(store):
-    return [{"role": "system", "content": "system"}] + store.load()
+    return [system_message("system")] + store.load()
 
 
 def agent_config():
@@ -95,10 +91,10 @@ def test_first_compaction_persists_checkpoint_and_keeps_raw_history(tmp_path):
     compacted = manager.prepare(active_messages(store), [])
 
     assert store.load() == original
-    assert compacted[0]["role"] == "system"
-    assert compacted[1]["role"] == "user"
-    assert "<historical_context" in compacted[1]["content"]
-    assert "继续任务" in compacted[1]["content"]
+    assert compacted[0].role is MessageRole.SYSTEM
+    assert compacted[1].role is MessageRole.USER
+    assert "<historical_context" in compacted[1].text
+    assert "继续任务" in compacted[1].text
     assert compacted[-2:] == original[-2:]
     assert manager.checkpoint is not None
     assert manager.checkpoint.source_from_seq == 0
@@ -142,7 +138,7 @@ def test_resume_reuses_checkpoint_without_calling_model(tmp_path):
     restored = resumed.restore()
 
     assert len(restored) == 3
-    assert "summary" in restored[0]["content"]
+    assert "summary" in restored[0].text
     assert restored[1:] == reopened.load()[-2:]
 
 
@@ -175,7 +171,7 @@ def test_second_compaction_only_covers_new_tail_and_links_previous(tmp_path):
     assert checkpoint is not None
     assert checkpoint.previous_checkpoint_id == first_checkpoint.checkpoint_id
     assert checkpoint.source_from_seq == first_checkpoint.source_through_seq + 1
-    assert "summary-two" in compacted[1]["content"]
+    assert "summary-two" in compacted[1].text
 
 
 def test_checkpoint_loader_skips_corrupt_tail_and_invalid_source(tmp_path, caplog):
@@ -208,6 +204,25 @@ def test_checkpoint_loader_skips_corrupt_tail_and_invalid_source(tmp_path, caplo
     assert "无效" in caplog.text
 
 
+def test_v1_checkpoint_is_not_reused(tmp_path):
+    store = make_store(tmp_path)
+    append_turn(store, 0)
+    path = store.context_path()
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps({"_meta": {"schema_version": 1, "session_id": store.session_id}})
+        + "\n"
+        + json.dumps({"schema_version": 1, "checkpoint_id": "old"})
+        + "\n",
+        encoding="utf-8",
+    )
+
+    manager = ContextManager(MockClient([]), store, "model-a", 100)
+
+    assert manager.checkpoint is None
+    assert manager.restore() == store.load()
+
+
 def test_append_after_partial_checkpoint_line_remains_recoverable(tmp_path):
     store = make_store(tmp_path)
     for number in range(8):
@@ -229,7 +244,7 @@ def test_append_after_partial_checkpoint_line_remains_recoverable(tmp_path):
         estimator=MessageCountEstimator(),
     )
     second.prepare(
-        [{"role": "system", "content": "system"}] + second.restore(), [],
+        [system_message("system")] + second.restore(), [],
     )
 
     latest = JsonlCheckpointStore(
@@ -282,8 +297,9 @@ def test_compaction_boundary_never_splits_tool_protocol(tmp_path):
     store = make_store(tmp_path)
     append_turn(store, 0, tool=True)
     append_turn(store, 1)
+    client = MockClient([mock_text(context_summary())])
     manager = ContextManager(
-        MockClient([mock_text(context_summary())]), store, "model-a", 50,
+        client, store, "model-a", 50,
         estimator=MessageCountEstimator(),
         preferred_recent_turns=1,
     )
@@ -293,7 +309,12 @@ def test_compaction_boundary_never_splits_tool_protocol(tmp_path):
     assert manager.checkpoint is not None
     assert manager.checkpoint.source_through_seq == 3
     assert compacted[-2:] == store.load()[-2:]
-    assert not any(message.get("tool_call_id") == "call-0" for message in compacted)
+    assert not any(
+        result.call_id == "call-0"
+        for message in compacted for result in message.tool_results
+    )
+    assert "protocol state" not in client.seen_messages[0][-1].text
+    assert "replay_state" not in client.seen_messages[0][-1].text
 
 
 def test_soft_failure_keeps_original_but_hard_limit_stops(tmp_path):
@@ -309,7 +330,7 @@ def test_soft_failure_keeps_original_but_hard_limit_stops(tmp_path):
     assert soft.prepare(messages, []) is messages
 
     incomplete = make_store(tmp_path / "other")
-    incomplete.append({"role": "user", "content": "unfinished"})
+    incomplete.append(user_message("unfinished"))
     hard = ContextManager(
         MockClient([]), incomplete, "model-a", 100, estimator=FixedEstimator(90),
     )
@@ -338,7 +359,7 @@ def test_checkpoint_write_failure_never_replaces_active_context(tmp_path, monkey
 def test_completed_turn_can_compact_while_current_turn_is_incomplete(tmp_path):
     store = make_store(tmp_path)
     append_turn(store, 0)
-    store.append({"role": "user", "content": "current question"})
+    store.append(user_message("current question"))
     manager = ContextManager(
         MockClient([mock_text(context_summary())]), store, "model-a", 50,
         estimator=MessageCountEstimator(),
@@ -348,7 +369,7 @@ def test_completed_turn_can_compact_while_current_turn_is_incomplete(tmp_path):
 
     assert manager.checkpoint is not None
     assert manager.checkpoint.source_through_seq == 1
-    assert compacted[-1]["content"] == "current question"
+    assert compacted[-1].text == "current question"
 
 
 def test_agent_compacts_before_provider_call_without_persisting_summary(tmp_path):
@@ -366,9 +387,9 @@ def test_agent_compacts_before_provider_call_without_persisting_summary(tmp_path
 
     assert agent.send("new question") == "final answer"
 
-    assert "<source_records>" in client.seen_messages[0][-1]["content"]
+    assert "<source_records>" in client.seen_messages[0][-1].text
     model_request = client.seen_messages[1]
-    assert any("<historical_context" in m.get("content", "") for m in model_request)
+    assert any("<historical_context" in message.text for message in model_request)
     raw_messages = store.load()
-    assert not any("<historical_context" in m.get("content", "") for m in raw_messages)
-    assert raw_messages[-1]["content"] == "final answer"
+    assert not any("<historical_context" in message.text for message in raw_messages)
+    assert raw_messages[-1].text == "final answer"

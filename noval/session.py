@@ -1,10 +1,10 @@
 """会话持久化（接缝4）—— 与具体存储后端解耦的「会话日志」抽象。
 
 设计见 DESIGN.md 决策 18。一句话契约：
-  - **持久态**：对话轮次(user/assistant含tool_calls/tool)，一条不少，append-only。
+  - **持久态**：canonical user/assistant/tool block messages，一条不少，append-only。
   - **派生态**：system(人设+env+项目记忆) 不存，恢复时按当前环境重建。
-  - **形状**：每会话一个 `.jsonl`，每行一个信封 `{seq, ts, msg}`，首行 `{_meta}`。
-        时间(ts)在信封层、不进 msg —— 否则会跟着 replay 污染 wire 格式。
+  - **形状**：schema v2 每会话一个 `.jsonl`，每行 `{seq, ts, message}`，首行 `{_meta}`。
+        时间(ts)留在信封层，不进入 canonical message 或 Provider 请求。
 
 `agent.py` 只依赖 `SessionStore` 协议(像依赖 LLMClient/approver 一样注入)，
 永不直接 json.dump。换 DB = 写一个新适配器，循环与 Agent 一行不动。
@@ -22,9 +22,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Protocol
 
+from .messages import ConversationMessage, MessageFormatError, MessageRole
+
 log = logging.getLogger("noval.session")
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 _TITLE_MAXLEN = 60
 _SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
@@ -33,8 +35,8 @@ _SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 # Agent 看到的接缝：只有「往当前会话追加」和「读回当前会话」两件事
 # ---------------------------------------------------------------------------
 class SessionStore(Protocol):
-    def append(self, msg: Dict[str, Any]) -> None: ...   # 追加一条消息(store 自盖 ts/seq)
-    def load(self) -> List[Dict[str, Any]]: ...          # 读回 msg 序列(已剥信封)
+    def append(self, message: ConversationMessage) -> None: ...
+    def load(self) -> List[ConversationMessage]: ...
 
 
 class SessionMetadataStore(Protocol):
@@ -54,11 +56,11 @@ class PersistentSessionStore(SessionStore, SessionMetadataStore, Protocol):
 
 @dataclass(frozen=True)
 class SessionRecord:
-    """带持久化来源信息的消息；Provider 仍只接收其中的 msg。"""
+    """Canonical message with its append-only persistence envelope."""
 
     seq: int
     ts: str
-    msg: Dict[str, Any]
+    message: ConversationMessage
 
 
 @dataclass
@@ -70,6 +72,18 @@ class SessionMeta:
     title: str
     message_count: int
     model: str
+    compatible: bool = True
+    schema_version: Optional[int] = SCHEMA_VERSION
+
+
+class UnsupportedSessionVersion(ValueError):
+    def __init__(self, session_id: str, version: Any):
+        self.session_id = session_id
+        self.version = version
+        super().__init__(
+            f"会话 {session_id} 使用不兼容的 schema v{version}; "
+            f"Noval v0.9 只读取 schema v{SCHEMA_VERSION}，原文件未被修改"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -160,6 +174,9 @@ class JsonlSessionStore:
         store = cls(base_dir, workdir, session_id, model)
         if not store._path.exists():
             raise FileNotFoundError(f"会话不存在: {session_id}")
+        version = _session_schema_version(store._path)
+        if version != SCHEMA_VERSION:
+            raise UnsupportedSessionVersion(session_id, version if version is not None else "unknown")
         last = -1
         for rec in _iter_records(store._path):
             if isinstance(rec.get("seq"), int):
@@ -169,13 +186,13 @@ class JsonlSessionStore:
         return store
 
     # --- 写 ----------------------------------------------------------------
-    def append(self, msg: Dict[str, Any]) -> None:
+    def append(self, message: ConversationMessage) -> None:
         """追加一条消息。首次调用时才真正建目录/文件/header（懒创建）。
         每行写完即 flush，硬崩最多丢尾行（_iter_records 容忍半截行）。"""
         if self._fh is None:
             self._open_for_append()
         line = json.dumps(
-            {"seq": self._next_seq, "ts": _now_iso(), "msg": msg},
+            {"seq": self._next_seq, "ts": _now_iso(), "message": message.to_dict()},
             ensure_ascii=False,
         )
         self._fh.write(line + "\n")
@@ -259,14 +276,19 @@ class JsonlSessionStore:
                 continue
             seq = rec.get("seq")
             ts = rec.get("ts")
-            msg = rec.get("msg")
-            if isinstance(seq, int) and isinstance(ts, str) and isinstance(msg, dict):
-                records.append(SessionRecord(seq=seq, ts=ts, msg=msg))
+            raw_message = rec.get("message")
+            if not isinstance(seq, int) or not isinstance(ts, str):
+                continue
+            try:
+                message = ConversationMessage.from_dict(raw_message)
+            except MessageFormatError:
+                log.warning("跳过损坏的 canonical 会话消息: %s seq=%s", self._path, seq)
+                continue
+            records.append(SessionRecord(seq=seq, ts=ts, message=message))
         return records
 
-    def load(self) -> List[Dict[str, Any]]:
-        """读回该会话的 msg 序列（剥掉信封 + 跳过 _meta/坏行）。新会话返回 []。"""
-        return [record.msg for record in self.load_records()]
+    def load(self) -> List[ConversationMessage]:
+        return [record.message for record in self.load_records()]
 
 
 # ---------------------------------------------------------------------------
@@ -293,28 +315,54 @@ def _read_session_meta(path: Path) -> Optional[SessionMeta]:
     model = ""
     first_user = ""
     msg_count = 0
+    schema_version: Optional[int] = None
     for rec in _iter_records(path):
         if "_meta" in rec:
             m = rec["_meta"]
+            if not isinstance(m, dict):
+                continue
+            schema_version = m.get("schema_version")
             created_at = m.get("created_at", "")
             model = m.get("model", "")
             session_id = m.get("session_id", session_id)
             continue
-        msg = rec.get("msg")
-        if isinstance(msg, dict):
+        raw_message = rec.get("message")
+        if schema_version == SCHEMA_VERSION and isinstance(raw_message, dict):
+            try:
+                message = ConversationMessage.from_dict(raw_message)
+            except MessageFormatError:
+                continue
             msg_count += 1
-            if not first_user and msg.get("role") == "user":
-                first_user = msg.get("content", "")
+            if not first_user and message.role is MessageRole.USER:
+                first_user = message.text
+        elif "msg" in rec or "message" in rec:
+            msg_count += 1
     try:
         last_active = datetime.fromtimestamp(path.stat().st_mtime).astimezone().isoformat(timespec="seconds")
     except OSError:
         last_active = created_at
 
     # 标题：sidecar 优先（用户自定义），否则从首条 user 消息派生
+    compatible = schema_version == SCHEMA_VERSION
     title = _read_sidecar_title(path.parent / (path.stem + ".meta.json"))
-    if title is None:
+    if not compatible:
+        title = f"[不兼容 v{schema_version if schema_version is not None else '?'}] {title or path.stem}"
+    elif title is None:
         title = _derive_title(first_user) if first_user else "(空会话)"
-    return SessionMeta(session_id, created_at, last_active, title, msg_count, model)
+    return SessionMeta(
+        session_id, created_at, last_active, title, msg_count, model,
+        compatible=compatible, schema_version=schema_version,
+    )
+
+
+def _session_schema_version(path: Path) -> Optional[int]:
+    for record in _iter_records(path):
+        meta = record.get("_meta")
+        if isinstance(meta, dict):
+            version = meta.get("schema_version")
+            return version if isinstance(version, int) and not isinstance(version, bool) else None
+        return None
+    return None
 
 
 def _read_sidecar_title(meta_path: Path) -> Optional[str]:

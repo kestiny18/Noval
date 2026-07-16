@@ -10,8 +10,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
-from noval.client import LLMClient, OpenAICompatibleClient
+from noval.client import LLMClient
 from noval.config import Config
+from noval.messages import ConversationMessage, system_message, user_message
 
 from .recovery import RecordingClient
 from .run import (
@@ -19,6 +20,7 @@ from .run import (
     CaseFormatError,
     EvalCase,
     evaluate_case,
+    configured_client,
     load_cases,
     load_summaries,
 )
@@ -56,11 +58,11 @@ JUDGE_RETRY_INSTRUCTION = (
 )
 
 
-def build_judge_messages(case: EvalCase, candidate: Dict[str, Any]) -> List[Dict[str, str]]:
+def build_judge_messages(case: EvalCase, candidate: Dict[str, Any]) -> List[ConversationMessage]:
     source = {
         "previous_summary": case.previous_summary,
         "records": [
-            {"seq": record.seq, "ts": record.ts, "msg": record.msg}
+            {"seq": record.seq, "ts": record.ts, "message": record.message.semantic_dict()}
             for record in case.records
         ],
         "must_preserve": [
@@ -74,13 +76,13 @@ def build_judge_messages(case: EvalCase, candidate: Dict[str, Any]) -> List[Dict
         "candidate_summary": candidate["summary"],
     }
     return [
-        {"role": "system", "content": JUDGE_SYSTEM},
-        {"role": "user", "content": (
+        system_message(JUDGE_SYSTEM),
+        user_message(
             JUDGE_INSTRUCTIONS
             + "\n\n<evaluation_data>\n"
             + json.dumps(source, ensure_ascii=False)
             + "\n</evaluation_data>"
-        )},
+        ),
     ]
 
 
@@ -148,12 +150,12 @@ def _request_verdict(
     for attempt in range(2):
         messages = build_judge_messages(case, candidate)
         if attempt:
-            messages[-1]["content"] += JUDGE_RETRY_INSTRUCTION
+            messages[-1] = user_message(messages[-1].text + JUDGE_RETRY_INSTRUCTION)
         response = client.complete(messages, [])
         try:
-            if not response.content:
+            if not response.message.text:
                 raise CaseFormatError(f"{case.case_id}: Judge 返回空内容")
-            verdict = parse_judge_json(response.content)
+            verdict = parse_judge_json(response.message.text)
             _validate_verdict(case, verdict)
             return verdict
         except CaseFormatError as error:
@@ -269,11 +271,7 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
             "如确需自评请显式传 --allow-same-model"
         )
     config = Config.load()
-    client = RecordingClient(OpenAICompatibleClient(
-        config.base_url,
-        config.resolve_api_key(),
-        args.model,
-    ))
+    client = RecordingClient(configured_client(config, args.model))
     results = []
     for index, case in enumerate(cases, 1):
         print(f"[judge {index}/{len(cases)}] {case.case_id}", flush=True)

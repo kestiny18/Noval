@@ -8,11 +8,11 @@ import re
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Protocol
+from typing import Any, Callable, Dict, Optional, Protocol, Sequence
 from uuid import uuid4
 
-from .client import LLMClient, LLMResponse, TokenUsage
-from .tools import Tool
+from .client import LLMClient, LLMResponse, TokenUsage, ToolDefinition
+from .messages import ConversationMessage
 
 log = logging.getLogger("noval.usage")
 
@@ -172,11 +172,15 @@ class MeteredLLMClient:
         self.model = model
         self.purpose = _safe_purpose(purpose)
 
-    def complete(self, messages: List[Dict[str, Any]], tools: List[Tool]) -> LLMResponse:
+    def complete(
+        self,
+        messages: Sequence[ConversationMessage],
+        tools: Sequence[ToolDefinition],
+    ) -> LLMResponse:
         response = self.inner.complete(messages, tools)
         if response.usage is None:
             return response
-        response_model = getattr(response.raw, "model", None) or self.model
+        response_model = response.provider.model or self.model
         try:
             self.store.record(str(response_model), response.usage, purpose=self.purpose)
         except Exception:

@@ -1,32 +1,39 @@
-"""Provider 抽象（接缝1）。
-
-agent 循环只依赖 LLMClient 接口与下面这几个归一化的数据结构，
-**永不直接 import openai**。换模型/换厂商 = 换一个实现 LLMClient 的适配器。
-
-注：当前内核以「OpenAI 兼容 wire 格式」为对话历史的载体（DeepSeek 即兼容此格式）。
-支持非 OpenAI 格式的 provider 是后续工作（见 DESIGN.md 待办）。
-"""
+"""Provider adapters for Noval's canonical conversation model."""
 from __future__ import annotations
 
+import copy
+import json
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Protocol
+from enum import Enum
+from typing import Any, Dict, List, Optional, Protocol, Sequence, Tuple
 
-from .tools import Tool
+from .messages import (
+    AdapterReplayState,
+    ConversationMessage,
+    MessageProvenance,
+    MessageRole,
+    TextBlock,
+    ToolCallBlock,
+    assistant_message,
+)
+
+OPENAI_ADAPTER = "openai-compatible"
+ANTHROPIC_ADAPTER = "anthropic-messages"
+ADAPTER_SCHEMA_VERSION = 1
 
 
-# --- 归一化的数据结构：循环只跟这些打交道 ---------------------------------
-@dataclass
-class ToolCall:
-    id: str
+@dataclass(frozen=True)
+class ToolDefinition:
+    """Provider-visible tool data; executor state and callables never cross this seam."""
+
     name: str
-    arguments: str   # 原始 JSON 字符串；解析容错由 executor 负责
+    description: str
+    input_schema: Dict[str, Any]
 
 
 @dataclass(frozen=True)
 class TokenUsage:
-    """一次成功模型请求返回的标准化 token 用量。"""
-
     prompt_tokens: int
     completion_tokens: int
     total_tokens: int
@@ -35,36 +42,68 @@ class TokenUsage:
     reasoning_tokens: Optional[int] = None
 
 
+@dataclass(frozen=True)
+class ProviderIdentity:
+    provider: str
+    model: str
+    adapter: str
+    adapter_schema_version: int = ADAPTER_SCHEMA_VERSION
+
+    def provenance(self) -> MessageProvenance:
+        return MessageProvenance(
+            provider=self.provider,
+            model=self.model,
+            adapter=self.adapter,
+            adapter_schema_version=self.adapter_schema_version,
+        )
+
+
+class ProviderErrorKind(str, Enum):
+    AUTHENTICATION = "authentication"
+    RATE_LIMIT = "rate_limit"
+    TIMEOUT = "timeout"
+    CONNECTION = "connection"
+    INVALID_REQUEST = "invalid_request"
+    SERVER = "server"
+    PROTOCOL = "protocol"
+    UNKNOWN = "unknown"
+
+
+class ProviderError(RuntimeError):
+    """Safe, normalized Provider failure exposed to the core and embedders."""
+
+    def __init__(
+        self,
+        kind: ProviderErrorKind,
+        safe_message: str,
+        *,
+        retryable: bool,
+        identity: ProviderIdentity,
+    ):
+        super().__init__(safe_message)
+        self.kind = kind
+        self.safe_message = safe_message
+        self.retryable = retryable
+        self.identity = identity
+
+
 @dataclass
 class LLMResponse:
-    content: Optional[str]                 # 助手文本（无工具调用时即最终回复）
-    tool_calls: List[ToolCall]             # 本轮请求的工具调用
-    assistant_message: Dict[str, Any]      # Provider 构造的、可安全回放的历史消息
-    raw: Any = None                        # 原始响应对象，仅供调试/日志
-    meta: Dict[str, Any] = field(default_factory=dict)  # 耗时等框架元数据，不给模型
-    usage: Optional[TokenUsage] = None      # Provider 返回的实际用量；缺失时不估算
+    message: ConversationMessage
+    usage: Optional[TokenUsage] = None
+    provider: ProviderIdentity = field(default_factory=lambda: ProviderIdentity(
+        provider="mock", model="mock", adapter="mock",
+    ))
+    meta: Dict[str, Any] = field(default_factory=dict)
 
 
 class LLMClient(Protocol):
-    def complete(self, messages: List[Dict[str, Any]], tools: List[Tool]) -> LLMResponse:
+    def complete(
+        self,
+        messages: Sequence[ConversationMessage],
+        tools: Sequence[ToolDefinition],
+    ) -> LLMResponse:
         ...
-
-
-def tool_message(call_id: str, content: str) -> Dict[str, Any]:
-    """把一次工具结果包装成历史消息（OpenAI 兼容格式）。"""
-    return {"role": "tool", "tool_call_id": call_id, "content": content}
-
-
-def _to_openai_tool(tool: Tool) -> Dict[str, Any]:
-    """Tool → OpenAI function-calling schema（provider 专属翻译，只在本层出现）。"""
-    return {
-        "type": "function",
-        "function": {
-            "name": tool.name,
-            "description": tool.description,
-            "parameters": tool.parameters,
-        },
-    }
 
 
 def _value(obj: Any, name: str) -> Any:
@@ -77,8 +116,7 @@ def _optional_int(value: Any) -> Optional[int]:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
-def _normalize_usage(raw_usage: Any) -> Optional[TokenUsage]:
-    """归一化 OpenAI 兼容 usage；核心计数缺失时不做猜测。"""
+def _normalize_openai_usage(raw_usage: Any) -> Optional[TokenUsage]:
     if raw_usage is None:
         return None
     prompt_tokens = _optional_int(_value(raw_usage, "prompt_tokens"))
@@ -86,7 +124,6 @@ def _normalize_usage(raw_usage: Any) -> Optional[TokenUsage]:
     total_tokens = _optional_int(_value(raw_usage, "total_tokens"))
     if prompt_tokens is None or completion_tokens is None or total_tokens is None:
         return None
-
     completion_details = _value(raw_usage, "completion_tokens_details")
     return TokenUsage(
         prompt_tokens=prompt_tokens,
@@ -98,7 +135,100 @@ def _normalize_usage(raw_usage: Any) -> Optional[TokenUsage]:
     )
 
 
-# --- 真实适配器：OpenAI 兼容端点（DeepSeek） ------------------------------
+def _normalize_anthropic_usage(raw_usage: Any) -> Optional[TokenUsage]:
+    if raw_usage is None:
+        return None
+    prompt_tokens = _optional_int(_value(raw_usage, "input_tokens"))
+    completion_tokens = _optional_int(_value(raw_usage, "output_tokens"))
+    if prompt_tokens is None or completion_tokens is None:
+        return None
+    return TokenUsage(
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=prompt_tokens + completion_tokens,
+        cache_hit_tokens=_optional_int(_value(raw_usage, "cache_read_input_tokens")),
+        cache_miss_tokens=_optional_int(_value(raw_usage, "cache_creation_input_tokens")),
+    )
+
+
+def _normalized_error(error: Exception, identity: ProviderIdentity) -> ProviderError:
+    name = type(error).__name__.lower()
+    status = _value(error, "status_code")
+    if "authentication" in name or status in (401, 403):
+        kind, retryable = ProviderErrorKind.AUTHENTICATION, False
+    elif "ratelimit" in name or status == 429:
+        kind, retryable = ProviderErrorKind.RATE_LIMIT, True
+    elif "timeout" in name:
+        kind, retryable = ProviderErrorKind.TIMEOUT, True
+    elif "connection" in name:
+        kind, retryable = ProviderErrorKind.CONNECTION, True
+    elif isinstance(status, int) and status >= 500:
+        kind, retryable = ProviderErrorKind.SERVER, True
+    elif "badrequest" in name or (isinstance(status, int) and 400 <= status < 500):
+        kind, retryable = ProviderErrorKind.INVALID_REQUEST, False
+    else:
+        kind, retryable = ProviderErrorKind.UNKNOWN, False
+    return ProviderError(
+        kind,
+        f"{identity.provider} request failed ({kind.value})",
+        retryable=retryable,
+        identity=identity,
+    )
+
+
+def _openai_tools(tools: Sequence[ToolDefinition]) -> List[Dict[str, Any]]:
+    return [{
+        "type": "function",
+        "function": {
+            "name": tool.name,
+            "description": tool.description,
+            "parameters": tool.input_schema,
+        },
+    } for tool in tools]
+
+
+def _openai_messages(messages: Sequence[ConversationMessage]) -> List[Dict[str, Any]]:
+    wire: List[Dict[str, Any]] = []
+    for message in messages:
+        if message.role in {MessageRole.SYSTEM, MessageRole.USER}:
+            wire.append({"role": message.role.value, "content": message.text})
+            continue
+        if message.role is MessageRole.TOOL:
+            for result in message.tool_results:
+                wire.append({
+                    "role": "tool",
+                    "tool_call_id": result.call_id,
+                    "content": result.content,
+                })
+            continue
+        item: Dict[str, Any] = {
+            "role": "assistant",
+            "content": message.text if any(isinstance(b, TextBlock) for b in message.blocks) else None,
+        }
+        calls = message.tool_calls
+        if calls:
+            item["tool_calls"] = [{
+                "id": call.id,
+                "type": "function",
+                "function": {"name": call.name, "arguments": call.arguments},
+            } for call in calls]
+        replay = message.replay_state
+        if replay is not None and replay.adapter == OPENAI_ADAPTER:
+            payload = replay.payload
+            if replay.schema_version != ADAPTER_SCHEMA_VERSION or not isinstance(payload, dict):
+                raise ProviderError(
+                    ProviderErrorKind.PROTOCOL,
+                    "openai-compatible replay state has an unsupported schema",
+                    retryable=False,
+                    identity=ProviderIdentity(OPENAI_ADAPTER, "unknown", OPENAI_ADAPTER),
+                )
+            reasoning = payload.get("reasoning_content")
+            if reasoning is not None:
+                item["reasoning_content"] = reasoning
+        wire.append(item)
+    return wire
+
+
 class OpenAICompatibleClient:
     def __init__(
         self,
@@ -109,7 +239,7 @@ class OpenAICompatibleClient:
         timeout: float = 120.0,
         max_retries: int = 2,
     ):
-        from openai import OpenAI  # 延迟导入：保证核心逻辑不依赖具体 SDK
+        from openai import OpenAI
         self._client = OpenAI(
             base_url=base_url,
             api_key=api_key,
@@ -117,78 +247,338 @@ class OpenAICompatibleClient:
             max_retries=max_retries,
         )
         self.model = model
+        self.identity = ProviderIdentity(OPENAI_ADAPTER, model, OPENAI_ADAPTER)
 
-    def complete(self, messages: List[Dict[str, Any]], tools: List[Tool]) -> LLMResponse:
-        openai_tools = [_to_openai_tool(t) for t in tools] or None
+    def complete(
+        self,
+        messages: Sequence[ConversationMessage],
+        tools: Sequence[ToolDefinition],
+    ) -> LLMResponse:
+        provider_tools = _openai_tools(tools)
+        kwargs: Dict[str, Any] = {
+            "model": self.model,
+            "messages": _openai_messages(messages),
+        }
+        if provider_tools:
+            kwargs.update(tools=provider_tools, tool_choice="auto")
         started = time.perf_counter()
-        resp = self._client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            tools=openai_tools,
-            tool_choice="auto" if openai_tools else None,
-        )
+        try:
+            response = self._client.chat.completions.create(**kwargs)
+        except Exception as error:
+            raise _normalized_error(error, self.identity) from error
         duration_ms = round((time.perf_counter() - started) * 1000, 1)
-        msg = resp.choices[0].message
-        tool_calls = [
-            ToolCall(id=tc.id, name=tc.function.name, arguments=tc.function.arguments)
-            for tc in (msg.tool_calls or [])
-        ]
-        reasoning_content = getattr(msg, "reasoning_content", None)
-        # 白名单重建回放消息，不直接 model_dump()。DeepSeek 思考模式有一个例外：
-        # 发生工具调用时 reasoning_content 是后续请求的必需协议状态，必须保留；
-        # 普通最终回复则无需回传，避免无意义地扩大历史与会话文件。
-        assistant_message: Dict[str, Any] = {"role": "assistant", "content": msg.content}
-        if tool_calls:
-            assistant_message["tool_calls"] = [
-                {"id": tc.id, "type": "function",
-                 "function": {"name": tc.name, "arguments": tc.arguments}}
-                for tc in tool_calls
-            ]
-            if reasoning_content is not None:
-                assistant_message["reasoning_content"] = reasoning_content
-
-        usage = _normalize_usage(getattr(resp, "usage", None))
+        model = _value(response, "model")
+        identity = ProviderIdentity(
+            OPENAI_ADAPTER,
+            model if isinstance(model, str) and model else self.model,
+            OPENAI_ADAPTER,
+        )
+        try:
+            message = response.choices[0].message
+            calls = tuple(
+                ToolCallBlock(call.id, call.function.name, call.function.arguments)
+                for call in (_value(message, "tool_calls") or [])
+            )
+            reasoning = _value(message, "reasoning_content")
+            if reasoning is not None and not isinstance(reasoning, str):
+                raise ValueError("reasoning_content must be a string")
+            replay = None
+            if calls and reasoning is not None:
+                replay = AdapterReplayState(
+                    OPENAI_ADAPTER,
+                    ADAPTER_SCHEMA_VERSION,
+                    {"reasoning_content": reasoning},
+                )
+            canonical = assistant_message(
+                _value(message, "content"),
+                tool_calls=calls,
+                replay_state=replay,
+                provenance=identity.provenance(),
+            )
+        except (AttributeError, IndexError, TypeError, ValueError) as error:
+            raise ProviderError(
+                ProviderErrorKind.PROTOCOL,
+                "openai-compatible provider returned an invalid response",
+                retryable=False,
+                identity=identity,
+            ) from error
         return LLMResponse(
-            content=msg.content,
-            tool_calls=tool_calls,
-            assistant_message=assistant_message,
+            message=canonical,
+            usage=_normalize_openai_usage(_value(response, "usage")),
+            provider=identity,
             meta={
-                "thinking_enabled": reasoning_content is not None,
+                "thinking_enabled": reasoning is not None,
                 "duration_ms": duration_ms,
             },
-            usage=usage,
-            raw=resp,
         )
 
 
-# --- 测试适配器：脚本化、离线、零成本 -------------------------------------
+def _anthropic_tools(tools: Sequence[ToolDefinition]) -> List[Dict[str, Any]]:
+    return [{
+        "name": tool.name,
+        "description": tool.description,
+        "input_schema": tool.input_schema,
+    } for tool in tools]
+
+
+def _anthropic_replay_blocks(message: ConversationMessage) -> List[Dict[str, Any]]:
+    replay = message.replay_state
+    if replay is None or replay.adapter != ANTHROPIC_ADAPTER:
+        return []
+    if replay.schema_version != ADAPTER_SCHEMA_VERSION or not isinstance(replay.payload, dict):
+        raise ValueError("anthropic replay state has an unsupported schema")
+    blocks = replay.payload.get("blocks")
+    if not isinstance(blocks, list) or not all(isinstance(block, dict) for block in blocks):
+        raise ValueError("anthropic replay state blocks are invalid")
+    return copy.deepcopy(blocks)
+
+
+def _append_anthropic_message(
+    wire: List[Dict[str, Any]], role: str, content: List[Dict[str, Any]],
+) -> None:
+    if not content:
+        return
+    if wire and wire[-1]["role"] == role:
+        wire[-1]["content"].extend(content)
+    else:
+        wire.append({"role": role, "content": content})
+
+
+def _anthropic_messages(
+    messages: Sequence[ConversationMessage],
+) -> Tuple[Optional[str], List[Dict[str, Any]]]:
+    systems: List[str] = []
+    wire: List[Dict[str, Any]] = []
+    for message in messages:
+        if message.role is MessageRole.SYSTEM:
+            systems.append(message.text)
+            continue
+        if message.role is MessageRole.USER:
+            _append_anthropic_message(wire, "user", [{"type": "text", "text": message.text}])
+            continue
+        if message.role is MessageRole.TOOL:
+            content = [{
+                "type": "tool_result",
+                "tool_use_id": result.call_id,
+                "content": result.content,
+                "is_error": result.is_error,
+            } for result in message.tool_results]
+            _append_anthropic_message(wire, "user", content)
+            continue
+        content = _anthropic_replay_blocks(message)
+        content.extend(
+            {"type": "text", "text": block.text}
+            for block in message.blocks if isinstance(block, TextBlock)
+        )
+        content.extend({
+            "type": "tool_use",
+            "id": call.id,
+            "name": call.name,
+            "input": json.loads(call.arguments),
+        } for call in message.tool_calls)
+        _append_anthropic_message(wire, "assistant", content)
+    return ("\n\n".join(systems) if systems else None), wire
+
+
+def _plain_anthropic_block(block: Any) -> Dict[str, Any]:
+    if isinstance(block, dict):
+        return copy.deepcopy(block)
+    dump = getattr(block, "model_dump", None)
+    if callable(dump):
+        data = dump()
+        if isinstance(data, dict):
+            return data
+    data = {"type": _value(block, "type")}
+    for name in ("text", "id", "name", "input", "thinking", "signature", "data"):
+        value = _value(block, name)
+        if value is not None:
+            data[name] = value
+    return data
+
+
+class AnthropicMessagesClient:
+    def __init__(
+        self,
+        api_key: str,
+        model: str,
+        *,
+        base_url: Optional[str] = None,
+        timeout: float = 120.0,
+        max_retries: int = 2,
+        max_tokens: int = 8192,
+    ):
+        try:
+            from anthropic import Anthropic
+        except ImportError as error:
+            raise RuntimeError(
+                "Anthropic provider requires the optional dependency: pip install 'noval[anthropic]'"
+            ) from error
+        kwargs: Dict[str, Any] = {
+            "api_key": api_key,
+            "timeout": timeout,
+            "max_retries": max_retries,
+        }
+        if base_url:
+            kwargs["base_url"] = base_url
+        self._client = Anthropic(**kwargs)
+        self.model = model
+        self.max_tokens = max_tokens
+        self.identity = ProviderIdentity("anthropic", model, ANTHROPIC_ADAPTER)
+
+    def complete(
+        self,
+        messages: Sequence[ConversationMessage],
+        tools: Sequence[ToolDefinition],
+    ) -> LLMResponse:
+        try:
+            system, provider_messages = _anthropic_messages(messages)
+        except ProviderError:
+            raise
+        except (ValueError, json.JSONDecodeError) as error:
+            raise ProviderError(
+                ProviderErrorKind.PROTOCOL,
+                "canonical messages cannot be represented by the anthropic adapter",
+                retryable=False,
+                identity=self.identity,
+            ) from error
+        kwargs: Dict[str, Any] = {
+            "model": self.model,
+            "max_tokens": self.max_tokens,
+            "messages": provider_messages,
+        }
+        if system:
+            kwargs["system"] = system
+        provider_tools = _anthropic_tools(tools)
+        if provider_tools:
+            kwargs["tools"] = provider_tools
+        started = time.perf_counter()
+        try:
+            response = self._client.messages.create(**kwargs)
+        except Exception as error:
+            raise _normalized_error(error, self.identity) from error
+        duration_ms = round((time.perf_counter() - started) * 1000, 1)
+        model = _value(response, "model")
+        identity = ProviderIdentity(
+            "anthropic",
+            model if isinstance(model, str) and model else self.model,
+            ANTHROPIC_ADAPTER,
+        )
+        try:
+            text_parts: List[str] = []
+            calls: List[ToolCallBlock] = []
+            replay_blocks: List[Dict[str, Any]] = []
+            for raw_block in (_value(response, "content") or []):
+                block = _plain_anthropic_block(raw_block)
+                block_type = block.get("type")
+                if block_type == "text" and isinstance(block.get("text"), str):
+                    text_parts.append(block["text"])
+                elif block_type == "tool_use":
+                    calls.append(ToolCallBlock(
+                        str(block.get("id") or ""),
+                        str(block.get("name") or ""),
+                        json.dumps(
+                            block.get("input", {}),
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        ),
+                    ))
+                elif block_type in {"thinking", "redacted_thinking"}:
+                    replay_blocks.append(block)
+                else:
+                    raise ValueError(f"unsupported content block: {block_type!r}")
+            replay = (
+                AdapterReplayState(
+                    ANTHROPIC_ADAPTER,
+                    ADAPTER_SCHEMA_VERSION,
+                    {"blocks": replay_blocks},
+                )
+                if replay_blocks else None
+            )
+            canonical = assistant_message(
+                "".join(text_parts) if text_parts else None,
+                tool_calls=calls,
+                replay_state=replay,
+                provenance=identity.provenance(),
+            )
+        except (TypeError, ValueError) as error:
+            raise ProviderError(
+                ProviderErrorKind.PROTOCOL,
+                "anthropic provider returned an invalid response",
+                retryable=False,
+                identity=identity,
+            ) from error
+        return LLMResponse(
+            message=canonical,
+            usage=_normalize_anthropic_usage(_value(response, "usage")),
+            provider=identity,
+            meta={
+                "thinking_enabled": bool(replay_blocks),
+                "duration_ms": duration_ms,
+            },
+        )
+
+
+def create_provider_client(
+    provider: str,
+    *,
+    api_key: str,
+    model: str,
+    base_url: str = "",
+    anthropic_base_url: str = "",
+    timeout: float = 120.0,
+    max_retries: int = 2,
+    anthropic_max_tokens: int = 8192,
+) -> LLMClient:
+    if provider == "anthropic":
+        return AnthropicMessagesClient(
+            api_key,
+            model,
+            base_url=anthropic_base_url or None,
+            timeout=timeout,
+            max_retries=max_retries,
+            max_tokens=anthropic_max_tokens,
+        )
+    if provider == OPENAI_ADAPTER:
+        return OpenAICompatibleClient(
+            base_url,
+            api_key,
+            model,
+            timeout=timeout,
+            max_retries=max_retries,
+        )
+    raise ValueError(f"unsupported provider: {provider!r}")
+
+
 class MockClient:
-    """按预设脚本逐步返回响应，使整条 agent 循环可在不联网下测试。"""
-
-    def __init__(self, script: List[LLMResponse]):
+    def __init__(self, script: Sequence[LLMResponse]):
         self._script = list(script)
-        self.seen_messages: List[List[Dict[str, Any]]] = []  # 记录每次收到的历史，供断言
+        self.seen_messages: List[List[ConversationMessage]] = []
+        self.seen_tools: List[List[ToolDefinition]] = []
 
-    def complete(self, messages: List[Dict[str, Any]], tools: List[Tool]) -> LLMResponse:
-        self.seen_messages.append([dict(m) for m in messages])
+    def complete(
+        self,
+        messages: Sequence[ConversationMessage],
+        tools: Sequence[ToolDefinition],
+    ) -> LLMResponse:
+        self.seen_messages.append(copy.deepcopy(list(messages)))
+        self.seen_tools.append(copy.deepcopy(list(tools)))
         if not self._script:
-            raise AssertionError("MockClient 脚本已用尽，但循环仍在请求")
+            raise AssertionError("MockClient script exhausted while the loop kept requesting")
         return self._script.pop(0)
 
 
-# 构造 mock 响应的便捷函数，让测试可读
 def mock_text(
     text: str,
     *,
     meta: Optional[Dict[str, Any]] = None,
     usage: Optional[TokenUsage] = None,
 ) -> LLMResponse:
+    identity = ProviderIdentity("mock", "mock", "mock")
     return LLMResponse(
-        content=text,
-        tool_calls=[],
-        assistant_message={"role": "assistant", "content": text},
-        meta=dict(meta or {}),
+        message=assistant_message(text, provenance=identity.provenance()),
         usage=usage,
+        provider=identity,
+        meta=dict(meta or {}),
     )
 
 
@@ -201,21 +591,21 @@ def mock_tool_call(
     meta: Optional[Dict[str, Any]] = None,
     usage: Optional[TokenUsage] = None,
 ) -> LLMResponse:
-    assistant_message: Dict[str, Any] = {
-        "role": "assistant",
-        "content": None,
-        "tool_calls": [{
-            "id": call_id,
-            "type": "function",
-            "function": {"name": name, "arguments": arguments_json},
-        }],
-    }
+    identity = ProviderIdentity(OPENAI_ADAPTER, "mock", OPENAI_ADAPTER)
+    replay = None
     if reasoning_content is not None:
-        assistant_message["reasoning_content"] = reasoning_content
+        replay = AdapterReplayState(
+            OPENAI_ADAPTER,
+            ADAPTER_SCHEMA_VERSION,
+            {"reasoning_content": reasoning_content},
+        )
     return LLMResponse(
-        content=None,
-        tool_calls=[ToolCall(id=call_id, name=name, arguments=arguments_json)],
-        assistant_message=assistant_message,
-        meta=dict(meta or {}),
+        message=assistant_message(
+            tool_calls=(ToolCallBlock(call_id, name, arguments_json),),
+            replay_state=replay,
+            provenance=identity.provenance(),
+        ),
         usage=usage,
+        provider=identity,
+        meta=dict(meta or {}),
     )

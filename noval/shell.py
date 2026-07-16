@@ -23,7 +23,9 @@ class ShellBackend:
 
     def command(self, source: str) -> tuple[str, ...]:
         if self.executable:
-            return (self.executable, "-c", source)
+            # All executable backends discovered here are Bash-compatible. Keep
+            # the first failing stage visible when users trim output with a pipe.
+            return (self.executable, "-o", "pipefail", "-c", source)
         if platform.system() == "Windows":
             return (os.environ.get("COMSPEC") or "cmd.exe", "/d", "/s", "/c", source)
         return (os.environ.get("SHELL") or "/bin/sh", "-c", source)

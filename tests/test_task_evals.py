@@ -12,8 +12,8 @@ from evals.task.run import (
 def test_bundled_task_eval_assets_are_valid():
     cases = load_cases(DEFAULT_CASES_PATH)
 
-    assert len(cases) == 6
-    assert len({case.case_id for case in cases}) == 6
+    assert len(cases) == 7
+    assert len({case.case_id for case in cases}) == 7
     assert any(case.expected.get("status") == "completed" for case in cases)
     assert any(case.expected.get("status") == "uncertain" for case in cases)
 
@@ -23,7 +23,7 @@ def test_default_task_eval_runs_offline(capsys):
 
     out = capsys.readouterr().out
     assert "# Task Eval Report" in out
-    assert "Passed: 6" in out
+    assert "Passed: 7" in out
     assert "Failed: 0" in out
 
 

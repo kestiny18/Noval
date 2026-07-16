@@ -13,9 +13,9 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
-from .client import LLMClient, LLMResponse, tool_message
+from .client import LLMClient, LLMResponse, ToolDefinition
 from .config import Config
 from .confinement import ConfinementPolicy, PathAccess
 from .context import ContextManager
@@ -24,6 +24,10 @@ from .hooks import (
     HookBatchResult, HookEvent, HookRegistry, hook_index_context, hook_update_context,
 )
 from .mcp import McpRegistry, McpSnapshotDiff, mcp_index_context
+from .messages import (
+    ConversationMessage, MessageRole, assistant_message, system_message,
+    tool_result_message, user_message,
+)
 from .permissions import PermissionController, PermissionMode, PermissionState
 from .process import (
     NetworkAccess, ProcessRuntime, SandboxMode, SandboxPolicy, sandbox_status_text,
@@ -50,6 +54,9 @@ DEFAULT_SYSTEM_PROMPT = (
     "凡会改变外部状态的操作（写文件、修改代码、安装/删除、Git checkout/pull/prune/commit/push/merge/rebase/reset、调用 webhook 等），"
     "除非用户本轮或当前任务已明确授权，否则先说明计划和影响，等待确认后再执行。"
     "FULL_ACCESS 只表示工具风险确认已放行，不表示任务范围被扩大。"
+    "构建、编译、测试、lint 或格式检查请求只授权执行验证及其正常产物，不授权修改源码、"
+    "依赖版本、POM/lockfile、构建配置或项目设置；验证失败时先只读诊断并报告，"
+    "需要修改才能继续时必须说明范围与影响，等待用户明确确认。"
     "修改代码后先验证再宣称完成；除非用户明确要求，不要创建 Git 提交。"
     "执行 Git 提交时，先检查 status/diff 与敏感内容并运行相关测试；"
     "除非用户明确要求拆分，一次请求只创建一个提交，完成后报告 commit hash 与剩余工作区状态。"
@@ -147,7 +154,7 @@ class TurnMetrics:
 
     def observe(self, response: LLMResponse) -> None:
         self.api_calls += 1
-        self.tool_calls += len(response.tool_calls)
+        self.tool_calls += len(response.message.tool_calls)
         duration = response.meta.get("duration_ms")
         if isinstance(duration, (int, float)):
             self.llm_duration_ms += float(duration)
@@ -210,7 +217,7 @@ class Agent:
         project_memory: Optional[str] = None,
         system_prompt: Optional[str] = None,
         store: Optional[SessionStore] = None,
-        resume_messages: Optional[List[Dict[str, Any]]] = None,
+        resume_messages: Optional[List[ConversationMessage]] = None,
         shell_backend: Optional[ShellBackend] = None,
         permissions: Optional[PermissionController] = None,
         context_manager: Optional[ContextManager] = None,
@@ -277,7 +284,7 @@ class Agent:
         )
         self._reconcile_hook_permissions()
         self.last_turn_metrics = TurnMetrics()
-        self.messages: List[Dict[str, Any]] = []
+        self.messages: List[ConversationMessage] = []
         # system 消息按「稳定性从高到低」排，让缓存前缀尽量长：
         #   人设/规则(随代码发布才变) → 环境(同机器同项目固定) → 项目记忆(用户会编辑,最易变)
         # 顺序同时服务语义：规则先立框，项目约定在后且被边界标记为「不可覆盖系统规则」。
@@ -293,16 +300,16 @@ class Agent:
             ) if p
         ]
         if parts:
-            self._append_message({"role": "system", "content": "\n\n".join(parts)}, persist=False)
+            self._append_message(system_message("\n\n".join(parts)), persist=False)
         for msg in resume_messages or []:
             self._append_message(msg, persist=False)
         if resume_messages:
             self._answer_pending_tool_calls()
 
-    def _append_message(self, msg: Dict[str, Any], *, persist: bool = True) -> None:
+    def _append_message(self, msg: ConversationMessage, *, persist: bool = True) -> None:
         """追加到内存历史；非 system 消息按需落盘。持久化失败只降级记录日志，不掀翻会话。"""
         self.messages.append(msg)
-        if not persist or msg.get("role") == "system" or self.store is None:
+        if not persist or msg.role is MessageRole.SYSTEM or self.store is None:
             return
         try:
             self.store.append(msg)
@@ -317,10 +324,9 @@ class Agent:
         # 与时间无关、跨天/跨重启不破缓存；历史里的时间戳是冻结的，不破后续前缀；
         # 且每轮刷新「现在」，长会话跨午夜也正确。
         stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S (%A)")
-        self._append_message({
-            "role": "user",
-            "content": f"<context>当前时间: {stamp}</context>\n\n{user_input}",
-        })
+        self._append_message(user_message(
+            f"<context>当前时间: {stamp}</context>\n\n{user_input}"
+        ))
         self.task_controller.observe_user_input(user_input)
 
         used_tools = False
@@ -331,10 +337,10 @@ class Agent:
             for _ in range(self.config.max_steps):
                 resp = self._complete(self.tools)
                 self.last_turn_metrics.observe(resp)
-                self._append_message(resp.assistant_message)
+                self._append_message(resp.message)
 
-                if not resp.tool_calls:                       # 没有工具调用 → 最终回复
-                    final = resp.content or ""
+                if not resp.message.tool_calls:               # 没有工具调用 → 最终回复
+                    final = resp.message.text
                     stop_batch = self._run_hooks(
                         HookEvent.STOP,
                         after_tools=executed_tool_names,
@@ -350,21 +356,18 @@ class Agent:
                                 "同一 Stop 验证失败后没有执行新的工具修复，已停止重复验证。\n"
                                 "</hook_feedback>"
                             )
-                            self._append_message({"role": "user", "content": repeated})
+                            self._append_message(user_message(repeated))
                             blocked = (
                                 "任务结束验证仍未通过，且收到相同诊断后没有执行新的修复操作。\n\n"
                                 + stop_feedback
                             )
-                            self._append_message({"role": "assistant", "content": blocked})
+                            self._append_message(assistant_message(blocked))
                             return blocked
-                        self._append_message({
-                            "role": "user",
-                            "content": (
-                                f"{stop_feedback}\n\n"
-                                "这是框架生成的结束验证反馈。请根据诊断继续使用工具修复；"
-                                "不要把尚未通过的任务宣称为完成。"
-                            ),
-                        })
+                        self._append_message(user_message(
+                            f"{stop_feedback}\n\n"
+                            "这是框架生成的结束验证反馈。请根据诊断继续使用工具修复；"
+                            "不要把尚未通过的任务宣称为完成。"
+                        ))
                         last_stop_feedback = stop_feedback
                         tool_activity_since_stop_feedback = False
                         continue
@@ -372,9 +375,8 @@ class Agent:
                         self.task_controller.verify_completion(final)
                     return final
 
-                # OpenAI 协议要求：每个 tool_call 都必须有对应的 tool 消息回填
                 used_tools = True
-                for call in resp.tool_calls:
+                for call in resp.message.tool_calls:
                     log.info("calling tool=%s arg_keys=%s", call.name, _tool_arg_keys(call.arguments))
                     pre_batches: List[HookBatchResult] = []
 
@@ -410,7 +412,9 @@ class Agent:
                     content = result.content
                     if feedback_parts:
                         content += "\n\n" + "\n\n".join(feedback_parts)
-                    self._append_message(tool_message(call.id, content))
+                    self._append_message(tool_result_message(
+                        call.id, content, is_error=result.is_error,
+                    ))
         except KeyboardInterrupt:
             # Ctrl+C 中断「当前任务」而非「整个会话」：补齐未回填的 tool 响应让历史合法，
             # 再返回提示。否则下一轮请求会因「有 tool_call 没 tool 响应」被 API 拒绝。
@@ -422,32 +426,26 @@ class Agent:
         # 触顶时模型已积累现场信息（查到了什么、卡在哪）；让它最后总结一次再停，
         # 把已执行的步骤整理成一份可用的现场报告。
         log.warning("达到 max_steps=%s，让模型总结现场后停止", self.config.max_steps)
-        self._append_message({
-            "role": "user",
-            "content": (
-                "已达到最大工具调用步数，现在不能再调用工具了。请基于目前已掌握的信息，"
-                "简洁给出：① 已查明的关键事实 ② 当前卡在哪 ③ 建议的下一步。"
-            ),
-        })
+        self._append_message(user_message(
+            "已达到最大工具调用步数，现在不能再调用工具了。请基于目前已掌握的信息，"
+            "简洁给出：① 已查明的关键事实 ② 当前卡在哪 ③ 建议的下一步。"
+        ))
         resp = self._complete([])  # 不给工具 → 强制产出文本总结
         self.last_turn_metrics.observe(resp)
-        self._append_message(resp.assistant_message)
-        final = resp.content or "（已达到最大工具调用步数，已停止。）"
+        self._append_message(resp.message)
+        final = resp.message.text or "（已达到最大工具调用步数，已停止。）"
         stop_batch = self._run_hooks(
             HookEvent.STOP,
             after_tools=executed_tool_names,
         )
         stop_feedback = stop_batch.feedback()
         if stop_feedback:
-            self._append_message({
-                "role": "user",
-                "content": (
-                    f"{stop_feedback}\n\n"
-                    "已达到最大工具调用步数，无法继续自动修复；请保留未通过状态。"
-                ),
-            })
+            self._append_message(user_message(
+                f"{stop_feedback}\n\n"
+                "已达到最大工具调用步数，无法继续自动修复；请保留未通过状态。"
+            ))
             final = "已达到最大工具调用步数，且 Stop 验证仍未通过。\n\n" + stop_feedback
-            self._append_message({"role": "assistant", "content": final})
+            self._append_message(assistant_message(final))
             return final
         self.task_controller.verify_completion(final)
         return final
@@ -485,7 +483,7 @@ class Agent:
         if self.context_manager is not None:
             self.messages = self.context_manager.prepare(self.messages, tools)
         request_messages = self._with_ephemeral_turn_context(self.messages)
-        response = self.client.complete(request_messages, tools)
+        response = self.client.complete(request_messages, _provider_tools(tools))
         if self.context_manager is not None:
             self.context_manager.observe(request_messages, tools, response.usage)
         return response
@@ -539,19 +537,18 @@ class Agent:
 
     def _with_ephemeral_turn_context(
         self,
-        messages: List[Dict[str, Any]],
-    ) -> List[Dict[str, Any]]:
+        messages: List[ConversationMessage],
+    ) -> List[ConversationMessage]:
         if not self._ephemeral_turn_context:
             return messages
         augmented = list(messages)
         for index in range(len(augmented) - 1, -1, -1):
             msg = augmented[index]
-            if msg.get("role") != "user":
+            if msg.role is not MessageRole.USER:
                 continue
-            copy = dict(msg)
-            content = str(copy.get("content") or "")
-            copy["content"] = f"{self._ephemeral_turn_context}\n\n{content}"
-            augmented[index] = copy
+            augmented[index] = user_message(
+                f"{self._ephemeral_turn_context}\n\n{msg.text}"
+            )
             return augmented
         return messages
 
@@ -561,16 +558,22 @@ class Agent:
         last = None
         for i in range(len(self.messages) - 1, -1, -1):
             m = self.messages[i]
-            if m.get("role") == "assistant" and m.get("tool_calls"):
+            if m.role is MessageRole.ASSISTANT and m.tool_calls:
                 last = i
                 break
         if last is None:
             return
-        answered = {m.get("tool_call_id") for m in self.messages[last + 1:]
-                    if m.get("role") == "tool"}
-        for tc in self.messages[last]["tool_calls"]:
-            if tc["id"] not in answered:
-                self._append_message(tool_message(tc["id"], "（已中断，未执行）"))
+        answered = {
+            result.call_id
+            for message in self.messages[last + 1:]
+            if message.role is MessageRole.TOOL
+            for result in message.tool_results
+        }
+        for call in self.messages[last].tool_calls:
+            if call.id not in answered:
+                self._append_message(tool_result_message(
+                    call.id, "（已中断，未执行）", is_error=True,
+                ))
 
 
 # ---------------------------------------------------------------------------
@@ -642,6 +645,14 @@ def _tool_arg_keys(arguments: str) -> List[str]:
     return sorted(str(key) for key in parsed)
 
 
+def _provider_tools(tools: Sequence[Tool]) -> List[ToolDefinition]:
+    """Strip executor-only state before tool definitions cross the Provider seam."""
+    return [
+        ToolDefinition(tool.name, tool.description, dict(tool.parameters))
+        for tool in tools
+    ]
+
+
 def _create_permission_controller(
     store: Optional[SessionMetadataStore],
 ) -> PermissionController:
@@ -708,7 +719,10 @@ def _handle_permissions_command(
 
 
 def _reasoning_mode_status(config: Config) -> str:
-    if "deepseek" in config.base_url.lower() or config.model.lower().startswith("deepseek"):
+    if config.provider == "openai-compatible" and (
+        "deepseek" in config.base_url.lower()
+        or config.model.lower().startswith("deepseek")
+    ):
         return "已开启（DeepSeek 默认）"
     return "由 Provider 决定"
 
@@ -808,26 +822,38 @@ def _choose_resume_session(sessions: List[SessionMeta]) -> Optional[str]:
     shown = sessions[:20]
     print("\n可恢复的会话：")
     for i, s in enumerate(shown, 1):
-        print(f"  {i}. {s.title}  [{s.session_id}]  {s.last_active}  {s.message_count} 条")
+        compatibility = "" if s.compatible else "  [不可恢复]"
+        print(
+            f"  {i}. {s.title}  [{s.session_id}]  {s.last_active}  "
+            f"{s.message_count} 条{compatibility}"
+        )
     ans = input("选择编号/session id（回车=最近，n=新会话）: ").strip()
     if not ans:
-        return shown[0].session_id
+        selected = next((session for session in shown if session.compatible), None)
+        return selected.session_id if selected is not None else None
     if ans.lower() in ("n", "new"):
         return None
     if ans.isdigit():
         idx = int(ans)
         if 1 <= idx <= len(shown):
-            return shown[idx - 1].session_id
-    matches = [s.session_id for s in sessions if s.session_id.startswith(ans)]
+            selected = shown[idx - 1]
+            if not selected.compatible:
+                raise SystemExit(f"会话 {selected.session_id} 使用不兼容的 schema，不能恢复")
+            return selected.session_id
+    matches = [
+        s for s in sessions if s.session_id.startswith(ans)
+    ]
     if len(matches) == 1:
-        return matches[0]
+        if not matches[0].compatible:
+            raise SystemExit(f"会话 {matches[0].session_id} 使用不兼容的 schema，不能恢复")
+        return matches[0].session_id
     raise SystemExit(f"无效的会话选择: {ans}")
 
 
 def run_cli(argv: Optional[List[str]] = None) -> None:
     import argparse
 
-    from .client import OpenAICompatibleClient
+    from .client import create_provider_client
 
     parser = argparse.ArgumentParser(prog="noval")
     parser.add_argument("--workdir", help="工作目录；不指定则用当前启动目录(os.getcwd)")
@@ -869,7 +895,7 @@ def run_cli(argv: Optional[List[str]] = None) -> None:
 
     config = Config.load()
     store: Optional[PersistentSessionStore] = None
-    resume_messages: Optional[List[Dict[str, Any]]] = None
+    resume_messages: Optional[List[ConversationMessage]] = None
     resumed_message_count = 0
     resumed_session_id: Optional[str] = None
     if args.resume is not None and not config.persist_sessions:
@@ -905,20 +931,17 @@ def run_cli(argv: Optional[List[str]] = None) -> None:
     env_context = detect_environment(workdir, shell_backend, process_runtime)
     project_memory = load_project_memory(workdir)  # 读 AGENTS.md / CLAUDE.md 一次
     api_key = config.resolve_api_key()
-    client: LLMClient = OpenAICompatibleClient(
-        config.base_url,
-        api_key,
-        config.model,
-        timeout=config.request_timeout_seconds,
-        max_retries=config.request_max_retries,
-    )
-    judge_client: LLMClient = OpenAICompatibleClient(
-        config.base_url,
-        api_key,
-        config.judge_model,
-        timeout=config.request_timeout_seconds,
-        max_retries=config.request_max_retries,
-    )
+    provider_options = {
+        "provider": config.provider,
+        "api_key": api_key,
+        "base_url": config.base_url,
+        "anthropic_base_url": config.anthropic_base_url,
+        "timeout": config.request_timeout_seconds,
+        "max_retries": config.request_max_retries,
+        "anthropic_max_tokens": config.anthropic_max_tokens,
+    }
+    client = create_provider_client(model=config.model, **provider_options)
+    judge_client = create_provider_client(model=config.judge_model, **provider_options)
     usage_store: Optional[JsonlUsageStore] = None
     if config.persist_usage:
         usage_store = JsonlUsageStore(config.usage_dir(), session_id)

@@ -18,6 +18,9 @@ def test_persistence_config_defaults(tmp_path):
     assert cfg.judge_model == "deepseek-v4-flash"
     assert cfg.request_timeout_seconds == 120.0
     assert cfg.request_max_retries == 2
+    assert cfg.provider == "openai-compatible"
+    assert cfg.anthropic_base_url == ""
+    assert cfg.anthropic_max_tokens == 8192
 
 
 def test_persistence_config_can_be_overridden(tmp_path):
@@ -37,6 +40,9 @@ def test_persistence_config_can_be_overridden(tmp_path):
         "judge_model": "judge-x",
         "request_timeout_seconds": 45.5,
         "request_max_retries": 0,
+        "provider": "anthropic",
+        "anthropic_base_url": "https://gateway.example.test",
+        "anthropic_max_tokens": 4096,
     }), encoding="utf-8")
 
     cfg = Config.load(settings)
@@ -52,6 +58,9 @@ def test_persistence_config_can_be_overridden(tmp_path):
     assert cfg.judge_model == "judge-x"
     assert cfg.request_timeout_seconds == 45.5
     assert cfg.request_max_retries == 0
+    assert cfg.provider == "anthropic"
+    assert cfg.anthropic_base_url == "https://gateway.example.test"
+    assert cfg.anthropic_max_tokens == 4096
 
 
 def test_persistence_config_rejects_bad_types(tmp_path):
@@ -107,6 +116,14 @@ def test_persistence_config_rejects_bad_types(tmp_path):
 
     settings.write_text(json.dumps({"request_max_retries": -1}), encoding="utf-8")
     with pytest.raises(SystemExit, match="request_max_retries"):
+        Config.load(settings)
+
+    settings.write_text(json.dumps({"provider": "unknown"}), encoding="utf-8")
+    with pytest.raises(SystemExit, match="provider"):
+        Config.load(settings)
+
+    settings.write_text(json.dumps({"anthropic_max_tokens": 0}), encoding="utf-8")
+    with pytest.raises(SystemExit, match="anthropic_max_tokens"):
         Config.load(settings)
 
 

@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from noval.agent import Agent
-from noval.client import LLMClient, LLMResponse, OpenAICompatibleClient
+from noval.client import LLMClient, LLMResponse
 from noval.config import Config
 from noval.context import (
     COMPACTION_PROMPT_VERSION,
@@ -24,6 +24,7 @@ from noval.context import (
     JsonlCheckpointStore,
     _source_hash,
 )
+from noval.messages import ConversationMessage, assistant_message
 from noval.session import JsonlSessionStore, SessionRecord
 from noval.tools import Risk, Tool
 
@@ -33,6 +34,7 @@ from .run import (
     EvalCase,
     build_report,
     evaluate_case,
+    configured_client,
     load_cases,
     load_summaries,
 )
@@ -182,16 +184,16 @@ def restore_messages(
     root: Path,
     client: LLMClient,
     config: Config,
-) -> Tuple[List[Dict[str, Any]], JsonlSessionStore]:
+) -> Tuple[List[ConversationMessage], JsonlSessionStore]:
     """写入 checkpoint 链并经正式 restore 路径返回 active context。"""
     workdir = root / "workdir"
     workdir.mkdir(parents=True, exist_ok=True)
     store = JsonlSessionStore.create(root / "sessions", workdir, config.model)
     if case.previous_summary is not None:
         for seq in range(case.previous_through_seq + 1):
-            store.append({"role": "assistant", "content": f"eval placeholder seq {seq}"})
+            store.append(assistant_message(f"eval placeholder seq {seq}"))
     for record in case.records:
-        store.append(record.msg)
+        store.append(record.message)
     persisted = store.load_records()
     checkpoints = JsonlCheckpointStore(store.context_path(), store.session_id)
     previous: Optional[ContextCheckpoint] = None
@@ -413,11 +415,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if missing:
         raise SystemExit(f"候选摘要缺少用例: {missing}")
     config = Config.load()
-    client = RecordingClient(OpenAICompatibleClient(
-        config.base_url,
-        config.resolve_api_key(),
-        config.model,
-    ))
+    client = RecordingClient(configured_client(config, config.model))
     failed = False
     with tempfile.TemporaryDirectory(prefix="noval-recovery-eval-") as directory:
         root = Path(directory)

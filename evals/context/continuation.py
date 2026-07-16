@@ -10,9 +10,9 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from noval.agent import Agent
-from noval.client import OpenAICompatibleClient
 from noval.config import Config
 from noval.context import ContextManager
+from noval.messages import MessageRole, assistant_message, user_message
 from noval.session import JsonlSessionStore
 
 from .recovery import RecordingClient
@@ -22,6 +22,7 @@ from .run import (
     EvalCase,
     build_report,
     evaluate_case,
+    configured_client,
     load_cases,
 )
 
@@ -51,7 +52,7 @@ class BoundaryEstimator:
     """原历史触发软水位，移除较早回合后落入目标范围。"""
 
     def estimate(self, messages, tools):
-        non_system = sum(message.get("role") != "system" for message in messages)
+        non_system = sum(message.role is not MessageRole.SYSTEM for message in messages)
         return 7500 if non_system >= 5 else 3000
 
     def observe(self, messages, tools, actual_prompt_tokens):
@@ -70,10 +71,10 @@ def run_continuation_case(
     workdir.mkdir(parents=True, exist_ok=True)
     store = JsonlSessionStore.create(root / "sessions", workdir, config.model)
     for record in case.records:
-        store.append(record.msg)
+        store.append(record.message)
     expected_through_seq = store.load_records()[-1].seq
-    store.append({"role": "user", "content": "（最近回合占位：没有新任务或状态变化。）"})
-    store.append({"role": "assistant", "content": "（收到，任务状态不变。）"})
+    store.append(user_message("（最近回合占位：没有新任务或状态变化。）"))
+    store.append(assistant_message("（收到，任务状态不变。）"))
 
     manager = ContextManager(
         client,
@@ -206,11 +207,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         for case_id in selected_ids
     ]
     config = Config.load()
-    client = RecordingClient(OpenAICompatibleClient(
-        config.base_url,
-        config.resolve_api_key(),
-        config.model,
-    ))
+    client = RecordingClient(configured_client(config, config.model))
     with tempfile.TemporaryDirectory(prefix="noval-continuation-eval-") as directory:
         results = run_continuations(cases, client, config, Path(directory))
 

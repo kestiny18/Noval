@@ -14,10 +14,13 @@ from noval.agent import (
     load_project_memory, run_cli, TurnMetrics,
 )
 from noval.client import (
-    LLMResponse, MockClient, TokenUsage, ToolCall, mock_text, mock_tool_call,
+    LLMResponse, MockClient, ProviderIdentity, TokenUsage, mock_text, mock_tool_call,
 )
 from noval.config import Config
 from noval.permissions import PermissionController, PermissionMode
+from noval.messages import (
+    MessageRole, ToolCallBlock, assistant_message, tool_result_message, user_message,
+)
 from noval.process import NoSandbox, ProcessRuntime
 from noval.session import JsonlSessionStore, SessionMeta
 from noval.shell import ShellBackend, to_bash_path
@@ -26,11 +29,14 @@ from noval.skills import SkillRegistry
 
 def _multi_tool_call(calls):
     """构造一个「一轮返回多个 tool_call」的响应。calls: [(id, name, args_json), ...]"""
-    tcs = [ToolCall(id=i, name=n, arguments=a) for i, n, a in calls]
-    am = {"role": "assistant", "content": None, "tool_calls": [
-        {"id": i, "type": "function", "function": {"name": n, "arguments": a}}
-        for i, n, a in calls]}
-    return LLMResponse(content=None, tool_calls=tcs, assistant_message=am)
+    identity = ProviderIdentity("mock", "mock", "mock")
+    return LLMResponse(
+        message=assistant_message(
+            tool_calls=[ToolCallBlock(i, n, a) for i, n, a in calls],
+            provenance=identity.provenance(),
+        ),
+        provider=identity,
+    )
 
 
 def cfg():
@@ -56,14 +62,26 @@ def test_full_tool_loop(tmp_path):
 
     # 工具结果确实被回填进历史（第二轮请求时模型能看到）
     second_request = client.seen_messages[1]
-    tool_msgs = [m for m in second_request if m.get("role") == "tool"]
-    assert tool_msgs and "机密内容" in tool_msgs[0]["content"]
+    tool_msgs = [m for m in second_request if m.role is MessageRole.TOOL]
+    assert tool_msgs and "机密内容" in tool_msgs[0].tool_results[0].content
 
 
 def test_no_tool_call_returns_directly():
     client = MockClient([mock_text("你好！")])
     agent = Agent(client, cfg())
     assert agent.send("hi") == "你好！"
+
+
+def test_provider_receives_schema_only_tool_definitions(tmp_path):
+    client = MockClient([mock_text("done")])
+    Agent(client, cfg(), workdir=str(tmp_path)).send("hello")
+
+    definition = client.seen_tools[0][0]
+    assert definition.name
+    assert definition.description
+    assert isinstance(definition.input_schema, dict)
+    assert not hasattr(definition, "func")
+    assert not hasattr(definition, "risk")
 
 
 def test_multiple_tool_calls_all_backfilled(tmp_path):
@@ -79,9 +97,9 @@ def test_multiple_tool_calls_all_backfilled(tmp_path):
     ])
     agent = Agent(client, cfg(), workdir=str(tmp_path))
     assert agent.send("read two") == "done"
-    tool_msgs = [m for m in client.seen_messages[1] if m.get("role") == "tool"]
+    tool_msgs = [m for m in client.seen_messages[1] if m.role is MessageRole.TOOL]
     assert len(tool_msgs) == 2
-    assert {m["tool_call_id"] for m in tool_msgs} == {"c1", "c2"}
+    assert {m.tool_results[0].call_id for m in tool_msgs} == {"c1", "c2"}
 
 
 def test_reasoning_replay_and_turn_metrics_across_tool_loop(tmp_path):
@@ -108,9 +126,13 @@ def test_reasoning_replay_and_turn_metrics_across_tool_loop(tmp_path):
     assert agent.send("read") == "done"
 
     replayed = client.seen_messages[1]
-    assistant = next(m for m in replayed if m.get("role") == "assistant")
-    assert assistant["reasoning_content"] == "need to inspect the file"
-    assert any(m.get("reasoning_content") == "need to inspect the file" for m in store.saved)
+    assistant = next(m for m in replayed if m.role is MessageRole.ASSISTANT)
+    assert assistant.replay_state.payload["reasoning_content"] == "need to inspect the file"
+    assert any(
+        m.replay_state is not None
+        and m.replay_state.payload.get("reasoning_content") == "need to inspect the file"
+        for m in store.saved
+    )
     assert agent.last_turn_metrics.reasoning_tokens == 25
     assert agent.last_turn_metrics.llm_duration_ms == 1500
     assert agent.last_turn_metrics.tool_calls == 1
@@ -120,13 +142,14 @@ def test_reasoning_replay_and_turn_metrics_across_tool_loop(tmp_path):
 def test_answer_pending_tool_calls_backfills():
     # 中断后补齐未回填的 tool_call，保持历史合法
     agent = Agent(MockClient([mock_text("x")]), cfg())
-    agent.messages.append({"role": "assistant", "content": None, "tool_calls": [
-        {"id": "a", "type": "function", "function": {"name": "t", "arguments": "{}"}},
-        {"id": "b", "type": "function", "function": {"name": "t", "arguments": "{}"}},
-    ]})
-    agent.messages.append({"role": "tool", "tool_call_id": "a", "content": "ok"})  # 只回填了 a
+    agent.messages.append(assistant_message(tool_calls=(
+        ToolCallBlock("a", "t", "{}"), ToolCallBlock("b", "t", "{}"),
+    )))
+    agent.messages.append(tool_result_message("a", "ok"))
     agent._answer_pending_tool_calls()
-    tool_ids = [m["tool_call_id"] for m in agent.messages if m.get("role") == "tool"]
+    tool_ids = [
+        m.tool_results[0].call_id for m in agent.messages if m.role is MessageRole.TOOL
+    ]
     assert tool_ids == ["a", "b"]                       # b 被补上
 
 
@@ -225,12 +248,12 @@ def test_send_stamps_user_message_with_current_time():
     agent.send("hello")
     sys_and_user = client.seen_messages[0]
     user_msg = sys_and_user[-1]
-    assert user_msg["role"] == "user"
-    assert "当前时间" in user_msg["content"]
-    assert datetime.now().strftime("%Y-%m-%d") in user_msg["content"]
-    assert "hello" in user_msg["content"]
+    assert user_msg.role is MessageRole.USER
+    assert "当前时间" in user_msg.text
+    assert datetime.now().strftime("%Y-%m-%d") in user_msg.text
+    assert "hello" in user_msg.text
     # system 消息(前缀)里不含时间
-    assert "当前时间" not in sys_and_user[0]["content"]
+    assert "当前时间" not in sys_and_user[0].text
 
 
 def test_system_prompt_assembly_order():
@@ -241,7 +264,7 @@ def test_system_prompt_assembly_order():
         env_context="<environment>E</environment>",
         project_memory="<project_instructions>P</project_instructions>",
     )
-    c = agent.messages[0]["content"]
+    c = agent.messages[0].text
     assert c.index("PERSONA") < c.index("<environment>") < c.index("<project_instructions>")
 
 
@@ -252,10 +275,13 @@ def test_default_system_prompt_when_not_overridden():
         cfg(),
         skill_registry=SkillRegistry([]),
     )        # 不传任何 system_prompt
-    assert agent.messages[0]["content"] == DEFAULT_SYSTEM_PROMPT
+    assert agent.messages[0].text == DEFAULT_SYSTEM_PROMPT
     assert "默认先只读调查" in DEFAULT_SYSTEM_PROMPT
     assert "等待确认后再执行" in DEFAULT_SYSTEM_PROMPT
     assert "FULL_ACCESS" in DEFAULT_SYSTEM_PROMPT
+    assert "只授权执行验证" in DEFAULT_SYSTEM_PROMPT
+    assert "不授权修改源码" in DEFAULT_SYSTEM_PROMPT
+    assert "等待用户明确确认" in DEFAULT_SYSTEM_PROMPT
     assert "运行相关测试" in DEFAULT_SYSTEM_PROMPT
     assert "commit hash" in DEFAULT_SYSTEM_PROMPT
 
@@ -270,7 +296,7 @@ def test_agent_injects_skill_index_without_full_skill_body(tmp_path):
 
     agent = Agent(MockClient([mock_text("hi")]), cfg(), workdir=str(tmp_path))
 
-    system = agent.messages[0]["content"]
+    system = agent.messages[0].text
     assert "<available_skills>" in system
     assert "bug-investigation" in system
     assert "debug issues" in system
@@ -319,7 +345,7 @@ def test_max_steps_guard_summarizes():
     reply = agent.send("loop forever")
     assert "进度小结" in reply                       # 返回模型的现场总结，而非固定句
     # 最后一次请求是「无工具」的总结调用
-    assert client.seen_messages[-1][-1]["content"].startswith("已达到最大工具调用步数")
+    assert client.seen_messages[-1][-1].text.startswith("已达到最大工具调用步数")
 
 
 # --- 会话持久化接缝 -------------------------------------------------------
@@ -328,7 +354,7 @@ class _MemoryStore:
         self.saved = []
 
     def append(self, msg):
-        self.saved.append(dict(msg))
+        self.saved.append(msg)
 
     def load(self):
         return list(self.saved)
@@ -349,9 +375,9 @@ def test_agent_persists_only_non_system_messages():
 
     assert agent.send("hi") == "hello"
 
-    assert [m["role"] for m in store.saved] == ["user", "assistant"]
-    assert "hi" in store.saved[0]["content"]
-    assert store.saved[1]["content"] == "hello"
+    assert [m.role for m in store.saved] == [MessageRole.USER, MessageRole.ASSISTANT]
+    assert "hi" in store.saved[0].text
+    assert store.saved[1].text == "hello"
 
 
 def test_skill_registry_update_is_ephemeral_request_context(tmp_path):
@@ -367,12 +393,12 @@ def test_skill_registry_update_is_ephemeral_request_context(tmp_path):
 
     assert agent.send("看看当前可用 skills") == "ok"
 
-    request_text = client.seen_messages[0][-1]["content"]
+    request_text = client.seen_messages[0][-1].text
     assert "<skills_update>" in request_text
     assert "project.codex:runtime" in request_text
-    assert "runtime-skill" not in agent.messages[0]["content"]  # system 前缀不被重写
-    assert "<skills_update>" not in store.saved[0]["content"]   # 原始 session 不存动态 diff
-    assert "看看当前可用 skills" in store.saved[0]["content"]
+    assert "runtime-skill" not in agent.messages[0].text
+    assert "<skills_update>" not in store.saved[0].text
+    assert "看看当前可用 skills" in store.saved[0].text
 
 
 def test_mcp_registry_update_is_ephemeral_request_context(tmp_path):
@@ -392,53 +418,49 @@ def test_mcp_registry_update_is_ephemeral_request_context(tmp_path):
 
     assert agent.send("看看当前可用 MCP") == "ok"
 
-    request_text = client.seen_messages[0][-1]["content"]
+    request_text = client.seen_messages[0][-1].text
     assert "<mcp_update>" in request_text
     assert "project.mcp:runtime-mcp" in request_text
-    assert "runtime-mcp" not in agent.messages[0]["content"]  # system 前缀不被重写
-    assert "<mcp_update>" not in store.saved[0]["content"]    # 原始 session 不存动态 diff
-    assert "看看当前可用 MCP" in store.saved[0]["content"]
+    assert "runtime-mcp" not in agent.messages[0].text
+    assert "<mcp_update>" not in store.saved[0].text
+    assert "看看当前可用 MCP" in store.saved[0].text
 
 
 def test_resume_messages_loaded_without_rewriting_store():
     history = [
-        {"role": "user", "content": "<context>当前时间: old</context>\n\nold question"},
-        {"role": "assistant", "content": "old answer"},
+        user_message("<context>当前时间: old</context>\n\nold question"),
+        assistant_message("old answer"),
     ]
     store = _MemoryStore()
     client = MockClient([mock_text("new answer")])
     agent = Agent(client, cfg(), store=store, resume_messages=history)
 
-    assert [m["role"] for m in agent.messages] == ["system", "user", "assistant"]
+    assert [m.role for m in agent.messages] == [
+        MessageRole.SYSTEM, MessageRole.USER, MessageRole.ASSISTANT,
+    ]
     assert store.saved == []
 
     assert agent.send("new question") == "new answer"
-    assert [m["role"] for m in store.saved] == ["user", "assistant"]
+    assert [m.role for m in store.saved] == [MessageRole.USER, MessageRole.ASSISTANT]
     first_request = client.seen_messages[0]
-    assert [m["role"] for m in first_request] == ["system", "user", "assistant", "user"]
-    assert "old question" in first_request[1]["content"]
-    assert "new question" in first_request[-1]["content"]
+    assert [m.role for m in first_request] == [
+        MessageRole.SYSTEM, MessageRole.USER, MessageRole.ASSISTANT, MessageRole.USER,
+    ]
+    assert "old question" in first_request[1].text
+    assert "new question" in first_request[-1].text
 
 
 def test_resume_self_heals_pending_tool_call_and_persists_placeholder():
-    history = [{
-        "role": "assistant",
-        "content": None,
-        "tool_calls": [{
-            "id": "call-1",
-            "type": "function",
-            "function": {"name": "read_file", "arguments": "{}"},
-        }],
-    }]
+    history = [assistant_message(tool_calls=(ToolCallBlock(
+        "call-1", "read_file", "{}",
+    ),))]
     store = _MemoryStore()
 
     agent = Agent(MockClient([mock_text("unused")]), cfg(), store=store, resume_messages=history)
 
-    assert agent.messages[-1] == {
-        "role": "tool",
-        "tool_call_id": "call-1",
-        "content": "（已中断，未执行）",
-    }
+    assert agent.messages[-1] == tool_result_message(
+        "call-1", "（已中断，未执行）", is_error=True,
+    )
     assert store.saved == [agent.messages[-1]]
 
 
@@ -476,6 +498,18 @@ def test_choose_resume_session_accepts_number_prefix_and_new(monkeypatch):
 
     monkeypatch.setattr("builtins.input", lambda prompt: "n")
     assert _choose_resume_session(sessions) is None
+
+
+def test_choose_resume_session_skips_or_rejects_incompatible(monkeypatch):
+    old = _meta("old")
+    old.compatible = False
+    current = _meta("current")
+    monkeypatch.setattr("builtins.input", lambda prompt: "")
+    assert _choose_resume_session([old, current]) == "current"
+
+    monkeypatch.setattr("builtins.input", lambda prompt: "1")
+    with pytest.raises(SystemExit, match="不兼容"):
+        _choose_resume_session([old, current])
 
 
 # --- CLI 轻量排版 ---------------------------------------------------------
@@ -546,6 +580,17 @@ def test_reasoning_command_is_local_and_exact():
     assert _handle_reasoning_command("question", cfg(), TurnMetrics()) is None
 
 
+def test_anthropic_reasoning_status_does_not_use_ignored_deepseek_base_url():
+    anthropic = cfg()
+    anthropic.provider = "anthropic"
+    anthropic.model = "claude-test"
+
+    status = _handle_reasoning_command("/reasoning", anthropic, TurnMetrics())
+
+    assert "由 Provider 决定" in status
+    assert "DeepSeek 默认" not in status
+
+
 def test_permissions_commands_change_session_state():
     permissions = PermissionController()
 
@@ -578,7 +623,7 @@ def test_permissions_restore_directly_from_session_sidecar(tmp_path):
     workdir = tmp_path / "project"
     workdir.mkdir()
     store = JsonlSessionStore.create(base, workdir, "m")
-    store.append({"role": "user", "content": "hello"})
+    store.append(user_message("hello"))
 
     first = _create_permission_controller(store)
     first.set_mode(PermissionMode.FULL_ACCESS)

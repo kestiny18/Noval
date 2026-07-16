@@ -13,6 +13,7 @@ from typing import Any, Dict
 
 # 默认配置：任何字段都可被 settings.json 覆盖
 DEFAULTS: Dict[str, Any] = {
+    "provider": "openai-compatible",
     "model": "deepseek-v4-pro",
     "judge_model": "deepseek-v4-flash",
     "base_url": "https://api.deepseek.com",
@@ -29,6 +30,8 @@ DEFAULTS: Dict[str, Any] = {
     "context_budget_tokens": 256000,          # active context 工作预算；可按 Provider 能力调大
     "request_timeout_seconds": 120,           # Provider 请求超时，避免模型 API 挂起卡死循环
     "request_max_retries": 2,                 # Provider 请求重试次数；0 表示不重试
+    "anthropic_base_url": "",                # 空=Anthropic SDK 官方默认地址
+    "anthropic_max_tokens": 8192,
 }
 # 注：system_prompt 不在这里——它是 agent 的行为定义(属代码)，不是「全局稳定偏好」，
 # 故不开放给 settings.json 覆盖。见 noval/agent.py 的 DEFAULT_SYSTEM_PROMPT。
@@ -69,6 +72,9 @@ class Config:
     request_timeout_seconds: float = 120.0
     request_max_retries: int = 2
     judge_model: str = "deepseek-v4-flash"
+    provider: str = "openai-compatible"
+    anthropic_base_url: str = ""
+    anthropic_max_tokens: int = 8192
     raw: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -82,9 +88,15 @@ class Config:
                 raise SystemExit(f"settings.json 不是合法 JSON: {e}")  # 漏逗号等不该是难看的 traceback
             merged.update(user)  # 顶层覆盖；当前配置无深层嵌套，浅合并足够
 
-        for key in ("model", "judge_model", "base_url", "api_key_env"):
+        for key in ("provider", "model", "judge_model", "base_url", "api_key_env"):
             if not isinstance(merged[key], str) or not merged[key].strip():
                 raise SystemExit(f"settings.json: {key} 必须是非空字符串")
+        if merged["provider"] not in {"openai-compatible", "anthropic"}:
+            raise SystemExit(
+                "settings.json: provider 必须是 openai-compatible 或 anthropic"
+            )
+        if not isinstance(merged["anthropic_base_url"], str):
+            raise SystemExit("settings.json: anthropic_base_url 必须是字符串")
 
         # 校验：错配置要给出清晰报错，而不是静默跑歪
         if not isinstance(merged["persist_sessions"], bool):
@@ -101,6 +113,7 @@ class Config:
             raise SystemExit('settings.json: usage_dir 必须是字符串路径，如 "D:/noval-usage"')
         for key in (
             "max_steps", "max_tool_output_chars", "log_retention_days", "context_budget_tokens",
+            "anthropic_max_tokens",
         ):
             try:
                 merged[key] = int(merged[key])
@@ -110,6 +123,8 @@ class Config:
             raise SystemExit("settings.json: log_retention_days 必须大于等于 1")
         if merged["context_budget_tokens"] < 1000:
             raise SystemExit("settings.json: context_budget_tokens 必须大于等于 1000")
+        if merged["anthropic_max_tokens"] < 1:
+            raise SystemExit("settings.json: anthropic_max_tokens 必须大于等于 1")
         try:
             merged["request_timeout_seconds"] = float(merged["request_timeout_seconds"])
         except (TypeError, ValueError):
@@ -141,6 +156,9 @@ class Config:
             context_budget_tokens=merged["context_budget_tokens"],
             request_timeout_seconds=merged["request_timeout_seconds"],
             request_max_retries=merged["request_max_retries"],
+            provider=merged["provider"],
+            anthropic_base_url=merged["anthropic_base_url"],
+            anthropic_max_tokens=merged["anthropic_max_tokens"],
             raw=merged,
         )
 

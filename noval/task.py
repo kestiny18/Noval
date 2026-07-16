@@ -17,11 +17,12 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 from .client import LLMClient
+from .messages import system_message, user_message
 
 log = logging.getLogger("noval.task")
 
 TASK_EVENT_SCHEMA_VERSION = 1
-TASK_JUDGE_PROMPT_VERSION = "task-completion-judge-v3"
+TASK_JUDGE_PROMPT_VERSION = "task-completion-judge-v4"
 MAX_RECENT_USER_INPUTS = 3
 MAX_USER_INPUT_CHARS = 1200
 
@@ -195,25 +196,22 @@ class SemanticJudge:
     def judge(self, recent_user_inputs: List[str], assistant_final_reply: str) -> CompletionVerdict:
         packet = self._packet(recent_user_inputs, assistant_final_reply)
         messages = [
-            {
-                "role": "system",
-                "content": (
+            system_message(
                     "你是 Noval 的独立任务完成判定模型。"
                     "你不执行任务，不调用工具，不给主模型建议，不补充事实，也不评价文风。"
                     "只根据给定的用户输入和助手最后可见回复，判断最后回复是否完成了 current_user_input。"
                     "context_user_inputs 只是理解指代和背景的上下文，不是本轮必须重新完成的任务清单。"
                     "如果 current_user_input 是“继续、回退、标记、改一下、看下是否修复”等短指令，"
                     "可以结合 context_user_inputs 理解它指向什么，但判定对象仍然只以 current_user_input 为主。"
+                    "给定材料不包含隐藏的工具调用或执行证据；不得声称某项操作实际上执行过或没有执行。"
+                    "只能判断 assistant_final_reply 是否提供了足以支持完成声明的可见证据；"
+                    "证据不足时应表述为“最后回复未提供充分证据”，而不是补造执行事实。"
                     "如果信息不足以判断，返回 uncertain。只输出严格 JSON。"
-                ),
-            },
-            {
-                "role": "user",
-                "content": json.dumps(packet, ensure_ascii=False, separators=(",", ":")),
-            },
+            ),
+            user_message(json.dumps(packet, ensure_ascii=False, separators=(",", ":"))),
         ]
         response = self.client.complete(messages, [])
-        data = _load_json_object(response.content or "")
+        data = _load_json_object(response.message.text)
         return self._verdict_from_json(data)
 
     def _packet(self, recent_user_inputs: List[str], assistant_final_reply: str) -> Dict[str, Any]:
@@ -238,7 +236,8 @@ class SemanticJudge:
                 "\"confidence\":0.0,"
                 "\"reason\":\"short reason\","
                 "\"missing\":[\"optional missing item\"]"
-                "}."
+                "}. The reason must describe evidence visible in assistant_final_reply and must not "
+                "claim that an unobserved action did or did not happen."
             ),
         }
 
