@@ -1,4 +1,5 @@
 {
+  "provider": "openai-compatible",
   "model": "deepseek-v4-pro",
   "judge_model": "deepseek-v4-flash",
   "base_url": "https://api.deepseek.com",
@@ -14,5 +15,7 @@
   "usage_dir": "",
   "context_budget_tokens": 256000,
   "request_timeout_seconds": 120,
-  "request_max_retries": 2
+  "request_max_retries": 2,
+  "anthropic_base_url": "",
+  "anthropic_max_tokens": 8192
 }

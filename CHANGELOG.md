@@ -4,6 +4,44 @@
 
 ## [Unreleased]
 
+### Added
+
+- Provider-neutral `ConversationMessage` model with typed text, tool-call, and
+  tool-result blocks, plus adapter-owned opaque replay state and assistant
+  provenance.
+- Anthropic Messages adapter as the optional `noval[anthropic]` extra, covering
+  text, system prompts, client tools, multiple tool calls, tool errors, usage,
+  and thinking/redacted-thinking replay.
+- Normalized `ProviderIdentity` and safe `ProviderError` metadata across
+  adapters, without exposing raw SDK responses to the core.
+- Static architecture and adapter-equivalence tests that keep Provider wire
+  keys out of Agent, Context, Session, Task, and Usage.
+
+### Changed
+
+- `LLMResponse` now carries one canonical assistant message instead of parallel
+  content/tool-call/wire-message representations; Provider tool definitions are
+  reduced to name, description, and JSON schema.
+- Session and context checkpoint persistence use schema v2 canonical data. v1
+  Sessions are listed as incompatible and rejected without migration or
+  mutation; old checkpoints are not reused.
+
+- Build, compile, test, lint, and format-check requests no longer imply permission to
+  edit source files, dependency versions, lockfiles, build configuration, or
+  project settings; failures are diagnosed read-only until the user explicitly
+  authorizes a repair.
+- The completion judge now describes missing proof as absent from the visible
+  final response instead of making claims about tool executions it cannot see.
+
+### Fixed
+
+- `run_bash` now reports non-zero exits as tool errors, allowing error-matching
+  PostToolUse Hooks and the agent loop to observe command failures correctly.
+- Bash-compatible shell backends enable `pipefail`, preventing failed build or
+  test commands from being hidden by a successful trailing pipeline stage.
+- Domain `ToolError` output now passes through the executor's central
+  redaction and head-and-tail truncation boundary.
+
 ## [0.8.1] - 2026-07-13
 
 ### Changed

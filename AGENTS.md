@@ -48,9 +48,11 @@
 - **MCP**：Noval 不实现 MCP server，只作为 MCP host/client 复用通用 MCP 协议。第一版只支持 stdio server，配置来源为用户级 `~/.noval/mcp.json` 与项目级 `<workdir>/.noval/mcp.json` 的通用 `mcpServers` 结构。system prompt 只注入 server 轻量索引；会话运行中在用户回合边界用内存快照检测 server 增删改，并以临时上下文提示模型，快照不写 session / settings / checkpoint。具体 server 工具必须通过 `list_mcp_tools` 按需发现，再通过 `call_mcp_tool` 调用；启动外部 MCP 进程和工具调用按 DANGEROUS 工具走统一权限、timeout、日志与截断管道。MCP 子进程只接收 SDK 安全基础环境和 server 显式配置的 env，不能继承完整父进程环境。MCP 返回内容不能覆盖 system、项目记忆、权限确认或用户指令。
 - **可观测性**：禁止 `print(整个 response)`。每次工具调用记结构化 trace（tool / args / 耗时 / is_error / truncated）。
 - **工具输出脱敏**：所有工具结果在进入模型上下文和 session 持久化前必须经过统一脱敏，覆盖 password / secret / token / privateKey / appSecret / accessKey / webhook 等常见配置形态。脱敏属于 executor 边界，不散落到具体工具里。
-- **Provider 回放状态**：`LLMResponse.assistant_message` 由适配器按白名单构造，必须保留后续请求所需的协议字段。DeepSeek thinking 在工具调用轮必须回传 `reasoning_content`；普通最终回复丢弃该字段。Agent 不读取、不展示思考正文，只消费归一化 token/耗时元数据。
+- **Canonical Provider 接缝**：Agent / Context / Session / Task / Usage 只读写 `ConversationMessage` 及其 `text` / `tool_call` / `tool_result` blocks，不得读取 Provider wire key 或 SDK raw response。`LLMResponse` 只包含一个 canonical assistant message、`TokenUsage`、`ProviderIdentity` 和安全框架元数据。传给 Provider 的工具只能是 name / description / JSON schema，不得携带 callable、risk 或 executor 状态。
+- **Provider 回放状态**：DeepSeek `reasoning_content` 与 Anthropic thinking/redacted-thinking 只能存入带 adapter id/schema version 的 opaque replay state；核心只保存并交还所属 adapter，不读取、不展示，也不送入 compactor、completion judge、运行日志或其它 Provider。无法表达的语义 block 必须显式失败，不能静默丢失。
+- **Provider 错误**：SDK 异常必须在 adapter 内归一化为 `ProviderError(kind, retryable, safe_message, identity)`；错误正文、response body 和 SDK raw 对象不得穿过接缝。
 - **Token 用量**：Provider 只负责填充 `TokenUsage`，持久化由 `MeteredLLMClient` 装饰器旁路完成；统计故障不得影响模型响应。事件按日期/session/pid 追加，查询时全局汇总，不保存项目路径或消息正文。
-- **上下文 checkpoint**：原始 Session JSONL 是唯一真相源，永不因压缩删除或改写；checkpoint 是可回退、可重建的派生态，只能覆盖完整对话回合。恢复使用最新有效 checkpoint + 原始尾部，不重复压缩已覆盖历史。
+- **Session / checkpoint v2**：原始 Session JSONL 只写 canonical schema v2，是唯一真相源，永不因压缩删除或改写；v1 Session 明确拒绝且不迁移、不改写、不删除，列表标记为不兼容。checkpoint v2 是可回退、可重建的派生态，只能覆盖完整对话回合；旧 checkpoint 不复用。恢复使用最新有效 checkpoint + 原始尾部。
 - **可测试性**：`LLMClient` 必须能被 mock，使整条 agent 循环可在不联网、不烧钱的情况下测试。
 - **循环安全**：agent 循环必须有 `max_steps` 上限，达到上限优雅停止。
 - **密钥**：永不硬编码 api_key，一律从环境变量 / 配置读取。
@@ -77,7 +79,8 @@
 ```
 noval/
   config.py     # 读 ~/.noval/settings.json + 默认值合并
-  client.py     # LLMClient 接口 + DeepSeek/OpenAI 适配器   [接缝1]
+  messages.py   # Provider-neutral canonical message/block/replay state
+  client.py     # LLMClient + OpenAI-compatible/Anthropic adapters   [接缝1]
   tools.py      # 框架：ToolResult/ToolError/Context/@tool 注册表   [接缝2]
   confinement.py # 进程内文件工具 path-jail policy/read-write roots
   process.py    # 统一子进程 runtime + sandbox backend 接缝

@@ -34,7 +34,7 @@ Noval 起源于一次最朴素的 tool-calling 实验：由人亲自扮演工具
 
 ## 核心设计
 
-- **Provider 可替换**：Agent 循环只依赖 `LLMClient`，当前实现支持 DeepSeek / OpenAI 兼容接口。
+- **Provider 真中立**：Agent、Session、Context 与 Task 只处理 canonical block message；当前提供 OpenAI-compatible（含 DeepSeek）与 Anthropic Messages 两个 adapter。
 - **工具可注册**：普通 Python 函数加 `@tool`，自动生成 JSON Schema；循环里没有工具名分发逻辑。
 - **执行管道统一托底**：JSON 容错、参数校验、风险确认、异常、截断和 trace 集中在 `executor.py`。
 - **工具状态显式化**：`Context` 携带 workdir、path-jail policy、read-tracker 和会话级 `PermissionController`，文件修改前必须先读并检查陈旧状态。
@@ -45,7 +45,8 @@ Noval 起源于一次最朴素的 tool-calling 实验：由人亲自扮演工具
 flowchart LR
     CLI["CLI / future UI"] --> Agent
     Agent --> Client["LLMClient"]
-    Client --> Provider["OpenAI-compatible provider"]
+    Client --> OpenAI["OpenAI-compatible adapter"]
+    Client --> Anthropic["Anthropic Messages adapter"]
     Agent --> Executor["Tool executor"]
     CLI --> Permissions["PermissionController"]
     Executor --> Permissions
@@ -75,6 +76,9 @@ python -m venv .venv
 # source .venv/bin/activate
 
 pip install -e .
+
+# 使用 Anthropic Provider 时安装可选依赖
+# pip install -e ".[anthropic]"
 ```
 
 设置 API key，二选一：
@@ -96,6 +100,20 @@ $env:DEEPSEEK_API_KEY="sk-你的key"
 ```
 
 该文件不在仓库内。不要把真实 key 写进 `settings.example.json` 或任何提交。
+
+旧配置缺少 `provider` 时继续使用 `openai-compatible`。Anthropic 示例：
+
+```json
+{
+  "provider": "anthropic",
+  "model": "你的 Claude 模型名",
+  "judge_model": "你的 Claude judge 模型名",
+  "api_key_env": "ANTHROPIC_API_KEY",
+  "anthropic_max_tokens": 8192
+}
+```
+
+`anthropic_base_url` 留空时使用 Anthropic SDK 默认地址，也可以显式配置兼容网关。
 
 启动：
 
@@ -253,7 +271,7 @@ def inspect_file(path: str) -> str:
 
 ## 思考模式
 
-DeepSeek 当前默认开启思考模式。Noval 不展示原始思考过程；工具调用轮所需的 `reasoning_content` 只作为 Provider 协议状态回传并随会话保存，普通最终回复不保存该字段。
+Noval 不展示原始思考过程。DeepSeek 工具轮所需的 `reasoning_content`，以及 Anthropic thinking / redacted-thinking blocks，只作为所属 adapter 的 opaque replay state 保存和回传；核心、上下文压缩器、completion judge、运行日志和其它 Provider 都不会读取它。
 
 每轮回答后会显示 reasoning token、模型耗时与工具调用次数。输入 `/reasoning` 可查看当前模式和上一次请求指标；这些结构化指标也不会包含思考正文。
 
@@ -273,10 +291,12 @@ project.json
 20260623-153012-ab12.meta.json
 ```
 
-- JSONL 保存 user / assistant / tool 消息；system prompt、环境和项目记忆在恢复时重建。
+- JSONL schema v2 保存 canonical user / assistant / tool block messages；system prompt、环境和项目记忆在恢复时重建。
 - 标题默认从第一条用户消息派生；自定义标题与会话权限写入独立 sidecar。
 - 坏行和进程崩溃留下的半截尾行会被跳过，不废掉整个会话。
-- 内容目前是明文，可能包含用户粘贴的密钥、文件内容，以及工具调用轮为协议续传所需的 `reasoning_content`。可用 `"persist_sessions": false` 关闭。
+- 内容目前是明文，可能包含用户粘贴的密钥、文件内容和 adapter-owned replay state。可用 `"persist_sessions": false` 关闭。
+
+v0.9 不读取或迁移旧 schema v1 Session：会话列表会标记为不兼容，尝试恢复时返回明确错误，原文件保持不变。旧 checkpoint 同样不会复用。
 
 这部分已通过自动化测试与真实任务验证，包括多 workdir、中文路径、大历史、任务中断和进程强杀恢复。同一 session 不支持多进程并发写入。
 
@@ -308,6 +328,7 @@ project.json
 | `v0.7.0` | 行动边界与进程隔离：MCP client、path-jail、统一子进程运行时、Linux Bubblewrap | `v0.7.0` |
 | `v0.8.0` | Hooks 与验证闭环：Pre 阻断、Post 诊断回流、Stop 修复再验证、配置指纹授权 | `v0.8.0` |
 | `v0.8.1` | Hooks 发布加固：所有候选结束均进入 Stop，严格校验 timeout 有限值 | `v0.8.1` |
+| `v0.9.0` | Provider 真中立：canonical messages、Session v2、OpenAI-compatible 与 Anthropic adapters | 开发中 |
 
 详细变化见 [CHANGELOG.md](CHANGELOG.md)。
 
@@ -332,7 +353,7 @@ python -m evals.context.run
 
 Noval 当前处于 `0.x` 阶段，核心能力包括工具注册表、统一 executor、会话持久化、上下文 checkpoint、Skills/MCP MVP、任务完成 judge、项目级 Hooks、运行日志和 Token 用量统计。它已经不是一次性原型，但公共接口仍会继续演进。
 
-接下来的重点不是堆更多工具，而是继续扩展其它平台硬沙箱、推进长任务与记忆，以及实现真正 Provider 中立的内部消息模型。详细路线、版本门槛和设计权衡见 [DESIGN.md](DESIGN.md#能力演进路线)。
+接下来的重点不是堆更多工具，而是验证 Provider-neutral transcript 与恢复行为、继续扩展其它平台硬沙箱，并推进可嵌入稳定内核。详细路线、版本门槛和设计权衡见 [DESIGN.md](DESIGN.md#能力演进路线)。
 
 ## 参与项目
 
