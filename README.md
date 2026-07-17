@@ -5,7 +5,7 @@
 [![CI](https://github.com/kestiny18/Noval/actions/workflows/ci.yml/badge.svg)](https://github.com/kestiny18/Noval/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
-[![Release](https://img.shields.io/badge/release-v0.8.1-brightgreen.svg)](https://github.com/kestiny18/Noval/releases/tag/v0.8.1)
+[![Release](https://img.shields.io/badge/release-v0.9.0-brightgreen.svg)](https://github.com/kestiny18/Noval/releases/tag/v0.9.0)
 
 <p align="center">
   <strong>模型负责思考。Noval 负责让它安全、可恢复、可验证地行动。</strong><br>
@@ -30,7 +30,7 @@ Noval 起源于一次最朴素的 tool-calling 实验：由人亲自扮演工具
 
 如果你正在构建自己的 Code Agent 或领域 Agent，希望保留完全可读、可替换、可测试的执行内核，而不是把产品交给一个巨型黑盒，Noval 就是为你准备的。它仍处于 `0.x`，不提供拖拽式工作流或“一键自治团队”；它提供的是一块可以长期演进的地基。
 
-> **当前状态**：`v0.8.1` 是当前稳定版本，在 MCP、path-jail 与 Linux Bubblewrap 硬沙箱之上补齐了可否决、可反馈、可重复验证的项目级 Hooks 闭环。
+> **当前状态**：`v0.9.0` 是当前稳定版本，核心消息协议已完成 Provider 中立化，并提供 OpenAI-compatible 与 Anthropic Messages adapters；Session 与 checkpoint 同步升级到 canonical schema v2。
 
 ## 核心设计
 
@@ -328,7 +328,7 @@ v0.9 不读取或迁移旧 schema v1 Session：会话列表会标记为不兼容
 | `v0.7.0` | 行动边界与进程隔离：MCP client、path-jail、统一子进程运行时、Linux Bubblewrap | `v0.7.0` |
 | `v0.8.0` | Hooks 与验证闭环：Pre 阻断、Post 诊断回流、Stop 修复再验证、配置指纹授权 | `v0.8.0` |
 | `v0.8.1` | Hooks 发布加固：所有候选结束均进入 Stop，严格校验 timeout 有限值 | `v0.8.1` |
-| `v0.9.0` | Provider 真中立：canonical messages、Session v2、OpenAI-compatible 与 Anthropic adapters | 开发中 |
+| `v0.9.0` | Provider 真中立：canonical messages、Session v2、OpenAI-compatible 与 Anthropic adapters | `v0.9.0` |
 
 详细变化见 [CHANGELOG.md](CHANGELOG.md)。
 
