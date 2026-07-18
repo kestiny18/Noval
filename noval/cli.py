@@ -23,7 +23,6 @@ from .application import AgentSession, NovalRuntime
 from .config import Config
 from .permissions import PermissionMode
 from .process import NetworkAccess, SandboxMode
-from .runtime_log import setup_runtime_logging
 from .usage import JsonlUsageStore, UsageBreakdown, UsageSummary
 
 
@@ -278,7 +277,7 @@ def run_cli(argv: Optional[List[str]] = None) -> None:
         network_access=NetworkAccess(args.sandbox_network),
     )
 
-    runtime = NovalRuntime(config)
+    runtime = NovalRuntime(config, configure_logging=True)
     session: Optional[AgentSession] = None
     resumed = False
     try:
@@ -310,7 +309,6 @@ def run_cli(argv: Optional[List[str]] = None) -> None:
         runtime.close()
         raise SystemExit(error.safe_message) from error
 
-    setup_runtime_logging(config, session.info.session_id)
     usage_store = (
         JsonlUsageStore(config.usage_dir(), session.info.session_id)
         if config.persist_usage else None

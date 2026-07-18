@@ -2,7 +2,9 @@ import logging
 from datetime import date, datetime
 
 from noval.config import Config
-from noval.runtime_log import cleanup_old_logs, redact_text, setup_runtime_logging
+from noval.runtime_log import (
+    cleanup_old_logs, redact_text, runtime_log_context, setup_runtime_logging,
+)
 
 
 def _config(logs_dir, **overrides):
@@ -53,6 +55,25 @@ def test_runtime_log_omits_exception_value(tmp_path):
     content = path.read_text(encoding="utf-8")
     assert "private tool argument" not in content
     assert "RuntimeError: <details redacted>" in content
+
+
+def test_runtime_log_carries_session_turn_and_request_context(tmp_path):
+    path = setup_runtime_logging(
+        _config(tmp_path), now=datetime(2026, 6, 29, 14, 0, 0)
+    )
+    with runtime_log_context(
+        session_id="session-a",
+        turn_id="turn-b",
+        request_id="request-c",
+    ):
+        logging.getLogger("noval.test").info("correlated")
+    for handler in logging.getLogger().handlers:
+        handler.flush()
+
+    content = path.read_text(encoding="utf-8")
+    assert "session=session-a" in content
+    assert "turn=turn-b" in content
+    assert "request=request-c" in content
 
 
 def test_cleanup_old_logs_only_removes_expired_date_dirs(tmp_path):

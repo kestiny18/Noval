@@ -112,8 +112,9 @@ def test_cli_runs_turn_through_application_api_without_chdir(monkeypatch, tmp_pa
     runtime = FakeRuntime(session)
     inputs = iter(["hello", "exit"])
     monkeypatch.setattr("noval.cli.Config.load", lambda: cli_config(tmp_path))
-    monkeypatch.setattr("noval.cli.NovalRuntime", lambda config: runtime)
-    monkeypatch.setattr("noval.cli.setup_runtime_logging", lambda *args: None)
+    monkeypatch.setattr(
+        "noval.cli.NovalRuntime", lambda config, **kwargs: runtime
+    )
     monkeypatch.setattr("noval.cli._read_turn", lambda label: next(inputs))
     monkeypatch.setattr(
         "noval.cli.os.chdir",
@@ -134,8 +135,9 @@ def test_cli_resume_and_permission_slash_command_use_public_session(monkeypatch,
     runtime = FakeRuntime(session)
     inputs = iter(["/permissions full-access", "exit"])
     monkeypatch.setattr("noval.cli.Config.load", lambda: cli_config(tmp_path))
-    monkeypatch.setattr("noval.cli.NovalRuntime", lambda config: runtime)
-    monkeypatch.setattr("noval.cli.setup_runtime_logging", lambda *args: None)
+    monkeypatch.setattr(
+        "noval.cli.NovalRuntime", lambda config, **kwargs: runtime
+    )
     monkeypatch.setattr("noval.cli._read_turn", lambda label: next(inputs))
 
     run_cli(["--workdir", str(tmp_path), "--resume", "saved-1"])

@@ -191,10 +191,10 @@ class MeteredLLMClient:
         self,
         messages: Sequence[ConversationMessage],
         tools: Sequence[ToolDefinition],
-    ) -> Dict[str, Any]:
+    ) -> Optional[Dict[str, Any]]:
         renderer = getattr(self.inner, "render_request", None)
         if renderer is None:
-            raise TypeError("inner client does not expose request rendering")
+            return None
         return renderer(messages, tools)
 
 

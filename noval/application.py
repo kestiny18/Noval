@@ -45,6 +45,7 @@ from .context import ContextManager
 from .permissions import PermissionController, PermissionMode, PermissionState
 from .process import ProcessRuntime, SandboxMode, SandboxPolicy, sandbox_status_text
 from .redaction import redact_sensitive_text
+from .runtime_log import runtime_log_context, setup_runtime_logging
 from .requests import (
     InMemoryRequestJournal,
     JsonlRequestJournal,
@@ -284,6 +285,11 @@ class AgentSession:
         with self._state_lock:
             self._active_turn_id = turn_id
         started = time.perf_counter()
+        log_scope = runtime_log_context(
+            session_id=self._base_info.session_id,
+            turn_id=turn_id,
+        )
+        log_scope.__enter__()
         self._emit(
             EventType.TURN_STARTED.value,
             turn_id=turn_id,
@@ -336,6 +342,7 @@ class AgentSession:
             self._emit_terminal_failure(result)
             return result
         finally:
+            log_scope.__exit__(None, None, None)
             with self._state_lock:
                 self._active_turn_id = None
             self._turn_lock.release()
@@ -551,6 +558,7 @@ class NovalRuntime:
         client_factory: Optional[ClientFactory] = None,
         tools: Optional[Iterable[Tool]] = None,
         event_sink: Optional[EventSink] = None,
+        configure_logging: bool = False,
     ):
         self._config = copy.deepcopy(config)
         self._tool_catalog = _clone_tools(tools if tools is not None else all_tools())
@@ -560,6 +568,10 @@ class NovalRuntime:
         self._sessions: Dict[str, AgentSession] = {}
         self._lock = threading.RLock()
         self._closed = False
+        self.log_path = (
+            setup_runtime_logging(self._config)
+            if configure_logging else None
+        )
 
     @classmethod
     def from_settings(

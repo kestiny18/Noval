@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import contextvars
 import os
 import re
 import shutil
@@ -9,6 +10,7 @@ import traceback
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional
+from contextlib import contextmanager
 
 from .config import Config
 
@@ -21,6 +23,40 @@ _SECRET_PATTERNS = (
                r"\s*[:=]\s*[^\s,;]+"),
     re.compile(r"\bsk-[A-Za-z0-9_-]{8,}\b"),
 )
+_SESSION_ID = contextvars.ContextVar("noval_log_session_id", default="-")
+_TURN_ID = contextvars.ContextVar("noval_log_turn_id", default="-")
+_REQUEST_ID = contextvars.ContextVar("noval_log_request_id", default="-")
+
+
+@contextmanager
+def runtime_log_context(
+    *,
+    session_id: Optional[str] = None,
+    turn_id: Optional[str] = None,
+    request_id: Optional[str] = None,
+):
+    values = (
+        (_SESSION_ID, session_id),
+        (_TURN_ID, turn_id),
+        (_REQUEST_ID, request_id),
+    )
+    tokens = [
+        (variable, variable.set(value))
+        for variable, value in values if value is not None
+    ]
+    try:
+        yield
+    finally:
+        for variable, token in reversed(tokens):
+            variable.reset(token)
+
+
+class CorrelationFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.noval_session_id = _SESSION_ID.get()
+        record.noval_turn_id = _TURN_ID.get()
+        record.noval_request_id = _REQUEST_ID.get()
+        return True
 
 
 def redact_text(text: str) -> str:
@@ -81,7 +117,13 @@ def setup_runtime_logging(
     """Configure console logging and an optional redacted per-process log file."""
     current = now or datetime.now().astimezone()
     console = logging.StreamHandler()
-    console.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+    correlation = CorrelationFilter()
+    console.addFilter(correlation)
+    console.setFormatter(logging.Formatter(
+        "%(levelname)s %(name)s "
+        "session=%(noval_session_id)s turn=%(noval_turn_id)s "
+        "request=%(noval_request_id)s: %(message)s"
+    ))
     handlers: list[logging.Handler] = [console]
     path: Optional[Path] = None
     file_error: Optional[OSError] = None
@@ -94,8 +136,11 @@ def setup_runtime_logging(
             path = _log_path(config, session_id, current)
             path.parent.mkdir(parents=True, exist_ok=True)
             file_handler = logging.FileHandler(path, encoding="utf-8", delay=True)
+            file_handler.addFilter(correlation)
             file_handler.setFormatter(RedactingFormatter(
-                "%(asctime)s %(levelname)s %(name)s pid=%(process)d: %(message)s"
+                "%(asctime)s %(levelname)s %(name)s pid=%(process)d "
+                "session=%(noval_session_id)s turn=%(noval_turn_id)s "
+                "request=%(noval_request_id)s: %(message)s"
             ))
             handlers.append(file_handler)
         except OSError as exc:

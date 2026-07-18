@@ -45,7 +45,7 @@ from .usage import JsonlUsageStore, UsageBreakdown, UsageSummary
 log = logging.getLogger("noval.agent")
 
 # agent 的人设/行为定义。属代码，不走 settings.json（那里只放全局稳定偏好）。
-# 需要定制时在代码层传 Agent(system_prompt=...) 覆盖。
+# 需要定制时在代码层创建 Agent 实例并传 system_prompt 覆盖。
 DEFAULT_SYSTEM_PROMPT = (
     "你是 Noval，一个能调用工具的通用助手。"
     "需要外部信息或执行操作时主动使用提供的工具；不要臆造工具不存在的结果。"

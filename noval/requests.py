@@ -15,6 +15,7 @@ from uuid import uuid4
 from .api import RequestInspection
 from .client import LLMClient, LLMResponse, ProviderIdentity, ToolDefinition
 from .messages import ConversationMessage
+from .runtime_log import runtime_log_context
 
 
 log = logging.getLogger("noval.requests")
@@ -191,7 +192,8 @@ class RequestRecordingClient:
             log.warning("request provenance persistence failed", exc_info=True)
         token = _CURRENT_REQUEST_ID.set(request_id)
         try:
-            response = self.inner.complete(messages, tools)
+            with runtime_log_context(request_id=request_id):
+                response = self.inner.complete(messages, tools)
         finally:
             _CURRENT_REQUEST_ID.reset(token)
         response.meta = dict(response.meta)
