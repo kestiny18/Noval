@@ -219,8 +219,7 @@ def restore_messages(
         previous,
     )
     checkpoints.append(current)
-    if store._fh is not None:
-        store._fh.close()
+    store.close()
     reopened = JsonlSessionStore.open(
         store.base_dir,
         store.workdir,
