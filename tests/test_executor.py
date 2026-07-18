@@ -238,6 +238,7 @@ def test_always_decision_persists_across_resume(tmp_path):
     )
     assert not result.is_error
 
+    store.close()
     resumed = JsonlSessionStore.open(tmp_path / "sessions", workdir, store.session_id, "m")
     restored = PermissionController(PermissionState.from_dict(
         resumed.load_metadata()["permissions"]
