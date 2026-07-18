@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import logging
 import threading
 import time
@@ -16,6 +17,9 @@ from .api import (
     ErrorInfo,
     EventType,
     NovalError,
+    PermissionDecision,
+    PermissionRequest,
+    PermissionStateView,
     RuntimeEvent,
     RuntimeOptions,
     SessionInfo,
@@ -30,8 +34,9 @@ from .api import (
 from .client import LLMClient, ProviderError, create_provider_client
 from .config import Config
 from .context import ContextManager
-from .permissions import PermissionController, PermissionState
+from .permissions import PermissionController, PermissionMode, PermissionState
 from .process import ProcessRuntime, SandboxMode, SandboxPolicy, sandbox_status_text
+from .redaction import redact_sensitive_text
 from .session import (
     JsonlSessionStore,
     PersistentSessionStore,
@@ -62,6 +67,10 @@ class ClientFactory(Protocol):
 
 
 EventSink = Callable[[RuntimeEvent], None]
+
+
+class PermissionHandler(Protocol):
+    def __call__(self, request: PermissionRequest) -> PermissionDecision: ...
 
 
 def _clone_tools(tools: Iterable[Tool]) -> Tuple[Tool, ...]:
@@ -98,7 +107,7 @@ def _public_stop_reason(value: str) -> StopReason:
         return StopReason.COMPLETED
     if value in {"max_steps", "max_steps_validation_failed"}:
         return StopReason.MAX_STEPS
-    if value == "interrupted":
+    if value in {"interrupted", "cancelled"}:
         return StopReason.CANCELLED
     if value == "validation_stalled":
         return StopReason.VALIDATION_STALLED
@@ -113,6 +122,16 @@ def _public_status(reason: StopReason) -> TurnStatus:
     return TurnStatus.STOPPED
 
 
+def _redact_arguments(arguments: Dict[str, object]) -> Dict[str, object]:
+    """Reuse the executor redactor while preserving a JSON object shape."""
+    encoded = json.dumps(arguments, ensure_ascii=False, separators=(",", ":"))
+    try:
+        decoded = json.loads(redact_sensitive_text(encoded))
+    except json.JSONDecodeError:
+        return {"argument_keys": sorted(str(key) for key in arguments)}
+    return decoded if isinstance(decoded, dict) else {}
+
+
 class AgentSession:
     """One isolated live session owned by a :class:`NovalRuntime`."""
 
@@ -124,14 +143,18 @@ class AgentSession:
         agent: Agent,
         store: Optional[PersistentSessionStore],
         permissions: PermissionController,
+        process_runtime: ProcessRuntime,
         event_sink: Optional[EventSink],
+        permission_handler: Optional[PermissionHandler],
     ):
         self._runtime = runtime
         self._base_info = info
         self._agent = agent
         self._store = store
         self._permissions = permissions
+        self._process_runtime = process_runtime
         self._event_sink = event_sink
+        self._permission_handler = permission_handler
         self._turn_lock = threading.Lock()
         self._state_lock = threading.RLock()
         self._closed = False
@@ -143,10 +166,54 @@ class AgentSession:
         with self._state_lock:
             return replace(self._base_info, is_open=not self._closed)
 
-    @property
-    def permissions(self) -> PermissionController:
-        """Native control port; serializable permission methods are added separately."""
-        return self._permissions
+    def permission_state(self) -> PermissionStateView:
+        return PermissionStateView(
+            mode=self._permissions.mode,
+            approved_tools=tuple(sorted(self._permissions.approved_tools)),
+        )
+
+    def set_permission_handler(
+        self, handler: Optional[PermissionHandler]
+    ) -> None:
+        self._require_idle()
+        self._permission_handler = handler
+
+    def set_permission_mode(self, mode: PermissionMode) -> PermissionStateView:
+        self._require_idle()
+        self._permissions.set_mode(mode)
+        return self.permission_state()
+
+    def allow_tool(self, tool_name: str) -> PermissionStateView:
+        self._require_idle()
+        self._permissions.allow_tool(tool_name)
+        return self.permission_state()
+
+    def revoke_tool(self, tool_name: str) -> PermissionStateView:
+        self._require_idle()
+        self._permissions.revoke_tool(tool_name)
+        return self.permission_state()
+
+    def reset_permissions(self) -> PermissionStateView:
+        self._require_idle()
+        self._permissions.reset()
+        return self.permission_state()
+
+    def _require_idle(self) -> None:
+        with self._state_lock:
+            if self._closed:
+                raise NovalError(
+                    "session_closed",
+                    "Session is closed.",
+                    session_id=self._base_info.session_id,
+                )
+            if self._active_turn_id is not None:
+                raise NovalError(
+                    "session_busy",
+                    "Session has an active turn.",
+                    retryable=True,
+                    session_id=self._base_info.session_id,
+                    details={"active_turn_id": self._active_turn_id},
+                )
 
     def run_turn(self, request: TurnRequest) -> TurnResult:
         if not isinstance(request, TurnRequest):
@@ -170,6 +237,7 @@ class AgentSession:
             )
 
         turn_id = "turn-" + uuid4().hex
+        self._process_runtime.begin_turn()
         with self._state_lock:
             self._active_turn_id = turn_id
         started = time.perf_counter()
@@ -228,6 +296,71 @@ class AgentSession:
             with self._state_lock:
                 self._active_turn_id = None
             self._turn_lock.release()
+
+    def cancel_active_turn(self) -> bool:
+        with self._state_lock:
+            turn_id = self._active_turn_id
+        if turn_id is None:
+            return False
+        self._process_runtime.cancel()
+        self._emit(
+            EventType.TURN_CANCEL_REQUESTED.value,
+            turn_id=turn_id,
+        )
+        return True
+
+    def _active_turn(self) -> Optional[str]:
+        with self._state_lock:
+            return self._active_turn_id
+
+    def _approve(self, tool: Tool, arguments: Dict[str, object]) -> str:
+        with self._state_lock:
+            turn_id = self._active_turn_id
+            handler = self._permission_handler
+        if turn_id is None:
+            return "no"
+        request = PermissionRequest(
+            request_id="permission-" + uuid4().hex,
+            session_id=self._base_info.session_id,
+            turn_id=turn_id,
+            tool_name=tool.name,
+            risk=tool.risk.value,
+            arguments=_redact_arguments(arguments),
+        )
+        self._emit(
+            EventType.PERMISSION_REQUESTED.value,
+            turn_id=turn_id,
+            payload={"request": request.to_dict()},
+        )
+        decision = PermissionDecision.DENY
+        if handler is not None:
+            try:
+                candidate = handler(request)
+                decision = (
+                    candidate
+                    if isinstance(candidate, PermissionDecision)
+                    else PermissionDecision(candidate)
+                )
+            except Exception:
+                log.warning(
+                    "permission handler failed session=%s request=%s",
+                    self._base_info.session_id,
+                    request.request_id,
+                    exc_info=True,
+                )
+        self._emit(
+            EventType.PERMISSION_RESOLVED.value,
+            turn_id=turn_id,
+            payload={
+                "request_id": request.request_id,
+                "decision": decision.value,
+            },
+        )
+        if decision is PermissionDecision.ALLOW_SESSION:
+            return "always"
+        if decision is PermissionDecision.ALLOW_ONCE:
+            return "yes"
+        return "no"
 
     def _result_from_outcome(
         self,
@@ -389,8 +522,14 @@ class NovalRuntime:
         options: SessionOptions,
         *,
         event_sink: Optional[EventSink] = None,
+        permission_handler: Optional[PermissionHandler] = None,
     ) -> AgentSession:
-        return self._open_session(options, session_id=None, event_sink=event_sink)
+        return self._open_session(
+            options,
+            session_id=None,
+            event_sink=event_sink,
+            permission_handler=permission_handler,
+        )
 
     def resume_session(
         self,
@@ -398,6 +537,7 @@ class NovalRuntime:
         options: SessionOptions,
         *,
         event_sink: Optional[EventSink] = None,
+        permission_handler: Optional[PermissionHandler] = None,
     ) -> AgentSession:
         if options.persistence is SessionPersistence.EPHEMERAL:
             raise NovalError(
@@ -408,6 +548,7 @@ class NovalRuntime:
             options,
             session_id=session_id,
             event_sink=event_sink,
+            permission_handler=permission_handler,
         )
 
     def _open_session(
@@ -416,6 +557,7 @@ class NovalRuntime:
         *,
         session_id: Optional[str],
         event_sink: Optional[EventSink],
+        permission_handler: Optional[PermissionHandler],
     ) -> AgentSession:
         if not isinstance(options, SessionOptions):
             raise TypeError("options must be SessionOptions")
@@ -581,6 +723,9 @@ class NovalRuntime:
         def observer(event_type: str, payload: Dict[str, object]) -> None:
             session_holder["session"]._observe_agent(event_type, payload)
 
+        def approver(tool: Tool, arguments: Dict[str, object]) -> str:
+            return session_holder["session"]._approve(tool, arguments)
+
         agent = Agent(
             agent_client,
             session_config,
@@ -598,6 +743,7 @@ class NovalRuntime:
             context_manager=context_manager,
             task_controller=task_controller,
             observer=observer,
+            approver=approver,
         )
         session = AgentSession(
             runtime=self,
@@ -605,7 +751,9 @@ class NovalRuntime:
             agent=agent,
             store=store,
             permissions=permissions,
+            process_runtime=process_runtime,
             event_sink=selected_sink,
+            permission_handler=permission_handler,
         )
         session_holder["session"] = session
         with self._lock:
@@ -692,10 +840,21 @@ class NovalRuntime:
             if self._closed:
                 return
             sessions = tuple(self._sessions.values())
+            busy = [
+                session.info.session_id
+                for session in sessions
+                if session._active_turn() is not None
+            ]
+            if busy:
+                raise NovalError(
+                    "runtime_busy",
+                    "Runtime has active turns and cannot be closed.",
+                    retryable=True,
+                    details={"session_ids": busy},
+                )
+            self._closed = True
         for session in sessions:
             session.close()
-        with self._lock:
-            self._closed = True
 
     def __enter__(self) -> "NovalRuntime":
         return self

@@ -30,7 +30,8 @@ from .messages import (
 )
 from .permissions import PermissionController, PermissionMode, PermissionState
 from .process import (
-    NetworkAccess, ProcessRuntime, SandboxMode, SandboxPolicy, sandbox_status_text,
+    NetworkAccess, ProcessCancelled, ProcessRuntime, SandboxMode, SandboxPolicy,
+    sandbox_status_text,
 )
 from .session import (
     JsonlSessionStore, PersistentSessionStore, SessionMeta, SessionMetadataStore,
@@ -445,6 +446,7 @@ class Agent:
 
                 used_tools = True
                 for call in resp.message.tool_calls:
+                    self._raise_if_cancelled()
                     log.info("calling tool=%s arg_keys=%s", call.name, _tool_arg_keys(call.arguments))
                     self._emit(
                         "tool.started",
@@ -464,6 +466,7 @@ class Agent:
                     result = execute_tool_call(
                         call.name, call.arguments, self.config, self.approver, self.context,
                         before_execute=before_execute,
+                        tools=self.tools,
                     )
                     feedback_parts = []
                     if pre_batches and not pre_batches[0].blocked:
@@ -496,20 +499,21 @@ class Agent:
                         truncated=result.truncated,
                         duration_ms=result.meta.get("duration_ms"),
                     )
-        except KeyboardInterrupt:
+                    self._raise_if_cancelled()
+        except (KeyboardInterrupt, ProcessCancelled):
             # Ctrl+C 中断「当前任务」而非「整个会话」：补齐未回填的 tool 响应让历史合法，
             # 再返回提示。否则下一轮请求会因「有 tool_call 没 tool 响应」被 API 拒绝。
             self._answer_pending_tool_calls()
-            return self._turn_outcome(
-                assistant_message("（已中断当前任务，会话保留。）"),
-                "interrupted",
-            )
+            interrupted = assistant_message("（已取消当前任务，会话保留。）")
+            self._append_message(interrupted)
+            return self._turn_outcome(interrupted, "cancelled")
         finally:
             self._ephemeral_turn_context = None
 
         # 触顶时模型已积累现场信息（查到了什么、卡在哪）；让它最后总结一次再停，
         # 把已执行的步骤整理成一份可用的现场报告。
         log.warning("达到 max_steps=%s，让模型总结现场后停止", self.config.max_steps)
+        self._raise_if_cancelled()
         self._append_message(user_message(
             "已达到最大工具调用步数，现在不能再调用工具了。请基于目前已掌握的信息，"
             "简洁给出：① 已查明的关键事实 ② 当前卡在哪 ③ 建议的下一步。"
@@ -594,6 +598,7 @@ class Agent:
 
     def _complete(self, tools: List[Tool]) -> LLMResponse:
         """经上下文预算门调用 Provider；压缩不进入原始会话消息。"""
+        self._raise_if_cancelled()
         if self.context_manager is not None:
             self.messages = self.context_manager.prepare(self.messages, tools)
         request_messages = self._with_ephemeral_turn_context(self.messages)
@@ -602,7 +607,12 @@ class Agent:
             message_count=len(request_messages),
             tool_count=len(tools),
         )
-        response = self.client.complete(request_messages, _provider_tools(tools))
+        try:
+            response = self.client.complete(request_messages, _provider_tools(tools))
+        except Exception:
+            self._raise_if_cancelled()
+            raise
+        self._raise_if_cancelled()
         self._emit(
             "model.completed",
             provider=response.provider.provider,
@@ -612,6 +622,11 @@ class Agent:
         if self.context_manager is not None:
             self.context_manager.observe(request_messages, tools, response.usage)
         return response
+
+    def _raise_if_cancelled(self) -> None:
+        checker = getattr(self.process_runtime, "raise_if_cancelled", None)
+        if checker is not None:
+            checker()
 
     def _refresh_skills_for_turn(self) -> Optional[str]:
         """回合边界刷新 Skill registry；变化只作为本轮临时上下文，不落盘。"""

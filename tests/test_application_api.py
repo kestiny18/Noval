@@ -1,5 +1,8 @@
 import json
 import os
+import threading
+import time
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -24,11 +27,12 @@ from noval.api import (
     TurnResult,
     TurnStatus,
 )
-from noval.client import MockClient, TokenUsage, mock_text
+from noval.client import MockClient, TokenUsage, mock_text, mock_tool_call
 from noval.config import Config
 from noval.messages import assistant_message
 from noval.permissions import PermissionMode
 from noval.process import NetworkAccess, SandboxMode
+from noval.tools import Risk, Tool
 
 
 def application_config(tmp_path: Path, **overrides) -> Config:
@@ -70,6 +74,32 @@ class RecordingClientFactory:
         if spec.purpose == "agent":
             client = MockClient([mock_text(next(self.agent_replies))])
             self.agent_clients.append(client)
+            return client
+        return MockClient([])
+
+
+class BlockingClient:
+    def __init__(self, reply="done"):
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        self.reply = reply
+        self.seen_messages = []
+
+    def complete(self, messages, tools):
+        self.seen_messages.append(list(messages))
+        self.entered.set()
+        assert self.release.wait(5), "test did not release blocking client"
+        return mock_text(self.reply)
+
+
+class BlockingClientFactory:
+    def __init__(self):
+        self.clients = []
+
+    def __call__(self, spec):
+        if spec.purpose == "agent":
+            client = BlockingClient(reply=spec.session_id)
+            self.clients.append(client)
             return client
         return MockClient([])
 
@@ -303,3 +333,209 @@ def test_session_provider_and_model_overrides_are_session_scoped(tmp_path):
         ("agent", "anthropic", "agent-override"),
         ("completion_judge", "anthropic", "judge-override"),
     ]
+
+
+def test_same_session_rejects_a_concurrent_turn_without_queueing(tmp_path):
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    factory = BlockingClientFactory()
+    runtime = NovalRuntime(application_config(tmp_path), client_factory=factory)
+    session = runtime.create_session(SessionOptions(
+        workdir=str(workdir),
+        persistence=SessionPersistence.EPHEMERAL,
+    ))
+    results = []
+    worker = threading.Thread(
+        target=lambda: results.append(session.run_turn(TurnRequest("first")))
+    )
+    worker.start()
+    assert factory.clients[0].entered.wait(2)
+
+    started = time.perf_counter()
+    with pytest.raises(NovalError) as busy:
+        session.run_turn(TurnRequest("second"))
+    elapsed = time.perf_counter() - started
+
+    assert busy.value.code == "session_busy"
+    assert busy.value.retryable is True
+    assert elapsed < 0.2
+    with pytest.raises(NovalError) as runtime_busy:
+        runtime.close()
+    assert runtime_busy.value.code == "runtime_busy"
+
+    factory.clients[0].release.set()
+    worker.join(2)
+    assert results[0].status is TurnStatus.COMPLETED
+    runtime.close()
+
+
+def test_different_sessions_execute_in_parallel_without_message_leakage(tmp_path):
+    one_dir = tmp_path / "one"
+    two_dir = tmp_path / "two"
+    one_dir.mkdir()
+    two_dir.mkdir()
+    factory = BlockingClientFactory()
+    results = {}
+
+    with NovalRuntime(application_config(tmp_path), client_factory=factory) as runtime:
+        one = runtime.create_session(SessionOptions(
+            workdir=str(one_dir), persistence=SessionPersistence.EPHEMERAL,
+        ))
+        two = runtime.create_session(SessionOptions(
+            workdir=str(two_dir), persistence=SessionPersistence.EPHEMERAL,
+        ))
+        threads = [
+            threading.Thread(
+                target=lambda: results.setdefault(
+                    "one", one.run_turn(TurnRequest("message-one"))
+                )
+            ),
+            threading.Thread(
+                target=lambda: results.setdefault(
+                    "two", two.run_turn(TurnRequest("message-two"))
+                )
+            ),
+        ]
+        for thread in threads:
+            thread.start()
+        assert all(client.entered.wait(2) for client in factory.clients)
+        for client in factory.clients:
+            client.release.set()
+        for thread in threads:
+            thread.join(2)
+
+    assert set(results) == {"one", "two"}
+    observed = [
+        "\n".join(message.text for message in client.seen_messages[0])
+        for client in factory.clients
+    ]
+    assert sum("message-one" in text for text in observed) == 1
+    assert sum("message-two" in text for text in observed) == 1
+
+
+def test_permission_handler_is_serializable_ordered_and_fail_closed(tmp_path):
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    executed = []
+    events = []
+    permission_requests = []
+    dangerous = Tool(
+        name="dangerous_test",
+        description="test tool",
+        parameters={
+            "type": "object",
+            "properties": {"password": {"type": "string"}},
+            "required": ["password"],
+        },
+        func=lambda password: executed.append(password) or "ok",
+        risk=Risk.DANGEROUS,
+    )
+
+    class Factory:
+        def __call__(self, spec):
+            if spec.purpose == "agent":
+                return MockClient([
+                    mock_tool_call(
+                        "call-1",
+                        "dangerous_test",
+                        json.dumps({"password": "very-secret"}),
+                    ),
+                    mock_text("done"),
+                ])
+            return MockClient([mock_text(
+                '{"status":"completed","confidence":1,"reason":"visible"}'
+            )])
+
+    def allow(request):
+        permission_requests.append(request)
+        return PermissionDecision.ALLOW_SESSION
+
+    with NovalRuntime(
+        application_config(tmp_path),
+        client_factory=Factory(),
+        tools=[dangerous],
+        event_sink=events.append,
+    ) as runtime:
+        session = runtime.create_session(
+            SessionOptions(
+                workdir=str(workdir),
+                persistence=SessionPersistence.EPHEMERAL,
+            ),
+            permission_handler=allow,
+        )
+        result = session.run_turn(TurnRequest("use the tool"))
+
+        assert result.status is TurnStatus.COMPLETED
+        assert session.permission_state().approved_tools == ("dangerous_test",)
+
+    assert executed == ["very-secret"]
+    assert permission_requests[0].arguments == {"password": "<redacted>"}
+    event_types = [event.type for event in events]
+    assert EventType.PERMISSION_REQUESTED.value in event_types
+    assert EventType.PERMISSION_RESOLVED.value in event_types
+    assert [event.sequence for event in events] == list(range(1, len(events) + 1))
+    assert event_types[-1] == EventType.SESSION_CLOSED.value
+
+    denied = []
+
+    class DeniedFactory(Factory):
+        pass
+
+    def broken_handler(request):
+        raise RuntimeError("host approval UI failed")
+
+    with NovalRuntime(
+        application_config(tmp_path),
+        client_factory=DeniedFactory(),
+        tools=[replace(dangerous, func=lambda password: denied.append(password))],
+    ) as runtime:
+        session = runtime.create_session(
+            SessionOptions(
+                workdir=str(workdir), persistence=SessionPersistence.EPHEMERAL,
+            ),
+            permission_handler=broken_handler,
+        )
+        session.run_turn(TurnRequest("use the tool"))
+    assert denied == []
+
+
+def test_cancel_is_cooperative_and_event_sink_failures_do_not_break_turn(tmp_path):
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    factory = BlockingClientFactory()
+    received = []
+
+    def flaky_sink(event):
+        received.append(event)
+        raise RuntimeError("host sink failed")
+
+    with NovalRuntime(
+        application_config(tmp_path),
+        client_factory=factory,
+        event_sink=flaky_sink,
+    ) as runtime:
+        session = runtime.create_session(SessionOptions(
+            workdir=str(workdir), persistence=SessionPersistence.EPHEMERAL,
+        ))
+        results = []
+        worker = threading.Thread(
+            target=lambda: results.append(session.run_turn(TurnRequest("wait")))
+        )
+        worker.start()
+        assert factory.clients[0].entered.wait(2)
+        assert session.cancel_active_turn() is True
+        factory.clients[0].release.set()
+        worker.join(2)
+
+        assert results[0].status is TurnStatus.STOPPED
+        assert results[0].stop_reason is StopReason.CANCELLED
+        assert session.cancel_active_turn() is False
+
+    terminal = [
+        event for event in received
+        if event.type in {
+            EventType.TURN_COMPLETED.value,
+            EventType.TURN_FAILED.value,
+        }
+    ]
+    assert len(terminal) == 1

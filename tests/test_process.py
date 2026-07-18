@@ -1,6 +1,8 @@
 import ast
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -11,6 +13,7 @@ from noval.process import (
     NoSandbox,
     PreparedProcess,
     ProcessRuntime,
+    ProcessCancelled,
     ProcessSpec,
     ProcessTimeout,
     SandboxCapabilities,
@@ -122,12 +125,24 @@ def test_auto_mode_reports_honest_no_sandbox_status():
 def test_runtime_executes_without_shell_and_captures_output(monkeypatch, tmp_path):
     seen = {}
 
-    def fake_run(argv, **kwargs):
-        seen["argv"] = argv
-        seen.update(kwargs)
-        return subprocess.CompletedProcess(argv, 3, stdout="out", stderr="err")
+    class FakePopen:
+        returncode = 3
 
-    monkeypatch.setattr("noval.process.subprocess.run", fake_run)
+        def __init__(self, argv, **kwargs):
+            seen["argv"] = argv
+            seen.update(kwargs)
+
+        def communicate(self, timeout=None):
+            seen["timeout"] = timeout
+            return "out", "err"
+
+        def terminate(self):
+            pass
+
+        def kill(self):
+            pass
+
+    monkeypatch.setattr("noval.process.subprocess.Popen", FakePopen)
 
     result = ProcessRuntime(backend=NoSandbox()).run(_python_spec(tmp_path))
 
@@ -137,6 +152,42 @@ def test_runtime_executes_without_shell_and_captures_output(monkeypatch, tmp_pat
     assert seen["shell"] is False
     assert seen["stdin"] is subprocess.DEVNULL
     assert seen["cwd"] == str(tmp_path.resolve())
+
+
+def test_runtime_cancellation_terminates_an_owned_process(tmp_path):
+    runtime = ProcessRuntime(backend=NoSandbox())
+    runtime.begin_turn()
+    errors = []
+
+    worker = threading.Thread(
+        target=lambda: _capture_error(
+            errors,
+            lambda: runtime.run(_python_spec(
+                tmp_path,
+                "import time; time.sleep(30)",
+                timeout=60,
+            )),
+        )
+    )
+    worker.start()
+    deadline = time.monotonic() + 3
+    while runtime.active_process_count == 0 and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    assert runtime.active_process_count == 1
+    runtime.cancel()
+    worker.join(3)
+
+    assert not worker.is_alive()
+    assert len(errors) == 1
+    assert isinstance(errors[0], ProcessCancelled)
+
+
+def _capture_error(errors, callback):
+    try:
+        callback()
+    except Exception as error:
+        errors.append(error)
 
 
 def test_runtime_timeout_is_typed(tmp_path):

@@ -14,12 +14,12 @@ import inspect
 import json
 import logging
 import time
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional, Sequence
 
 from .config import Config
 from .permissions import PermissionController
 from .redaction import redact_sensitive_text
-from .tools import Risk, Tool, ToolError, ToolResult, all_tools, get_tool
+from .tools import Risk, Tool, ToolError, ToolResult, all_tools
 
 log = logging.getLogger("noval.executor")
 
@@ -69,6 +69,7 @@ def execute_tool_call(
     approver: Optional[Approver] = None,
     context: Optional["Context"] = None,
     before_execute: Optional[BeforeToolExecute] = None,
+    tools: Optional[Sequence[Tool]] = None,
 ) -> ToolResult:
     """执行单次工具调用，永远返回 ToolResult（绝不抛异常给上层）。"""
     started = time.perf_counter()
@@ -96,9 +97,10 @@ def execute_tool_call(
         return ToolResult(content=content, is_error=is_error, truncated=truncated, meta=meta)
 
     # 1. 查工具：未知工具要把可用清单告诉模型，让它能改用正确的工具
-    tool = get_tool(name)
+    catalog = list(tools) if tools is not None else all_tools()
+    tool = next((candidate for candidate in catalog if candidate.name == name), None)
     if tool is None:
-        available = ", ".join(t.name for t in all_tools()) or "(无)"
+        available = ", ".join(t.name for t in catalog) or "(无)"
         return finish(f"Error: 未知工具 '{name}'。可用工具: {available}", is_error=True)
 
     # 2. 解析参数（JSON 容错）

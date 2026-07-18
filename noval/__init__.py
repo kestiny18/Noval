@@ -28,4 +28,6 @@ from .application import (  # noqa: F401
     ClientSpec,
     EventSink,
     NovalRuntime,
+    PermissionHandler,
 )
+from .permissions import PermissionMode  # noqa: F401

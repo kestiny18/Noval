@@ -31,11 +31,22 @@ def test_selected_bash_reports_failed_pipeline():
 def test_probe_bash_does_not_inherit_stdin(monkeypatch):
     seen = {}
 
-    def fake_run(*args, **kwargs):
-        seen.update(kwargs)
-        return subprocess.CompletedProcess(args[0], 0, stdout="MINGW64_NT", stderr="")
+    class FakePopen:
+        returncode = 0
 
-    monkeypatch.setattr("noval.process.subprocess.run", fake_run)
+        def __init__(self, argv, **kwargs):
+            seen.update(kwargs)
+
+        def communicate(self, timeout=None):
+            return "MINGW64_NT", ""
+
+        def terminate(self):
+            pass
+
+        def kill(self):
+            pass
+
+    monkeypatch.setattr("noval.process.subprocess.Popen", FakePopen)
 
     backend = shell._probe_bash("bash")
     assert backend.flavor == "Git Bash"

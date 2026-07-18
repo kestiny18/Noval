@@ -50,6 +50,7 @@ class EventType(str, Enum):
     SESSION_OPENED = "session.opened"
     SESSION_CLOSED = "session.closed"
     TURN_STARTED = "turn.started"
+    TURN_CANCEL_REQUESTED = "turn.cancel_requested"
     MODEL_STARTED = "model.started"
     MODEL_COMPLETED = "model.completed"
     PERMISSION_REQUESTED = "permission.requested"
@@ -684,4 +685,3 @@ class PermissionRequest:
             risk=_string(obj.get("risk"), "risk") or "",
             arguments=_json_object(obj.get("arguments", {}), "arguments"),
         )
-

@@ -407,11 +407,22 @@ def test_run_bash_echo(tmp_path):
 def test_run_bash_does_not_inherit_stdin(monkeypatch, tmp_path):
     seen = {}
 
-    def fake_run(*args, **kwargs):
-        seen.update(kwargs)
-        return subprocess.CompletedProcess(args[0], 0, stdout="ok", stderr="")
+    class FakePopen:
+        returncode = 0
 
-    monkeypatch.setattr("noval.process.subprocess.run", fake_run)
+        def __init__(self, argv, **kwargs):
+            seen.update(kwargs)
+
+        def communicate(self, timeout=None):
+            return "ok", ""
+
+        def terminate(self):
+            pass
+
+        def kill(self):
+            pass
+
+    monkeypatch.setattr("noval.process.subprocess.Popen", FakePopen)
 
     assert run_bash(ctx(tmp_path), "echo ok") == "ok"
     assert seen["stdin"] is subprocess.DEVNULL
@@ -421,12 +432,23 @@ def test_run_bash_uses_backend_frozen_in_context(monkeypatch, tmp_path):
     seen = {}
     backend = ShellBackend("chosen-bash", "Git Bash")
 
-    def fake_run(argv, **kwargs):
-        seen["argv"] = argv
-        seen.update(kwargs)
-        return subprocess.CompletedProcess(argv, 0, stdout="ok", stderr="")
+    class FakePopen:
+        returncode = 0
 
-    monkeypatch.setattr("noval.process.subprocess.run", fake_run)
+        def __init__(self, argv, **kwargs):
+            seen["argv"] = argv
+            seen.update(kwargs)
+
+        def communicate(self, timeout=None):
+            return "ok", ""
+
+        def terminate(self):
+            pass
+
+        def kill(self):
+            pass
+
+    monkeypatch.setattr("noval.process.subprocess.Popen", FakePopen)
     context = Context(workdir=tmp_path, shell_backend=backend)
 
     assert run_bash(context, "pwd") == "ok"

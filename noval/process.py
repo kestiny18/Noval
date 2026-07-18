@@ -12,6 +12,7 @@ import os
 import platform
 import shutil
 import subprocess
+import threading
 import time
 from dataclasses import dataclass, field, replace
 from enum import Enum
@@ -135,6 +136,10 @@ class ProcessTimeout(ProcessRuntimeError):
 
 
 class SandboxUnavailable(ProcessRuntimeError):
+    pass
+
+
+class ProcessCancelled(ProcessRuntimeError):
     pass
 
 
@@ -263,6 +268,9 @@ class ProcessRuntime:
             self.backend: SandboxBackend = NoSandbox("sandbox disabled explicitly")
         else:
             self.backend = backend or detect_sandbox_backend()
+        self._cancel_requested = threading.Event()
+        self._process_lock = threading.Lock()
+        self._active_processes: set[subprocess.Popen] = set()
         log.info(
             "sandbox_mode=%s backend=%s strength=%s reason=%s",
             self.policy.mode.value,
@@ -282,23 +290,64 @@ class ProcessRuntime:
             raise SandboxUnavailable(f"hard sandbox required but unavailable: {reason}")
         return self.backend.prepare(normalized, self.policy)
 
+    def begin_turn(self) -> None:
+        """Reset cooperative cancellation before a new serial session turn."""
+        self._cancel_requested.clear()
+
+    @property
+    def cancel_requested(self) -> bool:
+        return self._cancel_requested.is_set()
+
+    @property
+    def active_process_count(self) -> int:
+        with self._process_lock:
+            return len(self._active_processes)
+
+    def raise_if_cancelled(self) -> None:
+        if self.cancel_requested:
+            raise ProcessCancelled("process operation cancelled")
+
+    def cancel(self) -> None:
+        """Request cancellation and terminate subprocesses owned by this runtime."""
+        self._cancel_requested.set()
+        with self._process_lock:
+            processes = tuple(self._active_processes)
+        for process in processes:
+            try:
+                process.terminate()
+            except OSError:
+                log.debug("active process already exited during cancellation")
+
     def run(self, spec: ProcessSpec) -> ProcessResult:
+        self.raise_if_cancelled()
         prepared = self.prepare(spec)
         started = time.perf_counter()
+        proc: Optional[subprocess.Popen] = None
         try:
-            proc = subprocess.run(
+            proc = subprocess.Popen(
                 list(prepared.argv),
                 cwd=str(prepared.cwd),
                 env=dict(prepared.env) if prepared.env is not None else None,
                 stdin=subprocess.DEVNULL,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                timeout=prepared.timeout,
                 shell=False,
             )
+            with self._process_lock:
+                self._active_processes.add(proc)
+            if self.cancel_requested:
+                proc.terminate()
+            stdout, stderr = proc.communicate(timeout=prepared.timeout)
         except subprocess.TimeoutExpired as error:
+            if proc is not None:
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
+                proc.communicate()
             duration_ms = round((time.perf_counter() - started) * 1000, 1)
             log.info(
                 "purpose=%s backend=%s strength=%s timed_out=true dur=%sms",
@@ -307,11 +356,19 @@ class ProcessRuntime:
                 prepared.sandbox.strength.value,
                 duration_ms,
             )
+            if self.cancel_requested:
+                raise ProcessCancelled("process operation cancelled") from error
             raise ProcessTimeout(prepared.timeout) from error
         except OSError as error:
             raise ProcessLaunchError(
                 f"failed to launch process for {prepared.purpose}: {error}"
             ) from error
+        finally:
+            if proc is not None:
+                with self._process_lock:
+                    self._active_processes.discard(proc)
+
+        self.raise_if_cancelled()
 
         duration_ms = round((time.perf_counter() - started) * 1000, 1)
         log.info(
@@ -323,8 +380,8 @@ class ProcessRuntime:
             duration_ms,
         )
         return ProcessResult(
-            stdout=proc.stdout or "",
-            stderr=proc.stderr or "",
+            stdout=stdout or "",
+            stderr=stderr or "",
             returncode=proc.returncode,
             duration_ms=duration_ms,
             sandbox=prepared.sandbox,
