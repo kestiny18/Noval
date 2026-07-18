@@ -40,6 +40,7 @@ from .redaction import redact_sensitive_text
 from .session import (
     JsonlSessionStore,
     PersistentSessionStore,
+    SessionLockedError,
     SessionMetadataStore,
     list_sessions,
 )
@@ -564,6 +565,12 @@ class NovalRuntime:
         with self._lock:
             if self._closed:
                 raise NovalError("runtime_closed", "Runtime is closed.")
+            if session_id is not None and session_id in self._sessions:
+                raise NovalError(
+                    "session_already_open",
+                    "Session is already open in this runtime.",
+                    session_id=session_id,
+                )
 
         workdir = Path(options.workdir).expanduser().resolve()
         if not workdir.is_dir():
@@ -594,6 +601,13 @@ class NovalRuntime:
                     store = JsonlSessionStore.open(
                         self._config.sessions_dir(), workdir, session_id, model
                     )
+                except SessionLockedError as error:
+                    raise NovalError(
+                        "session_locked",
+                        str(error),
+                        retryable=True,
+                        session_id=session_id,
+                    ) from error
                 except (FileNotFoundError, ValueError) as error:
                     raise NovalError(
                         "session_not_found",

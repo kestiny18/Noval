@@ -1,4 +1,6 @@
 import json
+import subprocess
+import sys
 
 import pytest
 
@@ -6,7 +8,8 @@ from noval.messages import (
     AdapterReplayState, MessageProvenance, ToolCallBlock, assistant_message, user_message,
 )
 from noval.session import (
-    SCHEMA_VERSION, JsonlSessionStore, UnsupportedSessionVersion, list_sessions,
+    SCHEMA_VERSION, JsonlSessionStore, SessionLockedError,
+    UnsupportedSessionVersion, list_sessions,
 )
 
 
@@ -16,8 +19,7 @@ def session_file(base_dir, session_id):
 
 
 def close(store):
-    if store._fh:
-        store._fh.close()
+    store.close()
 
 
 def test_create_is_lazy_and_writes_canonical_schema_v2(tmp_path):
@@ -75,6 +77,56 @@ def test_open_continues_seq_numbers(tmp_path):
         if "seq" in item
     ]
     assert [record["seq"] for record in records] == [0, 1, 2]
+
+
+def test_persistent_store_holds_one_writer_lease_until_close(tmp_path):
+    base = tmp_path / "sessions"
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    first = JsonlSessionStore.create(base, workdir, "model-a")
+    first.append(user_message("one"))
+
+    with pytest.raises(SessionLockedError, match="不能同时写入"):
+        JsonlSessionStore.open(base, workdir, first.session_id, "model-a")
+
+    first.close()
+    resumed = JsonlSessionStore.open(base, workdir, first.session_id, "model-a")
+    resumed.append(assistant_message("two"))
+    resumed.close()
+
+
+def test_writer_lease_is_enforced_across_processes(tmp_path):
+    base = tmp_path / "sessions"
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    first = JsonlSessionStore.create(base, workdir, "model-a")
+    first.append(user_message("one"))
+    script = """
+import sys
+from pathlib import Path
+from noval.session import JsonlSessionStore, SessionLockedError
+
+try:
+    store = JsonlSessionStore.open(Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3], "model-a")
+except SessionLockedError:
+    raise SystemExit(23)
+store.close()
+"""
+    command = [
+        sys.executable,
+        "-c",
+        script,
+        str(base),
+        str(workdir),
+        first.session_id,
+    ]
+
+    locked = subprocess.run(command, capture_output=True, text=True, timeout=10)
+    assert locked.returncode == 23
+
+    first.close()
+    released = subprocess.run(command, capture_output=True, text=True, timeout=10)
+    assert released.returncode == 0, released.stderr
 
 
 def test_load_skips_bad_lines_and_invalid_canonical_messages(tmp_path, caplog):

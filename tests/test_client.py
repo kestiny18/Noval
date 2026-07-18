@@ -265,7 +265,7 @@ def test_openai_replay_survives_session_v2_recovery(tmp_path):
     store = JsonlSessionStore.create(tmp_path / "sessions", workdir, "model")
     for message in (user_message("read"), first, tool_result_message("call-1", "A")):
         store.append(message)
-    store._fh.close()
+    store.close()
 
     recovered = JsonlSessionStore.open(
         store.base_dir, store.workdir, store.session_id, "model",
@@ -290,7 +290,7 @@ def test_anthropic_replay_survives_session_v2_recovery(tmp_path):
     store = JsonlSessionStore.create(tmp_path / "sessions", workdir, "model")
     for message in (user_message("read"), first, tool_result_message("call-1", "A")):
         store.append(message)
-    store._fh.close()
+    store.close()
 
     recovered = JsonlSessionStore.open(
         store.base_dir, store.workdir, store.session_id, "model",

@@ -683,6 +683,7 @@ def test_permissions_restore_directly_from_session_sidecar(tmp_path):
     first.set_mode(PermissionMode.FULL_ACCESS)
     first.allow_tool("run_bash")
 
+    store.close()
     resumed = JsonlSessionStore.open(base, workdir, store.session_id, "m")
     restored = _create_permission_controller(resumed)
     assert restored.mode is PermissionMode.FULL_ACCESS

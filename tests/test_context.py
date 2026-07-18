@@ -125,8 +125,7 @@ def test_resume_reuses_checkpoint_without_calling_model(tmp_path):
         estimator=MessageCountEstimator(),
     )
     first.prepare(active_messages(store), [])
-    if store._fh:
-        store._fh.close()
+    store.close()
     reopened = JsonlSessionStore.open(
         store.base_dir, store.workdir, store.session_id, "model-a",
     )

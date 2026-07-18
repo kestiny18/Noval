@@ -539,3 +539,33 @@ def test_cancel_is_cooperative_and_event_sink_failures_do_not_break_turn(tmp_pat
         }
     ]
     assert len(terminal) == 1
+
+
+def test_application_maps_persistent_writer_conflicts_to_session_locked(tmp_path):
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    config = application_config(tmp_path)
+    first_factory = RecordingClientFactory(["saved"])
+    first_runtime = NovalRuntime(config, client_factory=first_factory)
+    first = first_runtime.create_session(SessionOptions(
+        workdir=str(workdir), persistence=SessionPersistence.PERSISTENT,
+    ))
+    session_id = first.info.session_id
+    first.run_turn(TurnRequest("persist this"))
+
+    second_runtime = NovalRuntime(
+        config, client_factory=RecordingClientFactory(["resumed"])
+    )
+    with pytest.raises(NovalError) as locked:
+        second_runtime.resume_session(session_id, SessionOptions(
+            workdir=str(workdir), persistence=SessionPersistence.PERSISTENT,
+        ))
+    assert locked.value.code == "session_locked"
+    assert locked.value.retryable is True
+
+    first_runtime.close()
+    resumed = second_runtime.resume_session(session_id, SessionOptions(
+        workdir=str(workdir), persistence=SessionPersistence.PERSISTENT,
+    ))
+    assert resumed.info.session_id == session_id
+    second_runtime.close()

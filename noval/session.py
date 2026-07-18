@@ -17,6 +17,7 @@ import logging
 import os
 import re
 import secrets
+import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -86,6 +87,62 @@ class UnsupportedSessionVersion(ValueError):
             f"会话 {session_id} 使用不兼容的 schema v{version}; "
             f"Noval v0.9 只读取 schema v{SCHEMA_VERSION}，原文件未被修改"
         )
+
+
+class SessionLockedError(RuntimeError):
+    def __init__(self, session_id: str):
+        self.session_id = session_id
+        super().__init__(f"会话 {session_id} 已被另一个进程打开，不能同时写入")
+
+
+class _WriterLease:
+    """Cross-platform non-blocking advisory lock held by an open file handle."""
+
+    def __init__(self, path: Path, session_id: str):
+        self.path = path
+        self.session_id = session_id
+        self._file = None
+
+    def acquire(self) -> None:
+        if self._file is not None:
+            return
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        file = self.path.open("a+b")
+        try:
+            if sys.platform == "win32":
+                import msvcrt
+
+                if file.seek(0, os.SEEK_END) == 0:
+                    file.write(b"\0")
+                    file.flush()
+                file.seek(0)
+                msvcrt.locking(file.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (OSError, IOError) as error:
+            file.close()
+            raise SessionLockedError(self.session_id) from error
+        self._file = file
+
+    def release(self) -> None:
+        file = self._file
+        if file is None:
+            return
+        try:
+            file.seek(0)
+            if sys.platform == "win32":
+                import msvcrt
+
+                msvcrt.locking(file.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(file.fileno(), fcntl.LOCK_UN)
+        finally:
+            file.close()
+            self._file = None
 
 
 # ---------------------------------------------------------------------------
@@ -162,6 +219,10 @@ class JsonlSessionStore:
         self._header_written = False
         self._fh = None  # type: ignore[assignment]  # 懒打开的 append 句柄
         self._pending_metadata: Optional[Dict[str, Any]] = None
+        self._lease = _WriterLease(
+            self._dir / "locks" / f"{session_id}.lock",
+            session_id,
+        )
 
     # --- 构造入口 ----------------------------------------------------------
     @classmethod
@@ -185,6 +246,7 @@ class JsonlSessionStore:
                 last = max(last, rec["seq"])
         store._next_seq = last + 1
         store._header_written = True
+        store._lease.acquire()
         return store
 
     # --- 写 ----------------------------------------------------------------
@@ -202,10 +264,15 @@ class JsonlSessionStore:
         self._next_seq += 1
 
     def _open_for_append(self) -> None:
-        self._dir.mkdir(parents=True, exist_ok=True)
-        self._ensure_project_json()
-        new_file = not self._path.exists()
-        self._fh = self._path.open("a", encoding="utf-8")
+        self._lease.acquire()
+        try:
+            self._dir.mkdir(parents=True, exist_ok=True)
+            self._ensure_project_json()
+            new_file = not self._path.exists()
+            self._fh = self._path.open("a", encoding="utf-8")
+        except Exception:
+            self._lease.release()
+            raise
         try:                       # 0600：对话可能含粘贴的密钥/文件内容，收紧权限（Win 上是 no-op）
             os.chmod(self._path, 0o600)
         except OSError:
@@ -294,10 +361,12 @@ class JsonlSessionStore:
 
     def close(self) -> None:
         """Flush and release the append handle; safe to call more than once."""
-        if self._fh is None:
-            return
-        self._fh.close()
-        self._fh = None
+        try:
+            if self._fh is not None:
+                self._fh.close()
+                self._fh = None
+        finally:
+            self._lease.release()
 
 
 # ---------------------------------------------------------------------------
