@@ -52,6 +52,7 @@ class PersistentSessionStore(SessionStore, SessionMetadataStore, Protocol):
     def load_records(self) -> List["SessionRecord"]: ...
     def context_path(self) -> Path: ...
     def task_path(self) -> Path: ...
+    def close(self) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -74,6 +75,7 @@ class SessionMeta:
     model: str
     compatible: bool = True
     schema_version: Optional[int] = SCHEMA_VERSION
+    provider: str = ""
 
 
 class UnsupportedSessionVersion(ValueError):
@@ -290,6 +292,13 @@ class JsonlSessionStore:
     def load(self) -> List[ConversationMessage]:
         return [record.message for record in self.load_records()]
 
+    def close(self) -> None:
+        """Flush and release the append handle; safe to call more than once."""
+        if self._fh is None:
+            return
+        self._fh.close()
+        self._fh = None
+
 
 # ---------------------------------------------------------------------------
 # 项目级：列举会话（无 index —— 扫目录，session 文件是唯一真相源）
@@ -344,14 +353,22 @@ def _read_session_meta(path: Path) -> Optional[SessionMeta]:
 
     # 标题：sidecar 优先（用户自定义），否则从首条 user 消息派生
     compatible = schema_version == SCHEMA_VERSION
-    title = _read_sidecar_title(path.parent / (path.stem + ".meta.json"))
+    sidecar = _read_json_object(path.parent / (path.stem + ".meta.json"))
+    title_value = sidecar.get("title")
+    title = title_value if isinstance(title_value, str) and title_value.strip() else None
+    application = sidecar.get("application")
+    provider = (
+        application.get("provider", "")
+        if isinstance(application, dict) and isinstance(application.get("provider", ""), str)
+        else ""
+    )
     if not compatible:
         title = f"[不兼容 v{schema_version if schema_version is not None else '?'}] {title or path.stem}"
     elif title is None:
         title = _derive_title(first_user) if first_user else "(空会话)"
     return SessionMeta(
         session_id, created_at, last_active, title, msg_count, model,
-        compatible=compatible, schema_version=schema_version,
+        compatible=compatible, schema_version=schema_version, provider=provider,
     )
 
 
@@ -363,11 +380,6 @@ def _session_schema_version(path: Path) -> Optional[int]:
             return version if isinstance(version, int) and not isinstance(version, bool) else None
         return None
     return None
-
-
-def _read_sidecar_title(meta_path: Path) -> Optional[str]:
-    t = _read_json_object(meta_path).get("title")
-    return t if isinstance(t, str) and t.strip() else None
 
 
 def _read_json_object(path: Path) -> Dict[str, Any]:
