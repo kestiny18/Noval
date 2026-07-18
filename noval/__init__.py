@@ -11,6 +11,7 @@ from .api import (  # noqa: F401
     PermissionDecision,
     PermissionRequest,
     PermissionStateView,
+    RequestInspection,
     RuntimeEvent,
     RuntimeOptions,
     SessionInfo,

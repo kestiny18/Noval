@@ -187,6 +187,16 @@ class MeteredLLMClient:
             log.warning("token 用量持久化失败，已跳过本次记录", exc_info=True)
         return response
 
+    def render_request(
+        self,
+        messages: Sequence[ConversationMessage],
+        tools: Sequence[ToolDefinition],
+    ) -> Dict[str, Any]:
+        renderer = getattr(self.inner, "render_request", None)
+        if renderer is None:
+            raise TypeError("inner client does not expose request rendering")
+        return renderer(messages, tools)
+
 
 def _safe_purpose(value: str) -> str:
     text = str(value or "agent").strip().lower().replace("-", "_")

@@ -14,6 +14,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence
+from uuid import uuid4
 
 from .client import LLMClient, LLMResponse, TokenUsage, ToolDefinition
 from .config import Config
@@ -599,19 +600,35 @@ class Agent:
         if self.context_manager is not None:
             self.messages = self.context_manager.prepare(self.messages, tools)
         request_messages = self._with_ephemeral_turn_context(self.messages)
+        request_id = "request-" + uuid4().hex
         self._emit(
             "model.started",
+            request_id=request_id,
             message_count=len(request_messages),
             tool_count=len(tools),
         )
         try:
-            response = self.client.complete(request_messages, _provider_tools(tools))
+            provider_tools = _provider_tools(tools)
+            complete_with_request = getattr(
+                self.client, "complete_with_request", None
+            )
+            if complete_with_request is not None:
+                response = complete_with_request(
+                    request_messages,
+                    provider_tools,
+                    request_id=request_id,
+                )
+            else:
+                response = self.client.complete(request_messages, provider_tools)
+                response.meta = dict(response.meta)
+                response.meta.setdefault("request_id", request_id)
         except Exception:
             self._raise_if_cancelled()
             raise
         self._raise_if_cancelled()
         self._emit(
             "model.completed",
+            request_id=response.meta.get("request_id", request_id),
             provider=response.provider.provider,
             model=response.provider.model,
             has_tool_calls=bool(response.message.tool_calls),

@@ -53,6 +53,7 @@ class PersistentSessionStore(SessionStore, SessionMetadataStore, Protocol):
     def load_records(self) -> List["SessionRecord"]: ...
     def context_path(self) -> Path: ...
     def task_path(self) -> Path: ...
+    def request_path(self) -> Path: ...
     def close(self) -> None: ...
 
 
@@ -335,6 +336,10 @@ class JsonlSessionStore:
     def task_path(self) -> Path:
         """该会话的派生任务完成判定事件文件；任务事件是 append-only。"""
         return self._dir / "task" / f"{self.session_id}.jsonl"
+
+    def request_path(self) -> Path:
+        """该会话的模型请求来源日志；与 canonical Session 分开保存。"""
+        return self._dir / "requests" / f"{self.session_id}.jsonl"
 
     # --- 读 ----------------------------------------------------------------
     def load_records(self) -> List[SessionRecord]:

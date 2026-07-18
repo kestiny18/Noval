@@ -249,6 +249,25 @@ class OpenAICompatibleClient:
         self.model = model
         self.identity = ProviderIdentity(OPENAI_ADAPTER, model, OPENAI_ADAPTER)
 
+    def render_request(
+        self,
+        messages: Sequence[ConversationMessage],
+        tools: Sequence[ToolDefinition],
+    ) -> Dict[str, Any]:
+        """Render credential-free inspection input without opaque replay state."""
+        semantic_messages = [
+            ConversationMessage(message.role, message.blocks)
+            for message in messages
+        ]
+        provider_tools = _openai_tools(tools)
+        payload: Dict[str, Any] = {
+            "model": self.model,
+            "messages": _openai_messages(semantic_messages),
+        }
+        if provider_tools:
+            payload.update(tools=provider_tools, tool_choice="auto")
+        return payload
+
     def complete(
         self,
         messages: Sequence[ConversationMessage],
@@ -424,6 +443,29 @@ class AnthropicMessagesClient:
         self.model = model
         self.max_tokens = max_tokens
         self.identity = ProviderIdentity("anthropic", model, ANTHROPIC_ADAPTER)
+
+    def render_request(
+        self,
+        messages: Sequence[ConversationMessage],
+        tools: Sequence[ToolDefinition],
+    ) -> Dict[str, Any]:
+        """Render credential-free inspection input without thinking replay blocks."""
+        semantic_messages = [
+            ConversationMessage(message.role, message.blocks)
+            for message in messages
+        ]
+        system, provider_messages = _anthropic_messages(semantic_messages)
+        payload: Dict[str, Any] = {
+            "model": self.model,
+            "max_tokens": self.max_tokens,
+            "messages": provider_messages,
+        }
+        if system:
+            payload["system"] = system
+        provider_tools = _anthropic_tools(tools)
+        if provider_tools:
+            payload["tools"] = provider_tools
+        return payload
 
     def complete(
         self,

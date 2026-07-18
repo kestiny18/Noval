@@ -720,3 +720,87 @@ class PermissionRequest:
             risk=_string(obj.get("risk"), "risk") or "",
             arguments=_json_object(obj.get("arguments", {}), "arguments"),
         )
+
+
+@dataclass(frozen=True)
+class RequestInspection:
+    request_id: str
+    session_id: str
+    purpose: str
+    step: int
+    timestamp: str
+    provider: Dict[str, JSONValue]
+    canonical_messages: Tuple[Dict[str, JSONValue], ...]
+    tools: Tuple[Dict[str, JSONValue], ...]
+    context: Dict[str, JSONValue] = field(default_factory=dict)
+    turn_id: Optional[str] = None
+    adapter_request: Optional[Dict[str, JSONValue]] = None
+
+    def __post_init__(self) -> None:
+        for name in ("request_id", "session_id", "purpose", "timestamp"):
+            _string(getattr(self, name), name)
+        if self.turn_id is not None:
+            _string(self.turn_id, "turn_id")
+        _integer(self.step, "step", minimum=1)
+        object.__setattr__(self, "provider", _json_object(self.provider, "provider"))
+        object.__setattr__(self, "context", _json_object(self.context, "context"))
+        for name in ("canonical_messages", "tools"):
+            values = getattr(self, name)
+            if not isinstance(values, tuple):
+                raise ApiFormatError(f"{name} must be an immutable tuple")
+            object.__setattr__(
+                self,
+                name,
+                tuple(_json_object(value, f"{name} item") for value in values),
+            )
+        if self.adapter_request is not None:
+            object.__setattr__(
+                self,
+                "adapter_request",
+                _json_object(self.adapter_request, "adapter_request"),
+            )
+
+    def to_dict(self) -> Dict[str, JSONValue]:
+        return {
+            "schema_version": API_SCHEMA_VERSION,
+            "request_id": self.request_id,
+            "session_id": self.session_id,
+            "turn_id": self.turn_id,
+            "purpose": self.purpose,
+            "step": self.step,
+            "timestamp": self.timestamp,
+            "provider": copy.deepcopy(self.provider),
+            "context": copy.deepcopy(self.context),
+            "canonical_messages": copy.deepcopy(list(self.canonical_messages)),
+            "tools": copy.deepcopy(list(self.tools)),
+            "adapter_request": copy.deepcopy(self.adapter_request),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "RequestInspection":
+        obj = _object(data, "request_inspection")
+        _schema(obj, "request_inspection")
+        messages = obj.get("canonical_messages", [])
+        tools = obj.get("tools", [])
+        if not isinstance(messages, list) or not isinstance(tools, list):
+            raise ApiFormatError("canonical_messages and tools must be arrays")
+        adapter_request = obj.get("adapter_request")
+        return cls(
+            request_id=_string(obj.get("request_id"), "request_id") or "",
+            session_id=_string(obj.get("session_id"), "session_id") or "",
+            turn_id=_string(obj.get("turn_id"), "turn_id", optional=True),
+            purpose=_string(obj.get("purpose"), "purpose") or "",
+            step=_integer(obj.get("step"), "step", minimum=1),
+            timestamp=_string(obj.get("timestamp"), "timestamp") or "",
+            provider=_json_object(obj.get("provider", {}), "provider"),
+            context=_json_object(obj.get("context", {}), "context"),
+            canonical_messages=tuple(
+                _json_object(value, "canonical_messages item")
+                for value in messages
+            ),
+            tools=tuple(_json_object(value, "tools item") for value in tools),
+            adapter_request=(
+                _json_object(adapter_request, "adapter_request")
+                if adapter_request is not None else None
+            ),
+        )

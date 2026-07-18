@@ -20,6 +20,7 @@ from .api import (
     PermissionDecision,
     PermissionRequest,
     PermissionStateView,
+    RequestInspection,
     RuntimeEvent,
     RuntimeOptions,
     SessionInfo,
@@ -31,12 +32,27 @@ from .api import (
     TurnResult,
     TurnStatus,
 )
-from .client import LLMClient, ProviderError, create_provider_client
+from .client import (
+    ANTHROPIC_ADAPTER,
+    OPENAI_ADAPTER,
+    LLMClient,
+    ProviderError,
+    ProviderIdentity,
+    create_provider_client,
+)
 from .config import Config
 from .context import ContextManager
 from .permissions import PermissionController, PermissionMode, PermissionState
 from .process import ProcessRuntime, SandboxMode, SandboxPolicy, sandbox_status_text
 from .redaction import redact_sensitive_text
+from .requests import (
+    InMemoryRequestJournal,
+    JsonlRequestJournal,
+    RequestContext,
+    RequestJournal,
+    RequestRecordingClient,
+    RequestSequence,
+)
 from .session import (
     JsonlSessionStore,
     PersistentSessionStore,
@@ -79,6 +95,24 @@ def _clone_tools(tools: Iterable[Tool]) -> Tuple[Tool, ...]:
         replace(tool, parameters=copy.deepcopy(tool.parameters))
         for tool in tools
     )
+
+
+def _client_identity(
+    client: LLMClient,
+    provider: str,
+    model: str,
+) -> ProviderIdentity:
+    candidate = client
+    for _ in range(4):
+        identity = getattr(candidate, "identity", None)
+        if isinstance(identity, ProviderIdentity):
+            return identity
+        inner = getattr(candidate, "inner", None)
+        if inner is None:
+            break
+        candidate = inner
+    adapter = ANTHROPIC_ADAPTER if provider == "anthropic" else OPENAI_ADAPTER
+    return ProviderIdentity(provider, model, adapter)
 
 
 def _permission_controller(
@@ -148,6 +182,7 @@ class AgentSession:
         event_sink: Optional[EventSink],
         permission_handler: Optional[PermissionHandler],
         tool_names: Tuple[str, ...],
+        request_journal: RequestJournal,
     ):
         self._runtime = runtime
         self._base_info = info
@@ -158,6 +193,7 @@ class AgentSession:
         self._event_sink = event_sink
         self._permission_handler = permission_handler
         self._tool_names = tool_names
+        self._request_journal = request_journal
         self._turn_lock = threading.Lock()
         self._state_lock = threading.RLock()
         self._closed = False
@@ -319,6 +355,17 @@ class AgentSession:
     def _active_turn(self) -> Optional[str]:
         with self._state_lock:
             return self._active_turn_id
+
+    def inspect_request(self, request_id: str) -> RequestInspection:
+        inspection = self._request_journal.get(request_id)
+        if inspection is None:
+            raise NovalError(
+                "request_not_found",
+                "Model request was not found in this session.",
+                session_id=self._base_info.session_id,
+                details={"request_id": request_id},
+            )
+        return inspection
 
     def _approve(self, tool: Tool, arguments: Dict[str, object]) -> str:
         with self._state_lock:
@@ -687,6 +734,30 @@ class NovalRuntime:
             )
         shell_backend = resolve_shell_backend(process_runtime)
         permissions = _permission_controller(store)
+        request_journal: RequestJournal = (
+            JsonlRequestJournal(store.request_path(), resolved_session_id)
+            if store is not None else InMemoryRequestJournal()
+        )
+        request_sequence = RequestSequence()
+        session_holder: Dict[str, AgentSession] = {}
+
+        def request_context() -> RequestContext:
+            session = session_holder.get("session")
+            metadata: Dict[str, object] = {}
+            if session is not None:
+                manager = session._agent.context_manager
+                checkpoint = manager.checkpoint if manager is not None else None
+                if checkpoint is not None:
+                    metadata = {
+                        "checkpoint_id": checkpoint.checkpoint_id,
+                        "source_through_seq": checkpoint.source_through_seq,
+                    }
+            return RequestContext(
+                session_id=resolved_session_id,
+                turn_id=session._active_turn() if session is not None else None,
+                metadata=metadata,
+            )
+
         agent_client = self._make_client(
             "agent", provider, model, resolved_session_id, session_config
         )
@@ -710,6 +781,22 @@ class NovalRuntime:
                 judge_model,
                 purpose="completion_judge",
             )
+        agent_client = RequestRecordingClient(
+            agent_client,
+            request_journal,
+            request_context,
+            purpose="agent",
+            identity=_client_identity(agent_client, provider, model),
+            sequence=request_sequence,
+        )
+        judge_client = RequestRecordingClient(
+            judge_client,
+            request_journal,
+            request_context,
+            purpose="completion_judge",
+            identity=_client_identity(judge_client, provider, judge_model),
+            sequence=request_sequence,
+        )
 
         resume_messages = None
         resumed_message_count = 0
@@ -742,7 +829,6 @@ class NovalRuntime:
             schema_version=2 if store is not None else None,
         )
         selected_sink = event_sink if event_sink is not None else self._event_sink
-        session_holder: Dict[str, AgentSession] = {}
 
         def observer(event_type: str, payload: Dict[str, object]) -> None:
             session_holder["session"]._observe_agent(event_type, payload)
@@ -779,6 +865,7 @@ class NovalRuntime:
             event_sink=selected_sink,
             permission_handler=permission_handler,
             tool_names=tuple(tool.name for tool in self._tool_catalog),
+            request_journal=request_journal,
         )
         session_holder["session"] = session
         with self._lock:
@@ -833,6 +920,11 @@ class NovalRuntime:
                     "Session is not open in this runtime.",
                     session_id=session_id,
                 ) from error
+
+    def inspect_request(
+        self, session_id: str, request_id: str
+    ) -> RequestInspection:
+        return self.get_session(session_id).inspect_request(request_id)
 
     def list_active_sessions(self) -> Tuple[SessionInfo, ...]:
         with self._lock:

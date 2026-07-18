@@ -16,6 +16,7 @@ from noval.api import (
     PermissionDecision,
     PermissionRequest,
     PermissionStateView,
+    RequestInspection,
     RuntimeEvent,
     RuntimeOptions,
     SessionInfo,
@@ -238,6 +239,25 @@ def test_public_errors_round_trip_without_raw_exception_data():
     assert decoded.retryable is True
     assert decoded.session_id == "s1"
     assert "traceback" not in json.dumps(encoded).lower()
+
+
+def test_request_inspection_contract_round_trips_json_safely():
+    inspection = RequestInspection(
+        request_id="request-1",
+        session_id="session-1",
+        turn_id="turn-1",
+        purpose="agent",
+        step=2,
+        timestamp="2026-07-18T01:02:03Z",
+        provider={"provider": "mock", "model": "m", "adapter": "mock"},
+        canonical_messages=({"role": "user", "blocks": []},),
+        tools=({"name": "read_file", "input_schema": {}},),
+        adapter_request={"model": "m", "messages": []},
+    )
+
+    assert RequestInspection.from_dict(
+        json_round_trip(inspection.to_dict())
+    ) == inspection
 
 
 def test_runtime_creates_ephemeral_session_without_changing_process_state(tmp_path):
