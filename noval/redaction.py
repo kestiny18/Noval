@@ -8,6 +8,7 @@ net before content is sent to the model or persisted in the session.
 from __future__ import annotations
 
 import re
+from typing import Any
 
 
 REDACTION = "<redacted>"
@@ -19,6 +20,10 @@ _SENSITIVE_KEY = (
     r"apikey|api_key|appkey|accesskey|access_key|"
     r"privatekey|private_key|"
     r"webhook|roboturl"
+)
+
+_SENSITIVE_NAME_RE = re.compile(
+    rf"(?i)^[A-Za-z0-9_.-]*(?:{_SENSITIVE_KEY}|authorization|signature)[A-Za-z0-9_.-]*$"
 )
 
 _KEY_VALUE_RE = re.compile(
@@ -47,6 +52,34 @@ def redact_sensitive_text(text: str) -> str:
     redacted = _KEY_VALUE_RE.sub(_redact_key_value, redacted)
     redacted = _JSON_VALUE_RE.sub(_redact_json_value, redacted)
     return redacted
+
+
+def redact_sensitive_data(value: Any) -> Any:
+    """Recursively redact credentials while preserving JSON-safe structure."""
+    if isinstance(value, dict):
+        return {
+            key: _redact_sensitive_field(key, item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [redact_sensitive_data(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(redact_sensitive_data(item) for item in value)
+    if isinstance(value, str):
+        return redact_sensitive_text(value)
+    return value
+
+
+def _redact_sensitive_field(key: object, value: Any) -> Any:
+    if not isinstance(key, str) or not _SENSITIVE_NAME_RE.fullmatch(key):
+        return redact_sensitive_data(value)
+    if isinstance(value, (dict, list, tuple)):
+        return redact_sensitive_data(value)
+    if value is None:
+        return None
+    if isinstance(value, str) and _looks_like_code_reference(value):
+        return value
+    return REDACTION
 
 
 def _redact_key_value(match: re.Match[str]) -> str:

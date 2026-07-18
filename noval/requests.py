@@ -15,6 +15,7 @@ from uuid import uuid4
 from .api import RequestInspection
 from .client import LLMClient, LLMResponse, ProviderIdentity, ToolDefinition
 from .messages import ConversationMessage
+from .redaction import redact_sensitive_data
 from .runtime_log import runtime_log_context
 
 
@@ -186,6 +187,10 @@ class RequestRecordingClient:
             } for tool in tools),
             adapter_request=adapter_request,
         )
+        safe_payload = redact_sensitive_data(inspection.to_dict())
+        if not isinstance(safe_payload, dict):
+            raise TypeError("redacted request inspection must remain an object")
+        inspection = RequestInspection.from_dict(safe_payload)
         try:
             self.journal.append(inspection)
         except Exception:

@@ -67,6 +67,12 @@ def test_request_recording_client_records_semantic_input_and_request_id():
             observed_request_ids.append(current_request_id())
             return super().complete(messages, tools)
 
+        def render_request(self, messages, tools):
+            return {
+                "messages": [{"content": "password=FAKE_ADAPTER_PASSWORD"}],
+                "privateKey": "FAKE_ADAPTER_PRIVATE_KEY",
+            }
+
     client = RequestRecordingClient(
         ObservingClient([mock_text("done")]),
         journal,
@@ -74,10 +80,17 @@ def test_request_recording_client_records_semantic_input_and_request_id():
         purpose="agent",
         identity=ProviderIdentity("mock", "model", "mock"),
     )
-    tools = [ToolDefinition("read_file", "read", {"type": "object"})]
+    tools = [ToolDefinition(
+        "read_file",
+        "read",
+        {
+            "type": "object",
+            "properties": {"password": {"type": "string"}},
+        },
+    )]
 
     response = client.complete_with_request(
-        [user_message("inspect")],
+        [user_message("password=FAKE_USER_PASSWORD")],
         tools,
         request_id="request-1",
     )
@@ -91,6 +104,14 @@ def test_request_recording_client_records_semantic_input_and_request_id():
     assert inspection.step == 1
     assert inspection.canonical_messages[0]["role"] == "user"
     assert inspection.tools[0]["name"] == "read_file"
+    assert inspection.tools[0]["input_schema"]["properties"] == {
+        "password": {"type": "string"},
+    }
+    encoded = json.dumps(inspection.to_dict(), ensure_ascii=False)
+    assert "FAKE_USER_PASSWORD" not in encoded
+    assert "FAKE_ADAPTER_PASSWORD" not in encoded
+    assert "FAKE_ADAPTER_PRIVATE_KEY" not in encoded
+    assert "<redacted>" in encoded
     assert RequestInspection.from_dict(inspection.to_dict()) == inspection
 
 
@@ -174,7 +195,9 @@ def test_persistent_request_can_be_inspected_after_session_resume(tmp_path):
             persistence=SessionPersistence.PERSISTENT,
         ))
         session_id = session.info.session_id
-        session.run_turn(TurnRequest("record this request"))
+        session.run_turn(TurnRequest(
+            "record this request\npassword=FAKE_PERSISTED_PASSWORD"
+        ))
         started = next(
             event for event in events
             if event.type == EventType.MODEL_STARTED.value
@@ -188,8 +211,15 @@ def test_persistent_request_can_be_inspected_after_session_resume(tmp_path):
         assert "record this request" in json.dumps(
             inspection.canonical_messages, ensure_ascii=False
         )
+        assert "FAKE_PERSISTED_PASSWORD" not in json.dumps(
+            inspection.to_dict(), ensure_ascii=False
+        )
         assert "runtime-secret-key" not in json.dumps(
             inspection.to_dict(), ensure_ascii=False
+        )
+        request_path = session._store.request_path()
+        assert "FAKE_PERSISTED_PASSWORD" not in request_path.read_text(
+            encoding="utf-8"
         )
 
     with NovalRuntime(
