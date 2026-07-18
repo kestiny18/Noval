@@ -257,15 +257,12 @@ def test_agent_derives_subprocess_roots_from_workdir(tmp_path):
     assert agent.process_runtime.policy.write_roots == (tmp_path.resolve(),)
 
 
-def test_cli_required_sandbox_fails_before_loading_config(monkeypatch, tmp_path):
+def test_cli_required_sandbox_failure_is_reported_by_application(monkeypatch, tmp_path):
     monkeypatch.setattr(
         "noval.process.detect_sandbox_backend",
         lambda: NoSandbox("test fallback"),
     )
-    monkeypatch.setattr(
-        "noval.config.Config.load",
-        lambda: pytest.fail("config should not load before required sandbox check"),
-    )
+    monkeypatch.setattr("noval.cli.Config.load", lambda: cfg())
 
     previous_cwd = Path.cwd()
     try:

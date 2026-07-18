@@ -24,7 +24,7 @@ Issues = "https://github.com/kestiny18/Noval/issues"
 Changelog = "https://github.com/kestiny18/Noval/blob/main/CHANGELOG.md"
 
 [project.scripts]
-noval = "noval.agent:run_cli"
+noval = "noval.cli:run_cli"
 
 [tool.setuptools]
 packages = ["noval"]

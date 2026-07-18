@@ -30,19 +30,16 @@ from .messages import (
 )
 from .permissions import PermissionController, PermissionMode, PermissionState
 from .process import (
-    NetworkAccess, ProcessCancelled, ProcessRuntime, SandboxMode, SandboxPolicy,
-    sandbox_status_text,
+    ProcessCancelled, ProcessRuntime, SandboxPolicy, sandbox_status_text,
 )
 from .session import (
-    JsonlSessionStore, PersistentSessionStore, SessionMeta, SessionMetadataStore,
-    SessionStore, list_sessions,
+    SessionMeta, SessionMetadataStore, SessionStore,
 )
-from .runtime_log import setup_runtime_logging
 from .shell import ShellBackend, resolve_shell_backend, to_bash_path
 from .skills import SkillRegistry, SkillSnapshotDiff, skill_index_context
 from .task import CompletionVerifier, SemanticJudge, TaskController, TaskEventStore
 from .tools import Context, Tool, all_tools
-from .usage import JsonlUsageStore, MeteredLLMClient, UsageBreakdown, UsageSummary
+from .usage import JsonlUsageStore, UsageBreakdown, UsageSummary
 
 log = logging.getLogger("noval.agent")
 
@@ -991,185 +988,10 @@ def _choose_resume_session(sessions: List[SessionMeta]) -> Optional[str]:
 
 
 def run_cli(argv: Optional[List[str]] = None) -> None:
-    import argparse
+    """Compatibility entry point; the terminal host lives in ``noval.cli``."""
+    from .cli import run_cli as application_cli
 
-    from .client import create_provider_client
-
-    parser = argparse.ArgumentParser(prog="noval")
-    parser.add_argument("--workdir", help="工作目录；不指定则用当前启动目录(os.getcwd)")
-    parser.add_argument(
-        "--sandbox",
-        choices=[mode.value for mode in SandboxMode],
-        default=SandboxMode.AUTO.value,
-        help="子进程沙箱策略：auto（默认，缺后端时诚实降级）/ required（无硬后端则拒绝）/ off",
-    )
-    parser.add_argument(
-        "--sandbox-network",
-        choices=[access.value for access in NetworkAccess],
-        default=NetworkAccess.INHERIT.value,
-        help="硬沙箱网络策略：inherit（默认）/ deny（隔离网络 namespace）",
-    )
-    parser.add_argument(
-        "--resume",
-        nargs="?",
-        const="",
-        metavar="SESSION_ID",
-        help="恢复当前 workdir 的历史会话；不填 SESSION_ID 时进入选择器",
-    )
-    args = parser.parse_args(argv)
-
-    # workdir 解析：显式 --workdir 优先，否则用启动目录
-    workdir = Path(args.workdir).resolve() if args.workdir else Path.cwd()
-    if not workdir.is_dir():
-        raise SystemExit(f"--workdir 不是有效目录: {workdir}")
-    os.chdir(workdir)  # 让文件工具与 run_bash 子进程的相对路径都落在 workdir
-
-    sandbox_policy = SandboxPolicy.workspace(
-        workdir,
-        mode=SandboxMode(args.sandbox),
-        network=NetworkAccess(args.sandbox_network),
-    )
-    process_runtime = ProcessRuntime(policy=sandbox_policy)
-    if sandbox_policy.mode is SandboxMode.REQUIRED and not process_runtime.status.is_hard:
-        raise SystemExit(f"--sandbox required: {sandbox_status_text(process_runtime)}")
-
-    config = Config.load()
-    store: Optional[PersistentSessionStore] = None
-    resume_messages: Optional[List[ConversationMessage]] = None
-    resumed_message_count = 0
-    resumed_session_id: Optional[str] = None
-    if args.resume is not None and not config.persist_sessions:
-        raise SystemExit("--resume 需要 settings.json 中 persist_sessions=true")
-    if config.persist_sessions:
-        sessions_dir = config.sessions_dir()
-        if args.resume is None:
-            store = JsonlSessionStore.create(sessions_dir, workdir, config.model)
-        else:
-            sid = args.resume.strip()
-            if not sid:
-                sid = _choose_resume_session(list_sessions(sessions_dir, workdir)) or ""
-            if sid:
-                try:
-                    store = JsonlSessionStore.open(sessions_dir, workdir, sid, config.model)
-                except (FileNotFoundError, ValueError) as e:
-                    raise SystemExit(str(e))
-                resumed_message_count = len(store.load_records())
-                resumed_session_id = sid
-            else:
-                print("没有选择可恢复会话，已开启新会话。")
-                store = JsonlSessionStore.create(sessions_dir, workdir, config.model)
-    permissions = _create_permission_controller(store)
-    session_id = getattr(store, "session_id", None)
-    log_path = setup_runtime_logging(config, session_id)
-    log.info("workdir = %s", workdir)
-    if log_path:
-        log.info("运行日志 = %s", log_path)
-    log.info("subprocess isolation = %s", sandbox_status_text(process_runtime))
-    shell_backend = resolve_shell_backend(process_runtime)  # 启动时选择一次，提示与执行共用
-    log.info("run_bash backend=%s executable=%s", shell_backend.flavor,
-             shell_backend.executable or "<system>")
-    env_context = detect_environment(workdir, shell_backend, process_runtime)
-    project_memory = load_project_memory(workdir)  # 读 AGENTS.md / CLAUDE.md 一次
-    api_key = config.resolve_api_key()
-    provider_options = {
-        "provider": config.provider,
-        "api_key": api_key,
-        "base_url": config.base_url,
-        "anthropic_base_url": config.anthropic_base_url,
-        "timeout": config.request_timeout_seconds,
-        "max_retries": config.request_max_retries,
-        "anthropic_max_tokens": config.anthropic_max_tokens,
-    }
-    client = create_provider_client(model=config.model, **provider_options)
-    judge_client = create_provider_client(model=config.judge_model, **provider_options)
-    usage_store: Optional[JsonlUsageStore] = None
-    if config.persist_usage:
-        usage_store = JsonlUsageStore(config.usage_dir(), session_id)
-        client = MeteredLLMClient(client, usage_store, config.model, purpose="agent")
-        judge_client = MeteredLLMClient(
-            judge_client, usage_store, config.judge_model, purpose="completion_judge"
-        )
-    context_manager: Optional[ContextManager] = None
-    if store is not None:
-        context_manager = ContextManager(
-            client, store, config.model, config.context_budget_tokens
-        )
-        if resumed_session_id:
-            resume_messages = context_manager.restore()
-    task_store = TaskEventStore(store.task_path()) if store is not None else None
-    task_controller = TaskController(
-        event_store=task_store,
-        completion_verifier=CompletionVerifier(
-            SemanticJudge(judge_client, model=config.judge_model)
-        ),
-    )
-    agent = Agent(client, config, approver=_cli_approver, workdir=str(workdir),
-                  env_context=env_context, project_memory=project_memory,
-                  store=store, resume_messages=resume_messages,
-                  shell_backend=shell_backend, permissions=permissions,
-                  process_runtime=process_runtime,
-                  context_manager=context_manager,
-                  task_controller=task_controller)
-
-    print(f"Noval 已就绪 (workdir: {workdir})。输入 'exit' 退出。")
-    if resumed_session_id:
-        print(f"✓ 已恢复会话 {resumed_session_id}（{resumed_message_count} 条历史消息）")
-        if context_manager is not None and context_manager.checkpoint is not None:
-            checkpoint = context_manager.checkpoint
-            print(
-                f"✓ 已加载上下文 checkpoint {checkpoint.checkpoint_id}"
-                f"（覆盖至 seq {checkpoint.source_through_seq}，活跃 {len(resume_messages or [])} 条）"
-            )
-    elif store is not None:
-        print(f"✓ 会话持久化已开启（session: {getattr(store, 'session_id', 'unknown')}）")
-    if project_memory:
-        print("✓ 已加载项目记忆 (AGENTS.md / CLAUDE.md)")
-    print(f"✓ 权限模式: {permissions.mode.label}")
-    if permissions.approved_tools:
-        print(f"✓ 本会话始终允许: {', '.join(sorted(permissions.approved_tools))}")
-    print(f"✓ 思考模式: {_reasoning_mode_status(config)}")
-    print(env_context)  # 让你也看到探测结果
-    while True:
-        try:
-            print()
-            user_input = _read_turn("You")
-        except (EOFError, KeyboardInterrupt):
-            print()
-            break
-        if not user_input.strip():        # 空回车：别浪费一次 API 调用
-            continue
-        if user_input.strip().lower() == "exit":
-            break
-        permission_reply = _handle_permissions_command(user_input, permissions)
-        if permission_reply is not None:
-            print()
-            _print_turn("Noval", permission_reply)
-            continue
-        reasoning_reply = _handle_reasoning_command(user_input, config, agent.last_turn_metrics)
-        if reasoning_reply is not None:
-            print()
-            _print_turn("Noval", reasoning_reply)
-            continue
-        usage_reply = _handle_usage_command(user_input, usage_store)
-        if usage_reply is not None:
-            print()
-            _print_turn("Noval", usage_reply)
-            continue
-        # 模型调用/网络异常不该掀翻整个会话：兜住、报错、保留历史、继续
-        try:
-            reply = agent.send(user_input)
-        except Exception as e:
-            log.exception("处理输入时出错")
-            print()
-            _print_turn("Noval", f"[出错 {type(e).__name__}: {e}]（会话已保留，可继续输入）")
-            continue
-        print()
-        _print_turn("Noval", reply)
-        reasoning_summary = _format_reasoning_summary(agent.last_turn_metrics)
-        if reasoning_summary:
-            print(" " * len(_turn_prefix("Noval")) + reasoning_summary)
-    print("\n再见！")
-
+    application_cli(argv)
 
 if __name__ == "__main__":
     run_cli()

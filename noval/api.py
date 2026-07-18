@@ -242,6 +242,11 @@ class SessionInfo:
     provider: str
     model: str
     is_open: bool
+    title: Optional[str] = None
+    message_count: int = 0
+    last_active: Optional[str] = None
+    compatible: bool = True
+    schema_version: Optional[int] = None
 
     def __post_init__(self) -> None:
         for name in ("session_id", "workdir", "provider", "model"):
@@ -249,6 +254,14 @@ class SessionInfo:
         if not isinstance(self.persistence, SessionPersistence):
             raise ApiFormatError("persistence must be SessionPersistence")
         _boolean(self.is_open, "is_open")
+        if self.title is not None:
+            _string(self.title, "title")
+        _integer(self.message_count, "message_count")
+        if self.last_active is not None:
+            _string(self.last_active, "last_active")
+        _boolean(self.compatible, "compatible")
+        if self.schema_version is not None:
+            _integer(self.schema_version, "schema_version", minimum=1)
 
     def to_dict(self) -> Dict[str, JSONValue]:
         return {
@@ -259,6 +272,11 @@ class SessionInfo:
             "provider": self.provider,
             "model": self.model,
             "is_open": self.is_open,
+            "title": self.title,
+            "message_count": self.message_count,
+            "last_active": self.last_active,
+            "compatible": self.compatible,
+            "session_schema_version": self.schema_version,
         }
 
     @classmethod
@@ -274,6 +292,23 @@ class SessionInfo:
             provider=_string(obj.get("provider"), "provider") or "",
             model=_string(obj.get("model"), "model") or "",
             is_open=_boolean(obj.get("is_open"), "is_open"),
+            title=_string(obj.get("title"), "title", optional=True),
+            message_count=_integer(
+                obj.get("message_count", 0), "message_count"
+            ),
+            last_active=_string(
+                obj.get("last_active"), "last_active", optional=True
+            ),
+            compatible=_boolean(obj.get("compatible", True), "compatible"),
+            schema_version=(
+                _integer(
+                    obj.get("session_schema_version"),
+                    "session_schema_version",
+                    minimum=1,
+                )
+                if obj.get("session_schema_version") is not None
+                else None
+            ),
         )
 
 

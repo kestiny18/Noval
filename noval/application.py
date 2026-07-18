@@ -147,6 +147,7 @@ class AgentSession:
         process_runtime: ProcessRuntime,
         event_sink: Optional[EventSink],
         permission_handler: Optional[PermissionHandler],
+        tool_names: Tuple[str, ...],
     ):
         self._runtime = runtime
         self._base_info = info
@@ -156,6 +157,7 @@ class AgentSession:
         self._process_runtime = process_runtime
         self._event_sink = event_sink
         self._permission_handler = permission_handler
+        self._tool_names = tool_names
         self._turn_lock = threading.Lock()
         self._state_lock = threading.RLock()
         self._closed = False
@@ -172,6 +174,10 @@ class AgentSession:
             mode=self._permissions.mode,
             approved_tools=tuple(sorted(self._permissions.approved_tools)),
         )
+
+    @property
+    def available_tools(self) -> Tuple[str, ...]:
+        return self._tool_names
 
     def set_permission_handler(
         self, handler: Optional[PermissionHandler]
@@ -706,6 +712,7 @@ class NovalRuntime:
             )
 
         resume_messages = None
+        resumed_message_count = 0
         context_manager = None
         if store is not None:
             context_manager = ContextManager(
@@ -716,6 +723,7 @@ class NovalRuntime:
             )
             if session_id is not None:
                 resume_messages = context_manager.restore()
+                resumed_message_count = len(store.load_records())
         task_store = TaskEventStore(store.task_path()) if store is not None else None
         task_controller = TaskController(
             event_store=task_store,
@@ -730,6 +738,8 @@ class NovalRuntime:
             provider=provider,
             model=model,
             is_open=True,
+            message_count=resumed_message_count,
+            schema_version=2 if store is not None else None,
         )
         selected_sink = event_sink if event_sink is not None else self._event_sink
         session_holder: Dict[str, AgentSession] = {}
@@ -768,6 +778,7 @@ class NovalRuntime:
             process_runtime=process_runtime,
             event_sink=selected_sink,
             permission_handler=permission_handler,
+            tool_names=tuple(tool.name for tool in self._tool_catalog),
         )
         session_holder["session"] = session
         with self._lock:
@@ -839,6 +850,11 @@ class NovalRuntime:
                 provider=meta.provider or self._config.provider,
                 model=meta.model or self._config.model,
                 is_open=meta.session_id in open_ids,
+                title=meta.title,
+                message_count=meta.message_count,
+                last_active=meta.last_active,
+                compatible=meta.compatible,
+                schema_version=meta.schema_version,
             )
             for meta in list_sessions(self._config.sessions_dir(), root)
         )
