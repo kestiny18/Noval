@@ -463,6 +463,20 @@ v0.9 用两个真实 wire adapter 证明边界：现有 OpenAI-compatible adapte
 
 出口标准不是“第二个 SDK 能返回文本”，而是：Agent / Context / Session / Task / Usage 不再读写 Provider wire key；静态架构测试把这些 key 限制在 adapter 与测试 fixture；同一工具场景经两种 adapter fixture 产生等价 canonical transcript；两类私有 replay state 在工具链和崩溃恢复后原样回传且不泄露到语义视图；Session v2 round-trip、悬空工具调用修复、Context 压缩和 Provider 错误归一化均有确定性回归。
 
+## 决策 33：v1.0 用 Application API 隔离宿主与 Agent 组合
+
+CLI、未来 Desktop 和 Web 都需要创建会话、发送回合、处理权限、消费事件并展示错误，但这些宿主不应重复组装 Provider、Store、Context、Task、ProcessRuntime、Hooks、Skills 和 MCP。v1.0 在 Agent 之上增加 Application 层：进程级 `NovalRuntime` 持有不可变默认配置、tool catalog snapshot、依赖工厂和 live Session registry；每个 `AgentSession` 独占所有可变执行状态；Turn 只持有 request/turn id、临时上下文、指标、取消状态和 terminal result。依赖只向下指向现有核心接缝，Agent 不反向依赖 Application API。
+
+一个 Runtime 支持不同 Session 从不同宿主线程并行执行，但同一 Session 只有一个 non-blocking turn lock。第二个 turn 立即返回可重试 `session_busy`，内核不排队；宿主可以按自己的 UX、预算和优先级决定是否重试。关闭 active Session/Runtime 同样 fail-closed。取消是协作式的：在模型/工具步骤边界停止，并由 `ProcessRuntime` 终止当前持有的子进程；阻塞 Provider SDK 仍受 request timeout 约束，不承诺强杀 Python 线程。
+
+公共 data plane 使用 schema v1 的 frozen dataclass/enum 和显式 `to_dict/from_dict`，请求拒绝未知字段，响应容忍新增字段和未知 event type。Python client、callable、Store、Tool 实现和 handler 等扩展端口保持 native，不强行 JSON 化。事件只实时发送、Session 内单调排序，不持久化也不成为第二真相源；权限是独立控制流，ASK 缺 handler 或 handler 异常时拒绝。事件 sink 异常不影响回合。
+
+持久 Session 在 live store 生命周期内持有 OS advisory writer lease。锁文件可长期存在，但是否占用只由内核锁决定，不根据 PID 或时间删除“陈旧锁”；同进程重复打开返回 `session_already_open`，跨进程竞争返回 `session_locked`，close 幂等释放。`EPHEMERAL` Session 不创建 Session/Request 文件。
+
+每次模型调用生成 request id，并把 Session、Turn、跨 Agent/Judge 共享的 step、purpose、Provider identity、canonical semantic messages、tool schema、checkpoint 来源和 adapter 自己渲染的 request 追加到独立 journal。adapter rendering 不含 credentials、headers、SDK raw object 或 opaque replay/thinking；核心保存和返回该 JSON，但不读取 Provider wire key。request id 通过 context-local 状态传播到最内层 adapter 和结构化日志，`inspect_request` 可在恢复 Session 后重建同一输入语义。
+
+CLI 从 v1.0 起只解析参数、实现终端 PermissionHandler、格式化 public result/event 和处理 slash command；console entry point 不再构造 Agent，也不调用 `os.chdir()`。Electron、Node SDK、stdio/HTTP/WebSocket transport、streaming、多 Agent、Runtime 队列和同 Session 并行 turn 都不进入 v1.0；未来宿主建立在同一 JSON-safe contract 上，而不是反向改变内核。
+
 ## 施工顺序
 
 1. `tools.py`：`ToolResult` / `ToolError` / `@tool` 注册表 —— 地基

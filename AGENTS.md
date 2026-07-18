@@ -52,6 +52,7 @@
 - **Provider 回放状态**：DeepSeek `reasoning_content` 与 Anthropic thinking/redacted-thinking 只能存入带 adapter id/schema version 的 opaque replay state；核心只保存并交还所属 adapter，不读取、不展示，也不送入 compactor、completion judge、运行日志或其它 Provider。无法表达的语义 block 必须显式失败，不能静默丢失。
 - **Provider 错误**：SDK 异常必须在 adapter 内归一化为 `ProviderError(kind, retryable, safe_message, identity)`；错误正文、response body 和 SDK raw 对象不得穿过接缝。
 - **Token 用量**：Provider 只负责填充 `TokenUsage`，持久化由 `MeteredLLMClient` 装饰器旁路完成；统计故障不得影响模型响应。事件按日期/session/pid 追加，查询时全局汇总，不保存项目路径或消息正文。
+- **Application API**：宿主只通过 `NovalRuntime` / `AgentSession` 与 JSON-safe DTO 操作内核，不直接组装 Agent。一个 Runtime 可并行多个 Session；所有可变状态必须 per-session 隔离，同一 Session 的第二个 turn 立即返回 `session_busy`，内核不排队。Session 创建/执行不得调用 `os.chdir()` 或修改进程环境。事件 live-only；ASK 缺 PermissionHandler 时 fail-closed；持久 Session 持有跨进程 writer lease。每次模型调用必须生成 request id，并可通过安全 request journal 重建 canonical/adapter input，不保存凭证或 opaque thinking。
 - **Session / checkpoint v2**：原始 Session JSONL 只写 canonical schema v2，是唯一真相源，永不因压缩删除或改写；v1 Session 明确拒绝且不迁移、不改写、不删除，列表标记为不兼容。checkpoint v2 是可回退、可重建的派生态，只能覆盖完整对话回合；旧 checkpoint 不复用。恢复使用最新有效 checkpoint + 原始尾部。
 - **可测试性**：`LLMClient` 必须能被 mock，使整条 agent 循环可在不联网、不烧钱的情况下测试。
 - **循环安全**：agent 循环必须有 `max_steps` 上限，达到上限优雅停止。
@@ -78,6 +79,8 @@
 
 ```
 noval/
+  api.py        # JSON-safe host contracts：options/results/events/errors
+  application.py # NovalRuntime + isolated AgentSession composition
   config.py     # 读 ~/.noval/settings.json + 默认值合并
   messages.py   # Provider-neutral canonical message/block/replay state
   client.py     # LLMClient + OpenAI-compatible/Anthropic adapters   [接缝1]
@@ -88,12 +91,14 @@ noval/
   executor.py   # 执行管道（含 Context 注入）                 [接缝3]
   permissions.py # 会话级权限状态与唯一决策入口
   usage.py      # Token 计量装饰器、按日 JSONL 事件与汇总
+  requests.py   # request id、来源 journal 与安全请求重建
   context.py    # active context 预算、增量压缩与 checkpoint
   task.py       # 任务完成判定：主模型执行，judge_model 判定
   hooks.py      # 项目级 lifecycle hooks、CommandHook 与验证反馈
   skills.py     # 兼容 SKILL.md 目录包的发现、索引与受控运行
   mcp.py        # MCP client：server 发现、轻量索引与 stdio 工具调用
-  agent.py      # 对话循环(含 max_steps) + CLI 入口
+  agent.py      # 对话循环(含 max_steps)，不负责宿主依赖组装
+  cli.py        # Application API 的终端宿主适配器
 ```
 
 - `tools.py` 是框架，`builtins.py` 是工具实现，二者分离（`__init__.py` 导入 builtins 触发注册）。

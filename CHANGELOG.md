@@ -4,6 +4,31 @@
 
 ## [Unreleased]
 
+### Added
+
+- Headless/Application API with `NovalRuntime`, isolated `AgentSession`
+  handles, JSON-safe options/results/events/errors, per-session persistence
+  selection, and native dependency factories.
+- Concurrent execution across Sessions with immediate same-session
+  `session_busy`, fail-closed serializable permission handlers, live lifecycle
+  events, cooperative cancellation, and owned-subprocess termination.
+- Cross-platform advisory writer leases for persistent Sessions, reported as
+  retryable `session_locked` conflicts and released on close.
+- Append-only request provenance journals and `inspect_request`, covering
+  canonical messages, tool schemas, checkpoint source, provider identity, and
+  adapter-owned credential-free request rendering without opaque thinking.
+- Golden API v1 contracts and parallel isolation coverage for workdirs,
+  messages, permissions, Hooks, Skills, MCP, events, usage, failures, and
+  process state.
+
+### Changed
+
+- The CLI is now a host adapter over the Application API and no longer
+  assembles `Agent` dependencies or changes process cwd.
+- Runtime logs carry Session, Turn, and Request correlation ids. CLI enables
+  runtime logging explicitly; embedded runtimes leave host logging unchanged
+  by default.
+
 ## [0.9.0] - 2026-07-17
 
 ### Added

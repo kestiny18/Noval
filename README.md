@@ -30,7 +30,7 @@ Noval 起源于一次最朴素的 tool-calling 实验：由人亲自扮演工具
 
 如果你正在构建自己的 Code Agent 或领域 Agent，希望保留完全可读、可替换、可测试的执行内核，而不是把产品交给一个巨型黑盒，Noval 就是为你准备的。它仍处于 `0.x`，不提供拖拽式工作流或“一键自治团队”；它提供的是一块可以长期演进的地基。
 
-> **当前状态**：`v0.9.0` 是当前稳定版本，核心消息协议已完成 Provider 中立化，并提供 OpenAI-compatible 与 Anthropic Messages adapters；Session 与 checkpoint 同步升级到 canonical schema v2。
+> **当前状态**：`v0.9.0` 是当前已发布稳定版本。主分支正在形成 `v1.0.0`：在 Provider-neutral 内核之上增加可嵌入的 Headless/Application API、多 Session 隔离和请求重建能力。
 
 ## 核心设计
 
@@ -40,15 +40,18 @@ Noval 起源于一次最朴素的 tool-calling 实验：由人亲自扮演工具
 - **工具状态显式化**：`Context` 携带 workdir、path-jail policy、read-tracker 和会话级 `PermissionController`，文件修改前必须先读并检查陈旧状态。
 - **上下文按生命周期归位**：稳定规则、环境探测、项目记忆和当前时间分层注入，避免污染缓存前缀。
 - **会话可恢复**：非 system 消息以 append-only JSONL 保存；恢复时按当前环境重建 system，并修复悬空 tool call。
+- **内核可嵌入**：`NovalRuntime` 可在一个进程内托管多个隔离 Session；CLI 只是第一个宿主适配器，未来 Desktop/Web 不需要重写 Agent 内核。
 
 ```mermaid
 flowchart LR
-    CLI["CLI / future UI"] --> Agent
+    Hosts["CLI / future Desktop / Web"] --> Runtime["NovalRuntime"]
+    Runtime --> Sessions["isolated AgentSession(s)"]
+    Sessions --> Agent
     Agent --> Client["LLMClient"]
     Client --> OpenAI["OpenAI-compatible adapter"]
     Client --> Anthropic["Anthropic Messages adapter"]
     Agent --> Executor["Tool executor"]
-    CLI --> Permissions["PermissionController"]
+    Sessions --> Permissions["PermissionController"]
     Executor --> Permissions
     Executor --> Registry["Tool registry"]
     Registry --> Builtins["Built-in / custom tools"]
@@ -137,6 +140,42 @@ python -m noval --resume 20260623-153012-ab12
 ```
 
 Windows 上如果 `python` 命中 Microsoft Store 占位程序，请把命令中的 `python` 换成 `py`。
+
+## Headless / Application API
+
+宿主应用不需要组装 `Agent`、Provider、SessionStore、ContextManager 或 Sandbox。它只创建一个进程级 `NovalRuntime`，再创建一个或多个 Session：
+
+```python
+from noval import (
+    NovalRuntime,
+    SessionOptions,
+    SessionPersistence,
+    TurnRequest,
+)
+
+with NovalRuntime.from_settings() as runtime:
+    session = runtime.create_session(SessionOptions(
+        workdir="C:/path/to/project",
+        persistence=SessionPersistence.PERSISTENT,
+    ))
+    result = session.run_turn(TurnRequest(
+        text="检查这个项目",
+        client_request_id="desktop-action-42",
+    ))
+    print(result.message.text if result.message else result.error.safe_message)
+```
+
+一个 Runtime 可以同时执行不同 Session；每个 Session 内只允许一个 active turn。相同 Session 的并发调用不会进入内核队列，而是立即抛出 `NovalError(code="session_busy", retryable=True)`，排队策略由宿主决定。Session 的消息、workdir、权限、Hooks、Skills、MCP、Context、Task、Usage、事件序列和子进程 runtime 均独立。
+
+`SessionPersistence.DEFAULT` 继承全局设置，`PERSISTENT` 使用 schema v2 JSONL，`EPHEMERAL` 只驻留内存。持久 Session 打开期间持有跨进程 writer lease；第二个写者收到可重试的 `session_locked`，关闭后 lease 立即释放。
+
+危险工具通过独立 `PermissionHandler` 返回 `ALLOW_ONCE`、`ALLOW_SESSION` 或 `DENY`。ASK 模式没有 handler 或 handler 异常时 fail-closed。`RuntimeEvent` 是 JSON-safe、Session 内单调排序的实时通知；它不持久化，也不是另一份真相源。事件 sink 异常不会中断回合。
+
+`cancel_active_turn()` 是协作式取消：它会阻止下一个模型/工具步骤，并终止该 Session 当前持有的子进程；不能强杀 Python 线程，也不能保证立即中断已阻塞的 Provider SDK，请求 timeout 仍是硬上限。`close()` 遇到 active turn 会返回 `session_busy` / `runtime_busy`，宿主应先取消、等待 terminal result，再关闭。
+
+每次模型调用都会生成 request id。宿主可从 `model.started` 事件取得 id，再调用 `session.inspect_request(request_id)` 重建 canonical messages、tool schema、checkpoint 来源和 adapter 自己渲染的安全请求形态。结果不包含 API key、authorization header、SDK raw response 或 opaque thinking/reasoning state。
+
+完整的离线双 Session 示例见 [`examples/headless-api`](examples/headless-api/README.md)。公共 DTO 都支持显式 `to_dict()` / `from_dict()`；wire key 为 snake_case，当前 schema version 为 1。
 
 ## 内置工具
 
@@ -298,7 +337,7 @@ project.json
 
 v0.9 不读取或迁移旧 schema v1 Session：会话列表会标记为不兼容，尝试恢复时返回明确错误，原文件保持不变。旧 checkpoint 同样不会复用。
 
-这部分已通过自动化测试与真实任务验证，包括多 workdir、中文路径、大历史、任务中断和进程强杀恢复。同一 session 不支持多进程并发写入。
+这部分已通过自动化测试与真实任务验证，包括多 workdir、中文路径、大历史、任务中断和进程强杀恢复。同一 Session 只允许一个 live writer；进程内重复打开返回 `session_already_open`，跨进程竞争返回 `session_locked`。
 
 ### 上下文压缩
 
@@ -310,7 +349,7 @@ v0.9 不读取或迁移旧 schema v1 Session：会话列表会标记为不兼容
 
 ## 运行日志
 
-运行日志默认写入 `~/.noval/logs/YYYY-MM-DD/noval-<session>-<pid>.log`，保留 14 天。不同进程各写一个文件，避免多会话互相争用；CLI 仍只显示必要的 INFO/WARNING，`httpx` 请求流水不再刷屏。
+运行日志默认写入 `~/.noval/logs/YYYY-MM-DD/noval-<invocation>-<pid>.log`，保留 14 天。不同进程各写一个文件，避免多会话互相争用；每条记录带 Session / Turn / Request 关联 id。CLI 显式启用这套日志，嵌入式 Runtime 默认不改宿主的 logging 配置。
 
 运行日志只记录工具名、参数名、耗时、错误和截断状态，不保存用户对话、工具参数值或工具输出；常见 API key、token、密码形态还会经过二次脱敏。它与上面的会话 JSONL 不同：会话为恢复上下文仍会保存明文正文。
 
@@ -329,6 +368,7 @@ v0.9 不读取或迁移旧 schema v1 Session：会话列表会标记为不兼容
 | `v0.8.0` | Hooks 与验证闭环：Pre 阻断、Post 诊断回流、Stop 修复再验证、配置指纹授权 | `v0.8.0` |
 | `v0.8.1` | Hooks 发布加固：所有候选结束均进入 Stop，严格校验 timeout 有限值 | `v0.8.1` |
 | `v0.9.0` | Provider 真中立：canonical messages、Session v2、OpenAI-compatible 与 Anthropic adapters | `v0.9.0` |
+| `v1.0.0` | 可嵌入稳定内核：多 Session Application API、并发/权限/取消、writer lease、实时事件与请求重建 | 开发中 |
 
 详细变化见 [CHANGELOG.md](CHANGELOG.md)。
 
@@ -351,9 +391,9 @@ python -m evals.context.run
 
 ## 当前状态与方向
 
-Noval 当前处于 `0.x` 阶段，核心能力包括工具注册表、统一 executor、会话持久化、上下文 checkpoint、Skills/MCP MVP、任务完成 judge、项目级 Hooks、运行日志和 Token 用量统计。它已经不是一次性原型，但公共接口仍会继续演进。
+Noval 当前已发布到 `0.9.x`，主分支正在准备 `v1.0.0`。核心能力包括工具注册表、统一 executor、会话持久化、上下文 checkpoint、Skills/MCP MVP、任务完成 judge、项目级 Hooks、运行日志、Token 用量统计，以及可嵌入的多 Session Application API。
 
-接下来的重点不是堆更多工具，而是验证 Provider-neutral transcript 与恢复行为、继续扩展其它平台硬沙箱，并推进可嵌入稳定内核。详细路线、版本门槛和设计权衡见 [DESIGN.md](DESIGN.md#能力演进路线)。
+接下来的重点不是堆更多工具，而是完成 v1.0 发布门禁，并在后续版本讨论 Desktop 宿主与 transport/SDK；这些宿主继续复用同一组 JSON-safe 公共契约。详细路线、版本门槛和设计权衡见 [DESIGN.md](DESIGN.md#能力演进路线)。
 
 ## 参与项目
 
