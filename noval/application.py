@@ -195,7 +195,6 @@ class AgentSession:
         self._permission_handler = permission_handler
         self._tool_names = tool_names
         self._request_journal = request_journal
-        self._turn_lock = threading.Lock()
         self._state_lock = threading.RLock()
         self._closed = False
         self._active_turn_id: Optional[str] = None
@@ -207,6 +206,10 @@ class AgentSession:
             return replace(self._base_info, is_open=not self._closed)
 
     def permission_state(self) -> PermissionStateView:
+        with self._state_lock:
+            return self._permission_state_locked()
+
+    def _permission_state_locked(self) -> PermissionStateView:
         return PermissionStateView(
             mode=self._permissions.mode,
             approved_tools=tuple(sorted(self._permissions.approved_tools)),
@@ -219,83 +222,70 @@ class AgentSession:
     def set_permission_handler(
         self, handler: Optional[PermissionHandler]
     ) -> None:
-        self._require_idle()
-        self._permission_handler = handler
+        with self._state_lock:
+            self._require_idle_locked()
+            self._permission_handler = handler
 
     def set_permission_mode(self, mode: PermissionMode) -> PermissionStateView:
-        self._require_idle()
-        self._permissions.set_mode(mode)
-        return self.permission_state()
+        with self._state_lock:
+            self._require_idle_locked()
+            self._permissions.set_mode(mode)
+            return self._permission_state_locked()
 
     def allow_tool(self, tool_name: str) -> PermissionStateView:
-        self._require_idle()
-        self._permissions.allow_tool(tool_name)
-        return self.permission_state()
+        with self._state_lock:
+            self._require_idle_locked()
+            self._permissions.allow_tool(tool_name)
+            return self._permission_state_locked()
 
     def revoke_tool(self, tool_name: str) -> PermissionStateView:
-        self._require_idle()
-        self._permissions.revoke_tool(tool_name)
-        return self.permission_state()
+        with self._state_lock:
+            self._require_idle_locked()
+            self._permissions.revoke_tool(tool_name)
+            return self._permission_state_locked()
 
     def reset_permissions(self) -> PermissionStateView:
-        self._require_idle()
-        self._permissions.reset()
-        return self.permission_state()
-
-    def _require_idle(self) -> None:
         with self._state_lock:
-            if self._closed:
-                raise NovalError(
-                    "session_closed",
-                    "Session is closed.",
-                    session_id=self._base_info.session_id,
-                )
-            if self._active_turn_id is not None:
-                raise NovalError(
-                    "session_busy",
-                    "Session has an active turn.",
-                    retryable=True,
-                    session_id=self._base_info.session_id,
-                    details={"active_turn_id": self._active_turn_id},
-                )
+            self._require_idle_locked()
+            self._permissions.reset()
+            return self._permission_state_locked()
+
+    def _require_idle_locked(self) -> None:
+        if self._closed:
+            raise NovalError(
+                "session_closed",
+                "Session is closed.",
+                session_id=self._base_info.session_id,
+            )
+        if self._active_turn_id is not None:
+            raise NovalError(
+                "session_busy",
+                "Session has an active turn.",
+                retryable=True,
+                session_id=self._base_info.session_id,
+                details={"active_turn_id": self._active_turn_id},
+            )
 
     def run_turn(self, request: TurnRequest) -> TurnResult:
         if not isinstance(request, TurnRequest):
             raise TypeError("request must be TurnRequest")
-        with self._state_lock:
-            if self._closed:
-                raise NovalError(
-                    "session_closed",
-                    "Session is closed.",
-                    session_id=self._base_info.session_id,
-                )
-        if not self._turn_lock.acquire(blocking=False):
-            with self._state_lock:
-                active_turn_id = self._active_turn_id
-            raise NovalError(
-                "session_busy",
-                "Session already has an active turn.",
-                retryable=True,
-                session_id=self._base_info.session_id,
-                details={"active_turn_id": active_turn_id},
-            )
-
         turn_id = "turn-" + uuid4().hex
-        self._process_runtime.begin_turn()
-        with self._state_lock:
-            self._active_turn_id = turn_id
+        self._runtime._admit_turn(self, turn_id)
         started = time.perf_counter()
         log_scope = runtime_log_context(
             session_id=self._base_info.session_id,
             turn_id=turn_id,
         )
-        log_scope.__enter__()
-        self._emit(
-            EventType.TURN_STARTED.value,
-            turn_id=turn_id,
-            payload={"client_request_id": request.client_request_id},
-        )
+        log_scope_entered = False
         try:
+            self._process_runtime.begin_turn()
+            log_scope.__enter__()
+            log_scope_entered = True
+            self._emit(
+                EventType.TURN_STARTED.value,
+                turn_id=turn_id,
+                payload={"client_request_id": request.client_request_id},
+            )
             outcome = self._agent.run_turn(request.text)
             result = self._result_from_outcome(
                 request, turn_id, outcome, started
@@ -342,22 +332,23 @@ class AgentSession:
             self._emit_terminal_failure(result)
             return result
         finally:
-            log_scope.__exit__(None, None, None)
+            if log_scope_entered:
+                log_scope.__exit__(None, None, None)
             with self._state_lock:
-                self._active_turn_id = None
-            self._turn_lock.release()
+                if self._active_turn_id == turn_id:
+                    self._active_turn_id = None
 
     def cancel_active_turn(self) -> bool:
         with self._state_lock:
             turn_id = self._active_turn_id
-        if turn_id is None:
-            return False
-        self._process_runtime.cancel()
-        self._emit(
-            EventType.TURN_CANCEL_REQUESTED.value,
-            turn_id=turn_id,
-        )
-        return True
+            if turn_id is None:
+                return False
+            self._process_runtime.cancel()
+            self._emit(
+                EventType.TURN_CANCEL_REQUESTED.value,
+                turn_id=turn_id,
+            )
+            return True
 
     def _active_turn(self) -> Optional[str]:
         with self._state_lock:
@@ -968,6 +959,19 @@ class NovalRuntime:
             current = self._sessions.get(session.info.session_id)
             if current is session:
                 del self._sessions[session.info.session_id]
+
+    def _admit_turn(self, session: AgentSession, turn_id: str) -> None:
+        # Runtime shutdown and Session turn admission share this lock order.
+        with self._lock:
+            with session._state_lock:
+                session._require_idle_locked()
+                if self._closed:
+                    raise NovalError(
+                        "runtime_closed",
+                        "Runtime is closed.",
+                        session_id=session.info.session_id,
+                    )
+                session._active_turn_id = turn_id
 
     def close(self) -> None:
         with self._lock:

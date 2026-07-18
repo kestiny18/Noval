@@ -109,6 +109,22 @@ def json_round_trip(value):
     return json.loads(json.dumps(value, ensure_ascii=False))
 
 
+def block_process_turn_start(session, monkeypatch):
+    entered = threading.Event()
+    proceed = threading.Event()
+    original = session._process_runtime.begin_turn
+
+    def blocked_begin_turn():
+        entered.set()
+        assert proceed.wait(5), "test did not release turn admission"
+        original()
+
+    monkeypatch.setattr(
+        session._process_runtime, "begin_turn", blocked_begin_turn
+    )
+    return entered, proceed
+
+
 def test_runtime_and_session_options_round_trip_and_reject_unknown_requests():
     runtime = RuntimeOptions(settings_path="C:/config/settings.json")
     session = SessionOptions(
@@ -392,6 +408,110 @@ def test_same_session_rejects_a_concurrent_turn_without_queueing(tmp_path):
     worker.join(2)
     assert results[0].status is TurnStatus.COMPLETED
     runtime.close()
+
+
+def test_session_close_cannot_overtake_turn_admission(tmp_path, monkeypatch):
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    runtime = NovalRuntime(
+        application_config(tmp_path),
+        client_factory=RecordingClientFactory(["done"]),
+    )
+    session = runtime.create_session(SessionOptions(
+        workdir=str(workdir),
+        persistence=SessionPersistence.EPHEMERAL,
+    ))
+    entered, proceed = block_process_turn_start(session, monkeypatch)
+    results = []
+    worker = threading.Thread(
+        target=lambda: results.append(session.run_turn(TurnRequest("first")))
+    )
+    worker.start()
+    assert entered.wait(2)
+
+    try:
+        with pytest.raises(NovalError) as busy:
+            session.close()
+        assert busy.value.code == "session_busy"
+    finally:
+        proceed.set()
+        worker.join(3)
+        if session.info.is_open:
+            session.close()
+        runtime.close()
+
+    assert not worker.is_alive()
+    assert results[0].status is TurnStatus.COMPLETED
+
+
+def test_permission_changes_cannot_overtake_turn_admission(
+    tmp_path, monkeypatch
+):
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    runtime = NovalRuntime(
+        application_config(tmp_path),
+        client_factory=RecordingClientFactory(["done"]),
+    )
+    session = runtime.create_session(SessionOptions(
+        workdir=str(workdir),
+        persistence=SessionPersistence.EPHEMERAL,
+    ))
+    entered, proceed = block_process_turn_start(session, monkeypatch)
+    results = []
+    worker = threading.Thread(
+        target=lambda: results.append(session.run_turn(TurnRequest("first")))
+    )
+    worker.start()
+    assert entered.wait(2)
+
+    try:
+        with pytest.raises(NovalError) as busy:
+            session.set_permission_mode(PermissionMode.FULL_ACCESS)
+        assert busy.value.code == "session_busy"
+        assert session.permission_state().mode is PermissionMode.ASK
+    finally:
+        proceed.set()
+        worker.join(3)
+        session.close()
+        runtime.close()
+
+    assert not worker.is_alive()
+    assert results[0].status is TurnStatus.COMPLETED
+
+
+def test_runtime_close_cannot_overtake_turn_admission(tmp_path, monkeypatch):
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    runtime = NovalRuntime(
+        application_config(tmp_path),
+        client_factory=RecordingClientFactory(["done"]),
+    )
+    session = runtime.create_session(SessionOptions(
+        workdir=str(workdir),
+        persistence=SessionPersistence.EPHEMERAL,
+    ))
+    entered, proceed = block_process_turn_start(session, monkeypatch)
+    results = []
+    worker = threading.Thread(
+        target=lambda: results.append(session.run_turn(TurnRequest("first")))
+    )
+    worker.start()
+    assert entered.wait(2)
+
+    try:
+        with pytest.raises(NovalError) as busy:
+            runtime.close()
+        assert busy.value.code == "runtime_busy"
+    finally:
+        proceed.set()
+        worker.join(3)
+        if session.info.is_open:
+            session.close()
+        runtime.close()
+
+    assert not worker.is_alive()
+    assert results[0].status is TurnStatus.COMPLETED
 
 
 def test_different_sessions_execute_in_parallel_without_message_leakage(tmp_path):
