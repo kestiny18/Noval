@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from noval.agent import (
-    Agent, _choose_resume_session, _create_permission_controller, _format_turn,
+    Agent, AgentTurnOutcome, _choose_resume_session, _create_permission_controller, _format_turn,
     _format_reasoning_summary, _handle_permissions_command, _handle_reasoning_command,
     _read_turn,
     _supports_color, _tool_arg_keys, _turn_prefix, detect_environment,
@@ -70,6 +70,60 @@ def test_no_tool_call_returns_directly():
     client = MockClient([mock_text("你好！")])
     agent = Agent(client, cfg())
     assert agent.send("hi") == "你好！"
+
+
+def test_structured_agent_turn_outcome_replaces_metric_side_channel():
+    client = MockClient([
+        mock_text(
+            "done",
+            meta={"duration_ms": 250},
+            usage=TokenUsage(12, 3, 15, reasoning_tokens=2),
+        )
+    ])
+    agent = Agent(client, cfg())
+
+    outcome = agent.run_turn("hi")
+
+    assert isinstance(outcome, AgentTurnOutcome)
+    assert outcome.message == assistant_message(
+        "done", provenance=ProviderIdentity("mock", "mock", "mock").provenance()
+    )
+    assert outcome.text == "done"
+    assert outcome.stop_reason == "completed"
+    assert outcome.metrics.api_calls == 1
+    assert outcome.metrics.llm_duration_ms == 250
+    assert outcome.usage == TokenUsage(12, 3, 15, reasoning_tokens=2)
+
+
+def test_agent_observer_is_ordered_and_failure_is_isolated(tmp_path):
+    target = tmp_path / "a.txt"
+    target.write_text("hello", encoding="utf-8")
+    events = []
+
+    def observer(event_type, payload):
+        events.append((event_type, payload))
+        if event_type == "tool.completed":
+            raise RuntimeError("observer is not control flow")
+
+    client = MockClient([
+        mock_tool_call("c1", "read_file", json.dumps({"path": str(target)})),
+        mock_text("done"),
+    ])
+    outcome = Agent(client, cfg(), workdir=str(tmp_path), observer=observer).run_turn("read")
+
+    assert outcome.text == "done"
+    event_types = [event_type for event_type, _ in events]
+    assert event_types == [
+        "model.started",
+        "model.completed",
+        "tool.started",
+        "tool.completed",
+        "model.started",
+        "model.completed",
+    ]
+    completed = next(payload for event, payload in events if event == "tool.completed")
+    assert completed["tool_name"] == "read_file"
+    assert completed["content"].endswith("hello")
 
 
 def test_provider_receives_schema_only_tool_definitions(tmp_path):

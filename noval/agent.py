@@ -10,12 +10,12 @@ import logging
 import os
 import platform
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
-from .client import LLMClient, LLMResponse, ToolDefinition
+from .client import LLMClient, LLMResponse, TokenUsage, ToolDefinition
 from .config import Config
 from .confinement import ConfinementPolicy, PathAccess
 from .context import ContextManager
@@ -151,6 +151,7 @@ class TurnMetrics:
     llm_duration_ms: float = 0.0
     tool_calls: int = 0
     thinking_detected: bool = False
+    usage: Optional[TokenUsage] = None
 
     def observe(self, response: LLMResponse) -> None:
         self.api_calls += 1
@@ -163,6 +164,53 @@ class TurnMetrics:
             self.has_reasoning_usage = True
         if response.meta.get("thinking_enabled") is True:
             self.thinking_detected = True
+        if response.usage is not None:
+            self.usage = _merge_token_usage(self.usage, response.usage)
+
+    def snapshot(self) -> "TurnMetrics":
+        return replace(self)
+
+
+def _merge_token_usage(
+    current: Optional[TokenUsage], incoming: TokenUsage,
+) -> TokenUsage:
+    if current is None:
+        return incoming
+
+    def optional_sum(left: Optional[int], right: Optional[int]) -> Optional[int]:
+        if left is None and right is None:
+            return None
+        return (left or 0) + (right or 0)
+
+    return TokenUsage(
+        prompt_tokens=current.prompt_tokens + incoming.prompt_tokens,
+        completion_tokens=current.completion_tokens + incoming.completion_tokens,
+        total_tokens=current.total_tokens + incoming.total_tokens,
+        cache_hit_tokens=optional_sum(
+            current.cache_hit_tokens, incoming.cache_hit_tokens,
+        ),
+        cache_miss_tokens=optional_sum(
+            current.cache_miss_tokens, incoming.cache_miss_tokens,
+        ),
+        reasoning_tokens=optional_sum(
+            current.reasoning_tokens, incoming.reasoning_tokens,
+        ),
+    )
+
+
+@dataclass(frozen=True)
+class AgentTurnOutcome:
+    message: ConversationMessage
+    stop_reason: str
+    metrics: TurnMetrics
+    usage: Optional[TokenUsage] = None
+
+    @property
+    def text(self) -> str:
+        return self.message.text
+
+
+AgentObserver = Callable[[str, Dict[str, Any]], None]
 
 
 def _skill_update_context(diff: SkillSnapshotDiff) -> str:
@@ -228,6 +276,7 @@ class Agent:
         confinement: Optional[ConfinementPolicy] = None,
         process_runtime: Optional[ProcessRuntime] = None,
         sandbox_policy: Optional[SandboxPolicy] = None,
+        observer: Optional[AgentObserver] = None,
     ):
         self.client = client
         self.config = config
@@ -236,6 +285,7 @@ class Agent:
         self.store = store
         self.context_manager = context_manager
         self.task_controller = task_controller or TaskController()
+        self.observer = observer
         # workdir 是 per-invocation 状态：本次启动各自决定，不存进全局 settings.json
         self.workdir = Path(workdir).resolve() if workdir else Path.cwd()
         self.confinement = confinement or ConfinementPolicy.workspace(self.workdir)
@@ -316,8 +366,23 @@ class Agent:
         except Exception:
             log.warning("会话持久化写入失败，已降级为仅内存会话", exc_info=True)
 
+    def _turn_outcome(
+        self, message: ConversationMessage, stop_reason: str,
+    ) -> AgentTurnOutcome:
+        metrics = self.last_turn_metrics.snapshot()
+        return AgentTurnOutcome(
+            message=message,
+            stop_reason=stop_reason,
+            metrics=metrics,
+            usage=metrics.usage,
+        )
+
     def send(self, user_input: str) -> str:
-        """处理一条用户输入，跑完工具循环，返回最终助手文本。"""
+        """Compatibility wrapper returning only the final assistant text."""
+        return self.run_turn(user_input).text
+
+    def run_turn(self, user_input: str) -> AgentTurnOutcome:
+        """Run one user turn and return its structured internal outcome."""
         self.last_turn_metrics = TurnMetrics()
         self._ephemeral_turn_context = self._refresh_dynamic_runtime_context_for_turn()
         # 当前时间随每个回合注入 user 消息(而非进 system prompt)：system 前缀因此
@@ -361,8 +426,11 @@ class Agent:
                                 "任务结束验证仍未通过，且收到相同诊断后没有执行新的修复操作。\n\n"
                                 + stop_feedback
                             )
-                            self._append_message(assistant_message(blocked))
-                            return blocked
+                            blocked_message = assistant_message(blocked)
+                            self._append_message(blocked_message)
+                            return self._turn_outcome(
+                                blocked_message, "validation_stalled",
+                            )
                         self._append_message(user_message(
                             f"{stop_feedback}\n\n"
                             "这是框架生成的结束验证反馈。请根据诊断继续使用工具修复；"
@@ -373,11 +441,16 @@ class Agent:
                         continue
                     if used_tools:
                         self.task_controller.verify_completion(final)
-                    return final
+                    return self._turn_outcome(resp.message, "completed")
 
                 used_tools = True
                 for call in resp.message.tool_calls:
                     log.info("calling tool=%s arg_keys=%s", call.name, _tool_arg_keys(call.arguments))
+                    self._emit(
+                        "tool.started",
+                        tool_name=call.name,
+                        argument_keys=_tool_arg_keys(call.arguments),
+                    )
                     pre_batches: List[HookBatchResult] = []
 
                     def before_execute(tool, args, effective_risk):
@@ -415,11 +488,22 @@ class Agent:
                     self._append_message(tool_result_message(
                         call.id, content, is_error=result.is_error,
                     ))
+                    self._emit(
+                        "tool.completed",
+                        tool_name=call.name,
+                        content=content,
+                        is_error=result.is_error,
+                        truncated=result.truncated,
+                        duration_ms=result.meta.get("duration_ms"),
+                    )
         except KeyboardInterrupt:
             # Ctrl+C 中断「当前任务」而非「整个会话」：补齐未回填的 tool 响应让历史合法，
             # 再返回提示。否则下一轮请求会因「有 tool_call 没 tool 响应」被 API 拒绝。
             self._answer_pending_tool_calls()
-            return "（已中断当前任务，会话保留。）"
+            return self._turn_outcome(
+                assistant_message("（已中断当前任务，会话保留。）"),
+                "interrupted",
+            )
         finally:
             self._ephemeral_turn_context = None
 
@@ -445,10 +529,23 @@ class Agent:
                 "已达到最大工具调用步数，无法继续自动修复；请保留未通过状态。"
             ))
             final = "已达到最大工具调用步数，且 Stop 验证仍未通过。\n\n" + stop_feedback
-            self._append_message(assistant_message(final))
-            return final
+            final_message = assistant_message(final)
+            self._append_message(final_message)
+            return self._turn_outcome(final_message, "max_steps_validation_failed")
         self.task_controller.verify_completion(final)
-        return final
+        if resp.message.text:
+            final_message = resp.message
+        else:
+            final_message = assistant_message(final)
+        return self._turn_outcome(final_message, "max_steps")
+
+    def _emit(self, event_type: str, **payload: Any) -> None:
+        if self.observer is None:
+            return
+        try:
+            self.observer(event_type, payload)
+        except Exception:
+            log.warning("agent observer failed for event=%s", event_type, exc_info=True)
 
     def _run_hooks(
         self,
@@ -458,7 +555,15 @@ class Agent:
         status: Optional[str] = None,
         after_tools: Optional[set[str]] = None,
     ) -> HookBatchResult:
-        return self.hook_registry.run(
+        observed = tuple(sorted(after_tools or ()))
+        has_hooks = self.hook_registry.has_hooks(event)
+        if has_hooks:
+            self._emit(
+                "validation.started",
+                hook_event=event.value,
+                tool_name=tool_name,
+            )
+        result = self.hook_registry.run(
             event,
             runtime=self.process_runtime,
             permissions=self.context.permissions,
@@ -466,8 +571,17 @@ class Agent:
             max_output_chars=self.config.max_tool_output_chars,
             tool_name=tool_name,
             status=status,
-            after_tools=tuple(sorted(after_tools or ())),
+            after_tools=observed,
         )
+        if has_hooks:
+            self._emit(
+                "validation.completed",
+                hook_event=event.value,
+                tool_name=tool_name,
+                blocked=result.blocked,
+                result_count=len(result.results),
+            )
+        return result
 
     def _reconcile_hook_permissions(self) -> None:
         active = self.hook_registry.approval_keys()
@@ -483,7 +597,18 @@ class Agent:
         if self.context_manager is not None:
             self.messages = self.context_manager.prepare(self.messages, tools)
         request_messages = self._with_ephemeral_turn_context(self.messages)
+        self._emit(
+            "model.started",
+            message_count=len(request_messages),
+            tool_count=len(tools),
+        )
         response = self.client.complete(request_messages, _provider_tools(tools))
+        self._emit(
+            "model.completed",
+            provider=response.provider.provider,
+            model=response.provider.model,
+            has_tool_calls=bool(response.message.tool_calls),
+        )
         if self.context_manager is not None:
             self.context_manager.observe(request_messages, tools, response.usage)
         return response
