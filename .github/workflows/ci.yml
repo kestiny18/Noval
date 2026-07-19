@@ -88,3 +88,23 @@ jobs:
         run: python -m pip install -e ".[dev]"
       - name: Run real sandbox escape tests
         run: python -m pytest -q tests/test_bubblewrap.py tests/test_hooks.py
+
+  ci-gate:
+    name: CI gate
+    if: ${{ always() }}
+    needs: [test, package, bubblewrap]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every CI job to succeed
+        env:
+          TEST_RESULT: ${{ needs.test.result }}
+          PACKAGE_RESULT: ${{ needs.package.result }}
+          BUBBLEWRAP_RESULT: ${{ needs.bubblewrap.result }}
+        run: |
+          if [ "$TEST_RESULT" != "success" ] || \
+             [ "$PACKAGE_RESULT" != "success" ] || \
+             [ "$BUBBLEWRAP_RESULT" != "success" ]; then
+            echo "Required CI job failed: test=$TEST_RESULT package=$PACKAGE_RESULT bubblewrap=$BUBBLEWRAP_RESULT"
+            exit 1
+          fi

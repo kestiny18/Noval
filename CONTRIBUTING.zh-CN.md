@@ -39,9 +39,11 @@ def write_file(path: str, content: str) -> str:
 
 ## 提 PR 前
 
+- `main` 已受保护：请从分支发起 Pull Request，不要直接向默认分支 push。
 - `pytest -q` 全绿，并为新行为补测试（用 `MockClient` 可离线测整条循环）。
 - 改了公共契约、核心接缝或横切不变量，请新增或更新 ADR。
 - 英文规范文档先更新；用户可见含义变化时同步中文入口。
+- 等待必需的 `CI gate` 与 `Analyze Python` 通过，并解决全部 review conversation 后再合并。
 - 提交信息说清「做了什么 + 为什么」。
 
 ## 报 Issue

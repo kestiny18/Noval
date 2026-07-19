@@ -60,6 +60,8 @@ def inspect_file(path: str) -> str:
 
 ## Pull requests
 
+- `main` is protected: create a branch and pull request rather than pushing to
+  the default branch directly.
 - Keep one coherent outcome per PR.
 - Add or update tests for behavior changes.
 - Add an ADR for a new public contract, core seam, or cross-cutting invariant.
@@ -67,6 +69,8 @@ def inspect_file(path: str) -> str:
   when user-facing meaning changes.
 - Run `python -m pytest -q`, `python -m compileall -q noval examples evals`, and
   `git diff --check`.
+- Wait for the required `CI gate` and `Analyze Python` checks, and resolve every
+  review conversation before merging.
 - Report exact validation results. Do not claim tests that were not run.
 
 ## Issues
