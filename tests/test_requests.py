@@ -1,5 +1,8 @@
 import json
+import logging
 from pathlib import Path
+
+import pytest
 
 from noval.api import (
     EventType,
@@ -29,6 +32,7 @@ from noval.requests import (
     RequestSequence,
     current_request_id,
 )
+from noval.runtime_log import CorrelationFilter
 
 
 def request_config(tmp_path: Path) -> Config:
@@ -114,6 +118,66 @@ def test_request_recording_client_records_semantic_input_and_request_id():
     assert "FAKE_ADAPTER_PRIVATE_KEY" not in encoded
     assert "<redacted>" in encoded
     assert RequestInspection.from_dict(inspection.to_dict()) == inspection
+
+
+def test_model_request_logs_carry_request_id_without_payload(caplog):
+    caplog.handler.addFilter(CorrelationFilter())
+    client = RequestRecordingClient(
+        MockClient([mock_text("FAKE_PRIVATE_RESPONSE")]),
+        InMemoryRequestJournal(),
+        lambda: RequestContext("session-1", "turn-1"),
+        purpose="agent",
+        identity=ProviderIdentity("mock", "model", "mock"),
+    )
+
+    with caplog.at_level(logging.INFO, logger="noval.requests"):
+        client.complete_with_request(
+            [user_message("password=FAKE_PRIVATE_REQUEST")],
+            [],
+            request_id="request-correlated",
+        )
+
+    records = [
+        record for record in caplog.records
+        if record.name == "noval.requests" and "model request" in record.message
+    ]
+    assert [record.noval_request_id for record in records] == [
+        "request-correlated",
+        "request-correlated",
+    ]
+    rendered = "\n".join(record.getMessage() for record in records)
+    assert "model request started purpose=agent step=1" in rendered
+    assert "model request completed purpose=agent step=1" in rendered
+    assert "FAKE_PRIVATE_REQUEST" not in rendered
+    assert "FAKE_PRIVATE_RESPONSE" not in rendered
+
+
+def test_failed_model_request_log_is_correlated_without_exception_value(caplog):
+    class FailingClient(MockClient):
+        def complete(self, messages, tools):
+            raise RuntimeError("password=FAKE_PROVIDER_ERROR")
+
+    caplog.handler.addFilter(CorrelationFilter())
+    client = RequestRecordingClient(
+        FailingClient([]),
+        InMemoryRequestJournal(),
+        lambda: RequestContext("session-1", "turn-1"),
+        purpose="agent",
+        identity=ProviderIdentity("mock", "model", "mock"),
+    )
+
+    with caplog.at_level(logging.INFO, logger="noval.requests"):
+        with pytest.raises(RuntimeError, match="FAKE_PROVIDER_ERROR"):
+            client.complete_with_request(
+                [], [], request_id="request-failed"
+            )
+
+    failed = next(
+        record for record in caplog.records
+        if record.name == "noval.requests" and "model request failed" in record.message
+    )
+    assert failed.noval_request_id == "request-failed"
+    assert "FAKE_PROVIDER_ERROR" not in failed.getMessage()
 
 
 def test_adapter_inspection_payloads_exclude_credentials_and_opaque_thinking():

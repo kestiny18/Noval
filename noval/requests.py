@@ -8,6 +8,7 @@ import hashlib
 import json
 import logging
 import threading
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -394,7 +395,33 @@ class RequestRecordingClient:
         token = _CURRENT_REQUEST_ID.set(request_id)
         try:
             with runtime_log_context(request_id=request_id):
-                response = self.inner.complete(messages, tools)
+                started = time.perf_counter()
+                log.info(
+                    "model request started purpose=%s step=%s provider=%s "
+                    "model=%s messages=%s tools=%s",
+                    self.purpose,
+                    step,
+                    self.identity.provider,
+                    self.identity.model,
+                    len(messages),
+                    len(tools),
+                )
+                try:
+                    response = self.inner.complete(messages, tools)
+                except Exception:
+                    log.warning(
+                        "model request failed purpose=%s step=%s dur=%.1fms",
+                        self.purpose,
+                        step,
+                        (time.perf_counter() - started) * 1000,
+                    )
+                    raise
+                log.info(
+                    "model request completed purpose=%s step=%s dur=%.1fms",
+                    self.purpose,
+                    step,
+                    (time.perf_counter() - started) * 1000,
+                )
         finally:
             _CURRENT_REQUEST_ID.reset(token)
         response.meta = dict(response.meta)
