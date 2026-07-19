@@ -23,6 +23,9 @@ so public contracts may continue to evolve.
 
 ### Added
 
+- Root `.gitignore` plus `.llmignore` discovery filtering for built-in listing,
+  globbing, grep, and filename suggestions, with traversal-time directory
+  pruning and explicit-read behavior preserved.
 - Public philosophy, canonical design summary, ADR index, and ADR-0004 for
   principle-guided, invariant-enforced autonomy.
 - Structured GitHub Issue Forms, pull-request template, security policy,

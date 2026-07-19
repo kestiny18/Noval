@@ -26,6 +26,7 @@ from .permissions import PermissionController
 
 if TYPE_CHECKING:
     from .confinement import ConfinementPolicy
+    from .discovery import DiscoveryPolicy
     from .mcp import McpRegistry
     from .process import ProcessRuntime
     from .shell import ShellBackend
@@ -78,7 +79,8 @@ class Context:
 
     ``workdir`` anchors relative paths and child-process cwd. ``read_state`` is
     shared across file tools. ``process_runtime`` freezes the selected process
-    backend and sandbox policy, while ``permissions`` owns session authority.
+    backend and sandbox policy, ``discovery`` owns project ignore matching, and
+    ``permissions`` owns session authority.
     """
     workdir: Path
     read_state: Dict[str, ReadRecord] = field(default_factory=dict)
@@ -86,6 +88,7 @@ class Context:
     shell_backend: Optional["ShellBackend"] = None
     process_runtime: Optional["ProcessRuntime"] = None
     confinement: Optional["ConfinementPolicy"] = None
+    discovery: Optional["DiscoveryPolicy"] = None
     skills: Optional["SkillRegistry"] = None
     skills_auto_refresh: bool = False
     mcp: Optional["McpRegistry"] = None

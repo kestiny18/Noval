@@ -202,6 +202,21 @@ with NovalRuntime.from_settings() as runtime:
 
 文件类工具默认受 path-jail 限制：`read_file` / `list_directory` / `glob` / `grep` 只能读取解析后位于允许 read roots 内的路径，`write_file` / `edit_file` 只能写入允许 write roots 内的路径。默认 read/write roots 都是当前 `workdir`；嵌入方可用 `ConfinementPolicy.expanded_read(...)` 显式增加只读根。`FULL_ACCESS` 只跳过确认门，不关闭 path-jail。
 
+### 文件发现过滤
+
+Noval 会依次读取 workdir 根目录下的 `.gitignore` 和 `.llmignore`，并将 Git 风格规则用于内置文件发现。由于 `.llmignore` 后加载，它既可以添加排除规则，也可以用 `!` 重新包含路径。`list_directory`、`glob`、`grep` 和文件名建议会省略匹配项；递归搜索会在进入目录前剪枝。
+
+```gitignore
+# .llmignore
+node_modules/
+dist/
+build/
+target/
+*.map
+```
+
+它只是相关性和性能过滤器，不是访问控制边界。明确指定路径的 `read_file` 仍可读取文件，`run_bash` 等外部进程也不会继承这些规则。如果某条路径必须不可访问，应使用 path-jail 和子进程沙箱。
+
 `run_bash`、Skill 脚本、shell 探测和 MCP stdio 启动统一经过 `ProcessRuntime`。一次性命令使用 `run()`，MCP 由 `prepare()` 包装 command/args/env/cwd 后继续交给官方 SDK 管理双向 stdio。Linux 上会探测 Bubblewrap 的实际可用性，通过后才启用硬沙箱：系统运行目录只读、工作区可写、未授权宿主路径不可见，并使用独立 PID namespace；`--sandbox-network deny` 还会隔离网络 namespace。默认 `--sandbox auto` 在缺少可用后端时明确降级为 `NoSandbox`，`--sandbox required` 则 fail-closed，`--sandbox off` 表示显式关闭。策略是本次启动状态，不写入 session sidecar，`FULL_ACCESS` 也不会改变它。
 
 Ubuntu 24.04+ 若启用了 AppArmor 的 unprivileged user namespace 限制，需要安装并加载发行版提供的 `bwrap-userns-restrict` profile；Noval 的启动探测会把该问题作为 `NoSandbox` 原因明确报告。不要为了启用 Bubblewrap 而全局关闭 AppArmor 限制。

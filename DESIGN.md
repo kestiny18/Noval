@@ -40,6 +40,7 @@ flowchart LR
     Executor --> Registry["tool registry"]
     Executor --> Authority["permissions + project Hooks"]
     Executor --> Boundary["path jail + ProcessRuntime"]
+    Executor --> Discovery["project discovery filter"]
     Sessions --> State["canonical Session + checkpoints"]
     Sessions --> Evidence["events + request provenance + task ledger"]
 ```
@@ -75,6 +76,14 @@ must be rebuildable, ignorable, or safely degradable.
 Only `process.py` may invoke subprocesses. Shell commands, Skill scripts,
 environment probes, Hooks, and MCP stdio all use `ProcessRuntime`. Hard sandbox
 strength is reported only after a real capability probe.
+
+### Discovery seam
+
+File discovery is relevance policy, not authority. Built-in listing and search
+tools combine root `.gitignore` and `.llmignore` rules and prune ignored
+directories before traversal. Explicit reads and external processes remain
+unchanged; path confinement and the subprocess sandbox continue to own access
+boundaries.
 
 ## Operating principles
 

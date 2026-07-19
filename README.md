@@ -178,6 +178,28 @@ Return raw domain content on success. Raise `ToolError` only when the tool can
 provide a corrective domain message. The executor owns generic failures,
 permission, timeout, truncation, redaction, and logging.
 
+### Discovery filtering
+
+At the workdir root, Noval combines `.gitignore` followed by `.llmignore` for
+built-in file discovery. Both files use Git-style patterns; because
+`.llmignore` is loaded last, it can add exclusions or re-include paths with
+`!`. `list_directory`, `glob`, `grep`, and missing-file suggestions omit
+matches, and recursive searches prune ignored directories before descending.
+
+```gitignore
+# .llmignore
+node_modules/
+dist/
+build/
+target/
+*.map
+```
+
+This is a relevance and performance filter, not an access-control boundary.
+An explicit `read_file` path remains readable, and external processes such as
+`run_bash` do not inherit these rules. Use path confinement and the subprocess
+sandbox when a path must be inaccessible.
+
 Noval reuses established extension formats instead of inventing a private
 ecosystem:
 

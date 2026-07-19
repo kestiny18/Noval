@@ -21,6 +21,7 @@ from .client import LLMClient, LLMResponse, TokenUsage, ToolDefinition
 from .config import Config
 from .confinement import ConfinementPolicy, PathAccess
 from .context import ContextManager
+from .discovery import DiscoveryPolicy
 from .executor import Approver, execute_tool_call
 from .hooks import (
     HookBatchResult, HookEvent, HookRegistry, hook_index_context, hook_update_context,
@@ -340,6 +341,7 @@ class Agent:
             shell_backend=shell_backend,
             process_runtime=self.process_runtime,
             confinement=self.confinement,
+            discovery=DiscoveryPolicy(self.workdir),
             permissions=permissions or PermissionController(),
             skills=self.skill_registry,
             skills_auto_refresh=self._skills_auto_refresh,

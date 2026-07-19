@@ -17,9 +17,12 @@ import re
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+from pathspec import GitIgnoreSpec
+
 from .confinement import (
     PathAccess, PathConfinementError, assert_path_allowed, is_path_allowed,
 )
+from .discovery import DiscoveryPolicy
 from .process import ProcessRuntime, ProcessRuntimeError, ProcessSpec, ProcessTimeout
 from .tools import Context, Risk, ToolError, tool
 from .shell import resolve_shell_backend
@@ -35,10 +38,6 @@ LIST_SKILLS_DEFAULT_LIMIT = 20
 LIST_SKILLS_MAX_LIMIT = 100
 LIST_MCP_TOOLS_DEFAULT_LIMIT = 50
 LIST_MCP_TOOLS_MAX_LIMIT = 200
-# Exclude noisy version-control directories from searches.
-_VCS_DIRS = {".git", ".svn", ".hg", ".bzr", ".jj", ".sl"}
-
-
 # ---------------------------------------------------------------------------
 # Shared infrastructure.
 # ---------------------------------------------------------------------------
@@ -106,18 +105,29 @@ def _rel(ctx: Context, p: Path) -> str:
         return str(p.resolve())
 
 
-def _suggest(p: Path) -> Optional[str]:
+def _discovery_policy(ctx: Context) -> DiscoveryPolicy:
+    if ctx.discovery is None:
+        ctx.discovery = DiscoveryPolicy(ctx.workdir)
+    ctx.discovery.refresh()
+    return ctx.discovery
+
+
+def _suggest(ctx: Context, p: Path) -> Optional[str]:
     """Suggest the closest sibling filename when a path is not found."""
     parent = p.parent
     if not parent.is_dir():
         return None
-    names = [e.name for e in parent.iterdir()]
+    policy = _discovery_policy(ctx)
+    names = [
+        entry.name for entry in parent.iterdir()
+        if not policy.is_ignored(entry, is_dir=entry.is_dir())
+    ]
     close = difflib.get_close_matches(p.name, names, n=1, cutoff=0.6)
     return close[0] if close else None
 
 
 def _not_found(ctx: Context, path: str, p: Path) -> ToolError:
-    sugg = _suggest(p)
+    sugg = _suggest(ctx, p)
     hint = f"; did you mean '{sugg}'?" if sugg else ""
     return ToolError(f"file '{path}' not found (workdir: {ctx.workdir}){hint}")
 
@@ -274,11 +284,28 @@ def _read_file_window_note(
     )
 
 
-def _walk_files(root: Path):
+def _walk_files(root: Path, policy: DiscoveryPolicy):
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in _VCS_DIRS]  # Prune .git and similar directories in place.
+        current = Path(dirpath)
+        dirnames[:] = [
+            name for name in dirnames
+            if not policy.is_ignored(current / name, is_dir=True)
+        ]
         for fn in filenames:
-            yield Path(dirpath) / fn
+            candidate = current / fn
+            if not policy.is_ignored(candidate, is_dir=False):
+                yield candidate
+
+
+def _glob_spec(pattern: str) -> GitIgnoreSpec:
+    normalized = str(pattern).replace("\\", "/").strip()
+    if not normalized:
+        raise ToolError("glob pattern must not be empty")
+    normalized = normalized.lstrip("/")
+    try:
+        return GitIgnoreSpec.from_lines([f"/{normalized}"])
+    except Exception as error:
+        raise ToolError(f"invalid glob pattern: {error}") from error
 
 
 # ===========================================================================
@@ -486,9 +513,21 @@ def list_directory(ctx: Context, path: str = ".") -> str:
         raise _not_found(ctx, path, p)
     if not p.is_dir():
         raise ToolError(f"'{path}' is not a directory; use read_file for files")
-    entries = sorted(p.iterdir(), key=lambda e: (e.is_file(), e.name.lower()))
+    policy = _discovery_policy(ctx)
+    raw_entries = list(p.iterdir())
+    entries = sorted(
+        (
+            entry for entry in raw_entries
+            if not policy.is_ignored(entry, is_dir=entry.is_dir())
+        ),
+        key=lambda entry: (entry.is_file(), entry.name.lower()),
+    )
     lines = [f"{e.name}{'/' if e.is_dir() else ''}" for e in entries]
-    return "\n".join(lines) if lines else "(empty directory)"
+    if lines:
+        return "\n".join(lines)
+    if raw_entries:
+        return "(empty directory or all entries ignored by discovery rules)"
+    return "(empty directory)"
 
 
 @tool(risk=Risk.READ, param_descriptions={
@@ -500,12 +539,28 @@ def glob(ctx: Context, pattern: str, path: str = ".") -> str:
     root = _resolve(ctx, path)
     if not root.is_dir():
         raise ToolError(f"'{path}' is not a valid directory")
-    hits = [Path(m) for m in _glob.glob(str(root / pattern), recursive=True)]
+    policy = _discovery_policy(ctx)
+    normalized_pattern = str(pattern).replace("\\", "/")
+    recursive = "**" in normalized_pattern
+    matcher = _glob_spec(pattern) if recursive else None
+    if policy.is_ignored(root, is_dir=True):
+        hits = []
+    elif recursive:
+        hits = list(_walk_files(root, policy))
+    else:
+        hits = [Path(match) for match in _glob.iglob(str(root / pattern))]
     omitted = 0
     files = []
     for m in hits:
-        if not m.is_file():
+        if not m.is_file() or policy.is_ignored(m, is_dir=False):
             continue
+        if matcher is not None:
+            try:
+                relative = m.relative_to(root).as_posix()
+            except ValueError:
+                continue
+            if not matcher.match_file(relative):
+                continue
         if not _allowed_for_read(ctx, m):
             omitted += 1
             continue
@@ -546,7 +601,11 @@ def grep(ctx: Context, pattern: str, path: str = ".", glob_filter: str = "",
     if not root.exists():
         raise _not_found(ctx, path, root)
 
-    raw_files = [root] if root.is_file() else list(_walk_files(root))
+    policy = _discovery_policy(ctx)
+    if policy.is_ignored(root, is_dir=root.is_dir()):
+        raw_files = []
+    else:
+        raw_files = [root] if root.is_file() else list(_walk_files(root, policy))
     omitted = 0
     files = []
     for f in raw_files:
