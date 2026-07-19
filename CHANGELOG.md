@@ -23,6 +23,8 @@ so public contracts may continue to evolve.
 - Structured GitHub Issue Forms, pull-request template, security policy,
   Dependabot configuration, CodeQL workflow, package-build smoke checks, and a
   non-publishing release verification workflow.
+- A stable aggregate `CI gate` and a protected-main pull-request delivery
+  policy for repository changes.
 
 ## [0.10.0] - 2026-07-19
 

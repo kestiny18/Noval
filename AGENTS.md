@@ -191,16 +191,22 @@ told what to correct.
 
 ## Delivery workflow
 
+- `main` is protected. Never push directly to it. Deliver through a short-lived
+  branch and pull request.
 - Validate before staging, committing, or pushing.
 - Inspect the actual diff and sensitive content.
 - Run risk-proportionate tests plus `git diff --check`.
 - If validation fails or cannot run, keep the changes uncommitted and report the
   blocker.
+- Before merge, the pull request must pass the required `CI gate` and
+  `Analyze Python` checks and resolve all review conversations. An emergency
+  maintainer bypass still goes through a pull request and must be documented.
 - After a successful push, update every related Issue with branch/commit,
   completed scope, validation, remaining work, and blockers.
 - Close an Issue only when its complete acceptance criteria are satisfied.
-- A clear, fully validated branch should not remain abandoned; merge to `main`
-  and synchronize its Issues unless human review is explicitly required.
+- A clear, fully validated branch should not remain abandoned; merge its pull
+  request to `main` and synchronize its Issues unless human review is
+  explicitly required.
 
 ## Repository shape
 
