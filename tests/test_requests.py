@@ -23,6 +23,7 @@ from noval.config import Config
 from noval.messages import AdapterReplayState, assistant_message, user_message
 from noval.requests import (
     InMemoryRequestJournal,
+    JsonlRequestJournal,
     RequestContext,
     RequestRecordingClient,
     RequestSequence,
@@ -177,6 +178,89 @@ def test_request_steps_are_shared_across_agent_and_judge_clients():
 
     assert journal.get("request-agent").step == 1
     assert journal.get("request-judge").step == 2
+
+
+def test_jsonl_request_journal_deduplicates_repeated_request_objects(tmp_path):
+    path = tmp_path / "requests.jsonl"
+    journal = JsonlRequestJournal(path, "session-1")
+    tools = tuple({
+        "name": f"tool-{index}",
+        "description": "shared tool description " * 20,
+        "input_schema": {
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+        },
+    } for index in range(8))
+    adapter_tools = [{
+        "type": "function",
+        "function": {
+            "name": tool["name"],
+            "description": tool["description"],
+            "parameters": tool["input_schema"],
+        },
+    } for tool in tools]
+    messages = []
+    inspections = []
+    for step in range(1, 4):
+        messages.append({
+            "role": "user" if step == 1 else "tool",
+            "blocks": [{"type": "text", "text": f"message-{step}" * 50}],
+        })
+        adapter_messages = [{
+            "role": message["role"],
+            "content": message["blocks"][0]["text"],
+        } for message in messages]
+        inspection = RequestInspection(
+            request_id=f"request-{step}",
+            session_id="session-1",
+            turn_id="turn-1",
+            purpose="agent",
+            step=step,
+            timestamp=f"2026-07-19T00:00:0{step}.000Z",
+            provider={"provider": "mock", "model": "model", "adapter": "mock"},
+            canonical_messages=tuple(messages),
+            tools=tools,
+            adapter_request={
+                "model": "model",
+                "messages": adapter_messages,
+                "tools": adapter_tools,
+                "tool_choice": "auto",
+            },
+        )
+        journal.append(inspection)
+        inspections.append(inspection)
+
+    naive_size = sum(
+        len(json.dumps(item.to_dict(), ensure_ascii=False).encode("utf-8")) + 1
+        for item in inspections
+    )
+    assert path.stat().st_size < naive_size * 0.6
+    assert journal.get("request-1") == inspections[0]
+    assert JsonlRequestJournal(path, "session-1").get("request-3") == inspections[2]
+
+
+def test_jsonl_request_journal_reads_legacy_full_inspection_rows(tmp_path):
+    path = tmp_path / "requests.jsonl"
+    inspection = RequestInspection(
+        request_id="request-legacy",
+        session_id="session-1",
+        turn_id="turn-1",
+        purpose="agent",
+        step=1,
+        timestamp="2026-07-19T00:00:01.000Z",
+        provider={"provider": "mock", "model": "model", "adapter": "mock"},
+        canonical_messages=({"role": "user", "blocks": []},),
+        tools=(),
+        adapter_request={"model": "model", "messages": []},
+    )
+    path.write_text(
+        json.dumps(inspection.to_dict(), ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+    assert JsonlRequestJournal(path, "session-1").get(
+        "request-legacy"
+    ) == inspection
 
 
 def test_persistent_request_can_be_inspected_after_session_resume(tmp_path):
