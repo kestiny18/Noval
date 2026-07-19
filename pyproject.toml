@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=77.0.3"]
+requires = ["setuptools>=83.0.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -24,7 +24,7 @@ classifiers = [
 dependencies = ["openai>=1.0", "mcp>=1,<2"]
 
 [project.optional-dependencies]
-dev = ["pytest>=7"]
+dev = ["pytest>=9.1.1"]
 anthropic = ["anthropic>=0.40,<1"]
 
 [project.urls]
