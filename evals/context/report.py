@@ -1,4 +1,4 @@
-"""context Eval 报告输出。只消费普通 dict，不依赖 Noval 运行时。"""
+"""Render context Eval reports from plain dictionaries without runtime dependencies."""
 from __future__ import annotations
 
 import json
@@ -20,19 +20,19 @@ def render_markdown(report: Dict[str, Any]) -> str:
     lines = [
         "# Context Eval Report",
         "",
-        f"- 用例：{summary['evaluated_count']}/{summary['case_count']}",
-        f"- 通过：{summary['passed_count']}",
-        f"- 硬失败：{summary['hard_failure_count']}",
-        f"- 加权分：{summary['weighted_score']}",
-        f"- 模型：{metadata.get('model') or '离线候选'}",
-        f"- Prompt version：{metadata['prompt_version']}",
-        f"- Prompt hash：{metadata.get('prompt_hash') or 'unknown'}",
-        f"- Commit：{metadata.get('git_commit') or 'unknown'}",
-        f"- 工作树：{'dirty' if metadata.get('git_dirty') else 'clean'}",
+        f"- Cases: {summary['evaluated_count']}/{summary['case_count']}",
+        f"- Passed: {summary['passed_count']}",
+        f"- Hard failures: {summary['hard_failure_count']}",
+        f"- Weighted score: {summary['weighted_score']}",
+        f"- Model: {metadata.get('model') or 'offline candidate'}",
+        f"- Prompt version: {metadata['prompt_version']}",
+        f"- Prompt hash: {metadata.get('prompt_hash') or 'unknown'}",
+        f"- Commit: {metadata.get('git_commit') or 'unknown'}",
+        f"- Worktree: {'dirty' if metadata.get('git_dirty') else 'clean'}",
         "",
-        "## 分项得分",
+        "## Category Scores",
         "",
-        "| 维度 | 权重 | 通过 | 得分 |",
+        "| Category | Weight | Passed | Score |",
         "|---|---:|---:|---:|",
     ]
     for category, detail in summary["category_scores"].items():
@@ -46,9 +46,9 @@ def render_markdown(report: Dict[str, Any]) -> str:
         f"{concision['passed']}/{concision['total']} | "
         f"{round(concision['passed'] / max(1, concision['total']) * 100, 1)} |",
         "",
-        "## 用例结果",
+        "## Case Results",
         "",
-        "| 用例 | 分数 | 结果 | 硬失败 |",
+        "| Case | Score | Result | Hard Failures |",
         "|---|---:|---|---|",
     ])
     for result in report["results"]:
@@ -59,16 +59,16 @@ def render_markdown(report: Dict[str, Any]) -> str:
         )
     failed = [result for result in report["results"] if not result["passed"]]
     if failed:
-        lines.extend(["", "## 失败详情", ""])
+        lines.extend(["", "## Failure Details", ""])
         for result in failed:
             lines.append(f"### {result['case_id']} — {result['title']}")
             lines.append("")
             for failure in result["hard_failures"]:
-                lines.append(f"- **{failure['code']}**：{failure['message']}")
+                lines.append(f"- **{failure['code']}**: {failure['message']}")
             for assertion in result["assertions"]:
                 if not assertion["passed"]:
                     lines.append(
-                        f"- {assertion['kind']} / {assertion['category']}："
+                        f"- {assertion['kind']} / {assertion['category']}: "
                         f"{assertion['statement']}"
                     )
             lines.append("")

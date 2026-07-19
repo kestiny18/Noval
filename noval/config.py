@@ -1,7 +1,8 @@
-"""配置层。
+"""Configuration loading.
 
-加载策略：内置默认值 ← ~/.noval/settings.json 覆盖。文件缺失也能用默认值正常启动。
-api_key 永不存明文：只记录「从哪个环境变量取」，运行时再解析。
+Built-in defaults are overridden by ``~/.noval/settings.json``. Missing files
+fall back to defaults. API keys are resolved at runtime rather than embedded in
+the repository.
 """
 from __future__ import annotations
 
@@ -11,30 +12,30 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict
 
-# 默认配置：任何字段都可被 settings.json 覆盖
+# Default configuration; settings.json may override any field.
 DEFAULTS: Dict[str, Any] = {
     "provider": "openai-compatible",
     "model": "deepseek-v4-pro",
     "judge_model": "deepseek-v4-flash",
     "base_url": "https://api.deepseek.com",
-    "api_key_env": "DEEPSEEK_API_KEY",        # 从该环境变量读取 key
-    "max_steps": 40,                          # 单轮用户输入内，工具循环的最大步数(build/调试类任务费步数)
-    "max_tool_output_chars": 8000,            # 工具输出超过此长度即截断
-    "persist_sessions": True,                 # 会话落盘：默认开启，可在 settings.json 关闭
-    "sessions_dir": "",                       # 空=~/.noval/sessions；可改到别的全局目录
-    "persist_logs": True,                     # 脱敏运行日志：默认开启
-    "logs_dir": "",                           # 空=~/.noval/logs
-    "log_retention_days": 14,                 # 按日目录清理过期运行日志
-    "persist_usage": True,                    # 模型返回的 token 用量：默认开启
-    "usage_dir": "",                         # 空=~/.noval/usage
-    "context_budget_tokens": 256000,          # active context 工作预算；可按 Provider 能力调大
-    "request_timeout_seconds": 120,           # Provider 请求超时，避免模型 API 挂起卡死循环
-    "request_max_retries": 2,                 # Provider 请求重试次数；0 表示不重试
-    "anthropic_base_url": "",                # 空=Anthropic SDK 官方默认地址
+    "api_key_env": "DEEPSEEK_API_KEY",        # Environment variable containing the key.
+    "max_steps": 40,                          # Maximum tool-loop steps per user turn.
+    "max_tool_output_chars": 8000,            # Truncate tool output beyond this length.
+    "persist_sessions": True,                 # Persist sessions by default.
+    "sessions_dir": "",                       # Empty means ~/.noval/sessions.
+    "persist_logs": True,                     # Persist redacted runtime logs by default.
+    "logs_dir": "",                           # Empty means ~/.noval/logs.
+    "log_retention_days": 14,                 # Delete expired daily log directories.
+    "persist_usage": True,                    # Persist Provider-reported token usage.
+    "usage_dir": "",                         # Empty means ~/.noval/usage.
+    "context_budget_tokens": 256000,          # Active-context working budget.
+    "request_timeout_seconds": 120,           # Prevent Provider requests from hanging the loop.
+    "request_max_retries": 2,                 # Provider retries; zero disables retries.
+    "anthropic_base_url": "",                # Empty uses the Anthropic SDK default.
     "anthropic_max_tokens": 8192,
 }
-# 注：system_prompt 不在这里——它是 agent 的行为定义(属代码)，不是「全局稳定偏好」，
-# 故不开放给 settings.json 覆盖。见 noval/agent.py 的 DEFAULT_SYSTEM_PROMPT。
+# The system prompt is agent behavior defined in code, not a stable user
+# preference, so settings.json cannot override DEFAULT_SYSTEM_PROMPT.
 
 
 def settings_path() -> Path:
@@ -60,7 +61,7 @@ class Config:
     api_key_env: str
     max_steps: int
     max_tool_output_chars: int
-    api_key: str = ""          # 可选：直接写在 ~/.noval/settings.json 里（该文件不在仓库内）
+    api_key: str = ""          # Optional plaintext key in the user-local settings file.
     persist_sessions: bool = True
     sessions_dir_setting: str = ""
     persist_logs: bool = True
@@ -85,32 +86,32 @@ class Config:
             try:
                 user = json.loads(p.read_text(encoding="utf-8"))
             except json.JSONDecodeError as e:
-                raise SystemExit(f"settings.json 不是合法 JSON: {e}")  # 漏逗号等不该是难看的 traceback
-            merged.update(user)  # 顶层覆盖；当前配置无深层嵌套，浅合并足够
+                raise SystemExit(f"settings.json is not valid JSON: {e}")
+            merged.update(user)  # A shallow merge is sufficient for the flat schema.
 
         for key in ("provider", "model", "judge_model", "base_url", "api_key_env"):
             if not isinstance(merged[key], str) or not merged[key].strip():
-                raise SystemExit(f"settings.json: {key} 必须是非空字符串")
+                raise SystemExit(f"settings.json: {key} must be a non-empty string")
         if merged["provider"] not in {"openai-compatible", "anthropic"}:
             raise SystemExit(
-                "settings.json: provider 必须是 openai-compatible 或 anthropic"
+                "settings.json: provider must be openai-compatible or anthropic"
             )
         if not isinstance(merged["anthropic_base_url"], str):
-            raise SystemExit("settings.json: anthropic_base_url 必须是字符串")
+            raise SystemExit("settings.json: anthropic_base_url must be a string")
 
-        # 校验：错配置要给出清晰报错，而不是静默跑歪
+        # Invalid configuration must fail clearly instead of silently drifting.
         if not isinstance(merged["persist_sessions"], bool):
-            raise SystemExit("settings.json: persist_sessions 必须是布尔值 true/false")
+            raise SystemExit("settings.json: persist_sessions must be true or false")
         if not isinstance(merged["sessions_dir"], str):
-            raise SystemExit('settings.json: sessions_dir 必须是字符串路径，如 "D:/noval-sessions"')
+            raise SystemExit('settings.json: sessions_dir must be a path string such as "D:/noval-sessions"')
         if not isinstance(merged["persist_logs"], bool):
-            raise SystemExit("settings.json: persist_logs 必须是布尔值 true/false")
+            raise SystemExit("settings.json: persist_logs must be true or false")
         if not isinstance(merged["logs_dir"], str):
-            raise SystemExit('settings.json: logs_dir 必须是字符串路径，如 "D:/noval-logs"')
+            raise SystemExit('settings.json: logs_dir must be a path string such as "D:/noval-logs"')
         if not isinstance(merged["persist_usage"], bool):
-            raise SystemExit("settings.json: persist_usage 必须是布尔值 true/false")
+            raise SystemExit("settings.json: persist_usage must be true or false")
         if not isinstance(merged["usage_dir"], str):
-            raise SystemExit('settings.json: usage_dir 必须是字符串路径，如 "D:/noval-usage"')
+            raise SystemExit('settings.json: usage_dir must be a path string such as "D:/noval-usage"')
         for key in (
             "max_steps", "max_tool_output_chars", "log_retention_days", "context_budget_tokens",
             "anthropic_max_tokens",
@@ -118,25 +119,25 @@ class Config:
             try:
                 merged[key] = int(merged[key])
             except (TypeError, ValueError):
-                raise SystemExit(f"settings.json: {key} 必须是整数")
+                raise SystemExit(f"settings.json: {key} must be an integer")
         if merged["log_retention_days"] < 1:
-            raise SystemExit("settings.json: log_retention_days 必须大于等于 1")
+            raise SystemExit("settings.json: log_retention_days must be at least 1")
         if merged["context_budget_tokens"] < 1000:
-            raise SystemExit("settings.json: context_budget_tokens 必须大于等于 1000")
+            raise SystemExit("settings.json: context_budget_tokens must be at least 1000")
         if merged["anthropic_max_tokens"] < 1:
-            raise SystemExit("settings.json: anthropic_max_tokens 必须大于等于 1")
+            raise SystemExit("settings.json: anthropic_max_tokens must be at least 1")
         try:
             merged["request_timeout_seconds"] = float(merged["request_timeout_seconds"])
         except (TypeError, ValueError):
-            raise SystemExit("settings.json: request_timeout_seconds 必须是数字")
+            raise SystemExit("settings.json: request_timeout_seconds must be a number")
         if merged["request_timeout_seconds"] <= 0:
-            raise SystemExit("settings.json: request_timeout_seconds 必须大于 0")
+            raise SystemExit("settings.json: request_timeout_seconds must be greater than 0")
         try:
             merged["request_max_retries"] = int(merged["request_max_retries"])
         except (TypeError, ValueError):
-            raise SystemExit("settings.json: request_max_retries 必须是整数")
+            raise SystemExit("settings.json: request_max_retries must be an integer")
         if merged["request_max_retries"] < 0:
-            raise SystemExit("settings.json: request_max_retries 必须大于等于 0")
+            raise SystemExit("settings.json: request_max_retries must be at least 0")
 
         return cls(
             model=merged["model"],
@@ -163,28 +164,28 @@ class Config:
         )
 
     def sessions_dir(self) -> Path:
-        """会话持久化根目录。默认在用户主目录下，避免污染项目仓库。"""
+        """Return the session root, defaulting outside the project repository."""
         if not self.sessions_dir_setting.strip():
             return default_sessions_dir()
         return Path(self.sessions_dir_setting).expanduser()
 
     def logs_dir(self) -> Path:
-        """运行日志根目录。默认在用户主目录下，避免污染项目仓库。"""
+        """Return the runtime-log root, defaulting outside the project repository."""
         if not self.logs_dir_setting.strip():
             return default_logs_dir()
         return Path(self.logs_dir_setting).expanduser()
 
     def usage_dir(self) -> Path:
-        """Token 用量根目录。统计跨项目汇总，因此固定在用户目录。"""
+        """Return the user-level token-usage root shared across projects."""
         if not self.usage_dir_setting.strip():
             return default_usage_dir()
         return Path(self.usage_dir_setting).expanduser()
 
     def resolve_api_key(self) -> str:
-        """解析 api_key，优先级：settings.json 里的 api_key → 环境变量 → 报错。
+        """Resolve an API key from settings.json, then the configured environment variable.
 
-        settings.json 在用户主目录、不在仓库内，因此把 key 写在那里不会随代码泄露；
-        但它仍是磁盘上的明文，别提交、别放进仓库内的 settings.example.json。
+        The user-local settings file is outside the repository, but a key stored
+        there is still plaintext and must never be copied into project files.
         """
         if self.api_key:
             return self.api_key
@@ -192,8 +193,8 @@ class Config:
         if key:
             return key
         raise SystemExit(
-            "未找到 API key，二选一：\n"
-            f"  1) 在 {settings_path()} 里加一行 \"api_key\": \"sk-...\"\n"
-            f"  2) 设置环境变量 {self.api_key_env}"
-            f"（PowerShell: $env:{self.api_key_env}=\"sk-...\"）"
+            "API key not found. Choose one of these options:\n"
+            f"  1) Add \"api_key\": \"sk-...\" to {settings_path()}\n"
+            f"  2) Set environment variable {self.api_key_env} "
+            f"(PowerShell: $env:{self.api_key_env}=\"sk-...\")"
         )

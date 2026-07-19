@@ -29,7 +29,7 @@ def test_create_is_lazy_and_writes_canonical_schema_v2(tmp_path):
     store = JsonlSessionStore.create(base, workdir, "model-a")
     assert not base.exists()
 
-    message = user_message("<context>当前时间: x</context>\n\nhello")
+    message = user_message("<context>Current time: x</context>\n\nhello")
     store.append(message)
     close(store)
 
@@ -86,7 +86,7 @@ def test_persistent_store_holds_one_writer_lease_until_close(tmp_path):
     first = JsonlSessionStore.create(base, workdir, "model-a")
     first.append(user_message("one"))
 
-    with pytest.raises(SessionLockedError, match="不能同时写入"):
+    with pytest.raises(SessionLockedError, match="cannot be written concurrently"):
         JsonlSessionStore.open(base, workdir, first.session_id, "model-a")
 
     first.close()
@@ -147,7 +147,7 @@ def test_load_skips_bad_lines_and_invalid_canonical_messages(tmp_path, caplog):
         }) + "\n")
 
     assert store.load() == [user_message("ok"), assistant_message("still ok")]
-    assert "损坏" in caplog.text
+    assert "corrupt" in caplog.text
 
 
 def test_list_sessions_derives_title_and_sidecar_overrides(tmp_path):
@@ -155,15 +155,15 @@ def test_list_sessions_derives_title_and_sidecar_overrides(tmp_path):
     workdir = tmp_path / "project"
     workdir.mkdir()
     store = JsonlSessionStore.create(base, workdir, "model-a")
-    store.append(user_message("<context>当前时间: 2026</context>\n\n请解释 session store"))
+    store.append(user_message("<context>Current time: 2026</context>\n\nExplain the session store"))
     close(store)
 
     [meta] = list_sessions(base, workdir)
-    assert meta.title == "请解释 session store"
+    assert meta.title == "Explain the session store"
     assert meta.compatible is True
     assert meta.schema_version == 2
-    store.set_title("自定义标题")
-    assert list_sessions(base, workdir)[0].title == "自定义标题"
+    store.set_title("Custom title")
+    assert list_sessions(base, workdir)[0].title == "Custom title"
 
 
 def test_sidecar_metadata_merges_and_keeps_lazy_creation(tmp_path):
@@ -172,13 +172,13 @@ def test_sidecar_metadata_merges_and_keeps_lazy_creation(tmp_path):
     workdir.mkdir()
     store = JsonlSessionStore.create(base, workdir, "model-a")
     store.update_metadata({"permissions": {"mode": "full_access", "approved_tools": []}})
-    store.set_title("保留标题")
+    store.set_title("Preserved title")
     assert not base.exists()
 
     store.append(user_message("hello"))
     close(store)
     metadata = store.load_metadata()
-    assert metadata["title"] == "保留标题"
+    assert metadata["title"] == "Preserved title"
     assert metadata["permissions"]["mode"] == "full_access"
 
 
@@ -215,8 +215,8 @@ def test_v1_session_is_listed_as_incompatible_and_open_fails_without_mutation(tm
     [meta] = list_sessions(base, workdir)
     assert meta.compatible is False
     assert meta.schema_version == 1
-    assert "不兼容" in meta.title
-    with pytest.raises(UnsupportedSessionVersion, match="当前 Noval 只读取 schema v2"):
+    assert "incompatible" in meta.title
+    with pytest.raises(UnsupportedSessionVersion, match="reads only schema v2"):
         JsonlSessionStore.open(base, workdir, "legacy", "model-a")
     assert path.read_text(encoding="utf-8") == original
 
@@ -225,5 +225,5 @@ def test_open_missing_session_and_invalid_id_raise(tmp_path):
     with pytest.raises(FileNotFoundError):
         JsonlSessionStore.open(tmp_path / "sessions", tmp_path, "missing", "model-a")
     for session_id in ("", "../outside", "..\\outside", "C:/outside"):
-        with pytest.raises(ValueError, match="非法会话 ID"):
+        with pytest.raises(ValueError, match="invalid session ID"):
             JsonlSessionStore.open(tmp_path / "sessions", tmp_path, session_id, "model-a")

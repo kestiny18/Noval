@@ -1,1 +1,1 @@
-"""仓库级离线评测资产；不属于 noval 运行时包。"""
+"""Repository-level offline evaluation assets, outside the Noval runtime package."""

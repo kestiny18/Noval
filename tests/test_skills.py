@@ -116,9 +116,9 @@ def test_skill_resource_and_script_cannot_escape_root(tmp_path):
     registry = SkillRegistry.discover(workdir, home=home)
     ctx = Context(workdir=workdir, skills=registry)
 
-    with pytest.raises(ToolError, match="逃逸|绝对路径"):
+    with pytest.raises(ToolError, match="escape|absolute path"):
         read_skill_resource(ctx, "safe", "../secret.txt")
-    with pytest.raises(ToolError, match="逃逸|绝对路径"):
+    with pytest.raises(ToolError, match="escape|absolute path"):
         run_skill_script(ctx, "safe", "../evil.py")
 
 
@@ -130,7 +130,7 @@ def test_duplicate_skill_name_requires_id(tmp_path):
     registry = SkillRegistry.discover(workdir, home=home)
     ctx = Context(workdir=workdir, skills=registry)
 
-    with pytest.raises(ToolError, match="不唯一"):
+    with pytest.raises(ToolError, match="ambiguous"):
         load_skill(ctx, "dup")
 
     first_id = registry.skills[0].skill_id

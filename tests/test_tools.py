@@ -1,4 +1,4 @@
-"""工具框架层测试：自动 schema、Context 注入识别、重名/override。"""
+"""Tool framework tests for schema generation, Context injection, and overrides."""
 from typing import List, Optional
 
 import pytest
@@ -15,7 +15,7 @@ def test_schema_auto_generated_and_required_from_defaults():
     t = get_tool("_demo")
     assert t.parameters["properties"]["a"]["type"] == "string"
     assert t.parameters["properties"]["b"]["type"] == "integer"   # int → integer
-    assert t.parameters["required"] == ["a"]                        # b 有默认值，非必填
+    assert t.parameters["required"] == ["a"]                        # b has a default.
 
 
 def test_context_param_excluded_from_schema():
@@ -26,7 +26,7 @@ def test_context_param_excluded_from_schema():
 
     t = get_tool("_ctx_tool")
     assert t.wants_context is True
-    assert "ctx" not in t.parameters["properties"]                  # 框架注入，不暴露给模型
+    assert "ctx" not in t.parameters["properties"]                  # Framework-injected.
     assert list(t.parameters["properties"].keys()) == ["path"]
     assert t.parameters["required"] == ["path"]
 
@@ -66,5 +66,5 @@ def test_schema_handles_generics():
 
     props = get_tool("_generics").parameters
     assert props["properties"]["tags"] == {"type": "array", "items": {"type": "string"}}
-    assert props["properties"]["note"] == {"type": "string"}        # Optional 解包
+    assert props["properties"]["note"] == {"type": "string"}        # Optional is unwrapped.
     assert props["required"] == ["tags"]

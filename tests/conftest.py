@@ -1,7 +1,7 @@
-"""测试隔离：每个用例前后快照/还原全局工具注册表。
+"""Isolate tests by snapshotting and restoring the process-global tool registry.
 
-工具注册表是进程级全局状态。测试里 @tool 注册的临时工具(_big/_danger 等)若不清理，
-会污染后续用例，且在同进程内重跑会撞上「重复注册」的 ValueError。这里自动兜住。
+Temporary tools registered by tests must not leak into later cases or collide
+with registrations when the suite is rerun in the same process.
 """
 import pytest
 

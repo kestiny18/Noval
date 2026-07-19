@@ -447,13 +447,13 @@ def sandbox_status_text(runtime: ProcessRuntime) -> str:
             capabilities.append("process-tree")
         detail = ", ".join(capabilities) or "backend-defined"
         return (
-            f"硬沙箱: {status.backend} ({detail}; "
+            f"Hard sandbox: {status.backend} ({detail}; "
             f"network={runtime.policy.network.value})"
         )
     if runtime.policy.mode is SandboxMode.OFF:
-        return "未启用 OS 硬沙箱（已显式关闭）"
+        return "OS-level hard sandbox disabled explicitly"
     reason = status.reason or "hard sandbox backend unavailable"
-    return f"未启用 OS 硬沙箱（NoSandbox: {reason}）"
+    return f"OS-level hard sandbox unavailable (NoSandbox: {reason})"
 
 
 def _normalize_spec(spec: ProcessSpec) -> ProcessSpec:

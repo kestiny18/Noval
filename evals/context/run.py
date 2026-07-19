@@ -1,8 +1,8 @@
-"""运行 context checkpoint Eval。
+"""Run context checkpoint evaluations.
 
-默认只校验用例资产，零网络、零模型费用。传入 ``--generate`` 时，使用
-~/.noval/settings.json 配置的模型生成候选摘要；也可以用 ``--summaries``
-离线重放已保存的候选结果。
+By default this validates case assets without network access or model cost.
+Use ``--generate`` to create candidates with the configured model, or
+``--summaries`` to replay saved candidates offline.
 """
 from __future__ import annotations
 
@@ -47,7 +47,7 @@ CATEGORY_WEIGHTS = {
 
 
 class CaseFormatError(ValueError):
-    """Eval 资产本身不合法。"""
+    """The evaluation asset is invalid."""
 
 
 @dataclass(frozen=True)
@@ -86,35 +86,35 @@ class EvalCase:
 
 def _expectation(data: Any, *, case_id: str) -> Expectation:
     if not isinstance(data, dict):
-        raise CaseFormatError(f"{case_id}: expectation 必须是对象")
+        raise CaseFormatError(f"{case_id}: expectation must be an object")
     expectation_id = data.get("id")
     category = data.get("category")
     statement = data.get("statement")
     patterns = data.get("match_all")
     if not isinstance(expectation_id, str) or not expectation_id:
-        raise CaseFormatError(f"{case_id}: expectation.id 必须是非空字符串")
+        raise CaseFormatError(f"{case_id}: expectation.id must be a non-empty string")
     if category not in CATEGORY_WEIGHTS:
-        raise CaseFormatError(f"{case_id}/{expectation_id}: 未知 category {category!r}")
+        raise CaseFormatError(f"{case_id}/{expectation_id}: unknown category {category!r}")
     if not isinstance(statement, str) or not statement:
-        raise CaseFormatError(f"{case_id}/{expectation_id}: statement 必须是非空字符串")
+        raise CaseFormatError(f"{case_id}/{expectation_id}: statement must be a non-empty string")
     if not isinstance(patterns, list) or not patterns or not all(
         isinstance(pattern, str) and pattern for pattern in patterns
     ):
-        raise CaseFormatError(f"{case_id}/{expectation_id}: match_all 必须是非空字符串数组")
+        raise CaseFormatError(f"{case_id}/{expectation_id}: match_all must be a non-empty array of strings")
     for pattern in patterns:
         try:
             re.compile(pattern)
         except re.error as error:
             raise CaseFormatError(
-                f"{case_id}/{expectation_id}: 非法正则 {pattern!r}: {error}"
+                f"{case_id}/{expectation_id}: invalid regular expression {pattern!r}: {error}"
             ) from error
     hard_failure = data.get("hard_failure")
     if hard_failure is not None and not isinstance(hard_failure, str):
-        raise CaseFormatError(f"{case_id}/{expectation_id}: hard_failure 必须是字符串")
+        raise CaseFormatError(f"{case_id}/{expectation_id}: hard_failure must be a string")
     section = data.get("section")
     if section is not None and section not in SUMMARY_HEADINGS:
         raise CaseFormatError(
-            f"{case_id}/{expectation_id}: section 必须是固定章节之一，实际为 {section!r}"
+            f"{case_id}/{expectation_id}: section must be one of the fixed headings, got {section!r}"
         )
     return Expectation(
         expectation_id=expectation_id,
@@ -127,7 +127,7 @@ def _expectation(data: Any, *, case_id: str) -> Expectation:
 
 
 def _section_content(summary: str, heading: str) -> str:
-    """只返回指定固定章节正文，防止有界正则误穿透到下一个章节。"""
+    """Return one fixed section without allowing matches to cross headings."""
     start = summary.find(heading)
     if start < 0:
         return ""
@@ -145,10 +145,10 @@ def _records(data: Dict[str, Any], *, case_id: str, previous_through_seq: int) -
     raw_records = data.get("records")
     raw_messages = data.get("messages")
     if (raw_records is None) == (raw_messages is None):
-        raise CaseFormatError(f"{case_id}: records 与 messages 必须且只能提供一个")
+        raise CaseFormatError(f"{case_id}: exactly one of records or messages must be provided")
     if raw_messages is not None:
         if not isinstance(raw_messages, list) or not raw_messages:
-            raise CaseFormatError(f"{case_id}: messages 必须是非空数组")
+            raise CaseFormatError(f"{case_id}: messages must be a non-empty array")
         start = previous_through_seq + 1
         records = [
             SessionRecord(
@@ -160,17 +160,17 @@ def _records(data: Dict[str, Any], *, case_id: str, previous_through_seq: int) -
             if isinstance(message, dict)
         ]
         if len(records) != len(raw_messages):
-            raise CaseFormatError(f"{case_id}: messages 中每一项都必须是对象")
+            raise CaseFormatError(f"{case_id}: every messages item must be an object")
     else:
         if not isinstance(raw_records, list) or not raw_records:
-            raise CaseFormatError(f"{case_id}: records 必须是非空数组")
+            raise CaseFormatError(f"{case_id}: records must be a non-empty array")
         records = []
         for raw in raw_records:
             if not isinstance(raw, dict):
-                raise CaseFormatError(f"{case_id}: record 必须是对象")
+                raise CaseFormatError(f"{case_id}: record must be an object")
             seq, ts, msg = raw.get("seq"), raw.get("ts"), raw.get("msg")
             if not isinstance(seq, int) or not isinstance(ts, str) or not isinstance(msg, dict):
-                raise CaseFormatError(f"{case_id}: record 需要合法的 seq/ts/msg")
+                raise CaseFormatError(f"{case_id}: record requires valid seq, ts, and msg fields")
             records.append(SessionRecord(
                 seq=seq,
                 ts=ts,
@@ -181,7 +181,7 @@ def _records(data: Dict[str, Any], *, case_id: str, previous_through_seq: int) -
     actual_seq = [record.seq for record in records]
     if actual_seq != expected_seq:
         raise CaseFormatError(
-            f"{case_id}: seq 必须从 {previous_through_seq + 1} 连续递增，实际为 {actual_seq}"
+            f"{case_id}: seq must increase consecutively from {previous_through_seq + 1}, got {actual_seq}"
         )
     _validate_tool_protocol(case_id, records)
     return tuple(records)
@@ -196,20 +196,20 @@ def _validate_tool_protocol(case_id: str, records: Sequence[SessionRecord]) -> N
             for call in message.tool_calls:
                 call_id = call.id
                 if call_id in pending or call_id in answered:
-                    raise CaseFormatError(f"{case_id}: tool_call id {call_id!r} 重复")
+                    raise CaseFormatError(f"{case_id}: duplicate tool_call id {call_id!r}")
                 pending[call_id] = record.seq
         elif message.role is MessageRole.TOOL:
             for result in message.tool_results:
                 call_id = result.call_id
                 if call_id not in pending:
                     raise CaseFormatError(
-                        f"{case_id}: seq {record.seq} 是孤立 tool 结果 {call_id!r}"
+                        f"{case_id}: seq {record.seq} is an orphaned tool result {call_id!r}"
                     )
                 pending.pop(call_id)
                 answered.add(call_id)
     if pending:
         detail = ", ".join(f"{call_id}@seq{seq}" for call_id, seq in pending.items())
-        raise CaseFormatError(f"{case_id}: source 拆断 tool-call 协议: {detail}")
+        raise CaseFormatError(f"{case_id}: source splits the tool-call protocol: {detail}")
 
 
 def _canonical_fixture_message(data: Dict[str, Any], *, case_id: str) -> ConversationMessage:
@@ -226,20 +226,20 @@ def _canonical_fixture_message(data: Dict[str, Any], *, case_id: str) -> Convers
         for raw_call in data.get("tool_calls") or []:
             function = raw_call.get("function") if isinstance(raw_call, dict) else None
             if not isinstance(function, dict):
-                raise CaseFormatError(f"{case_id}: assistant tool_call 格式非法")
+                raise CaseFormatError(f"{case_id}: invalid assistant tool_call format")
             call_id, name, arguments = (
                 raw_call.get("id"), function.get("name"), function.get("arguments"),
             )
             if not all(isinstance(value, str) for value in (call_id, name, arguments)):
-                raise CaseFormatError(f"{case_id}: assistant tool_call 字段非法")
+                raise CaseFormatError(f"{case_id}: invalid assistant tool_call fields")
             calls.append(ToolCallBlock(call_id, name, arguments))
         return assistant_message(text, tool_calls=calls)
     if role == "tool":
         call_id = data.get("tool_call_id")
         if not isinstance(call_id, str) or not call_id:
-            raise CaseFormatError(f"{case_id}: tool 结果缺少 tool_call_id")
+            raise CaseFormatError(f"{case_id}: tool result is missing tool_call_id")
         return tool_result_message(call_id, text or "")
-    raise CaseFormatError(f"{case_id}: 未知消息 role {role!r}")
+    raise CaseFormatError(f"{case_id}: unknown message role {role!r}")
 
 
 def load_cases(path: Path = DEFAULT_CASES_PATH) -> List[EvalCase]:
@@ -251,27 +251,27 @@ def load_cases(path: Path = DEFAULT_CASES_PATH) -> List[EvalCase]:
         try:
             data = json.loads(line)
         except json.JSONDecodeError as error:
-            raise CaseFormatError(f"{path}:{line_number}: JSON 非法: {error}") from error
+            raise CaseFormatError(f"{path}:{line_number}: invalid JSON: {error}") from error
         if not isinstance(data, dict):
-            raise CaseFormatError(f"{path}:{line_number}: 用例必须是对象")
+            raise CaseFormatError(f"{path}:{line_number}: case must be an object")
         case_id = data.get("id")
         title = data.get("title")
         if not isinstance(case_id, str) or not case_id:
-            raise CaseFormatError(f"{path}:{line_number}: id 必须是非空字符串")
+            raise CaseFormatError(f"{path}:{line_number}: id must be a non-empty string")
         if case_id in seen_ids:
-            raise CaseFormatError(f"{path}:{line_number}: 重复 id {case_id!r}")
+            raise CaseFormatError(f"{path}:{line_number}: duplicate id {case_id!r}")
         seen_ids.add(case_id)
         if not isinstance(title, str) or not title:
-            raise CaseFormatError(f"{case_id}: title 必须是非空字符串")
+            raise CaseFormatError(f"{case_id}: title must be a non-empty string")
         previous_summary = data.get("previous_summary")
         if previous_summary is not None and not isinstance(previous_summary, str):
-            raise CaseFormatError(f"{case_id}: previous_summary 必须是字符串或 null")
+            raise CaseFormatError(f"{case_id}: previous_summary must be a string or null")
         previous_through_seq = data.get("previous_through_seq", -1)
         if not isinstance(previous_through_seq, int) or previous_through_seq < -1:
-            raise CaseFormatError(f"{case_id}: previous_through_seq 必须是 >= -1 的整数")
+            raise CaseFormatError(f"{case_id}: previous_through_seq must be an integer >= -1")
         if (previous_summary is None) != (previous_through_seq == -1):
             raise CaseFormatError(
-                f"{case_id}: previous_summary 与 previous_through_seq 必须同时存在或同时缺省"
+                f"{case_id}: previous_summary and previous_through_seq must both be present or both be absent"
             )
         records = _records(data, case_id=case_id, previous_through_seq=previous_through_seq)
         expectations = tuple(
@@ -283,20 +283,20 @@ def load_cases(path: Path = DEFAULT_CASES_PATH) -> List[EvalCase]:
             for item in data.get("forbidden", [])
         )
         if not expectations and not forbidden:
-            raise CaseFormatError(f"{case_id}: 至少需要一项 expectation 或 forbidden")
+            raise CaseFormatError(f"{case_id}: at least one expectation or forbidden item is required")
         canaries = data.get("secret_canaries", [])
         if not isinstance(canaries, list) or not all(isinstance(item, str) and item for item in canaries):
-            raise CaseFormatError(f"{case_id}: secret_canaries 必须是字符串数组")
+            raise CaseFormatError(f"{case_id}: secret_canaries must be an array of strings")
         fragments = data.get("secret_forbidden_fragments", [])
         if not isinstance(fragments, list) or not all(
             isinstance(item, str) and item for item in fragments
         ):
             raise CaseFormatError(
-                f"{case_id}: secret_forbidden_fragments 必须是字符串数组"
+                f"{case_id}: secret_forbidden_fragments must be an array of strings"
             )
         max_summary_chars = data.get("max_summary_chars", 1800)
         if not isinstance(max_summary_chars, int) or max_summary_chars < 1:
-            raise CaseFormatError(f"{case_id}: max_summary_chars 必须是正整数")
+            raise CaseFormatError(f"{case_id}: max_summary_chars must be a positive integer")
         cases.append(EvalCase(
             case_id=case_id,
             title=title,
@@ -310,7 +310,7 @@ def load_cases(path: Path = DEFAULT_CASES_PATH) -> List[EvalCase]:
             max_summary_chars=max_summary_chars,
         ))
     if not cases:
-        raise CaseFormatError(f"{path}: 没有用例")
+        raise CaseFormatError(f"{path}: no cases found")
     return cases
 
 
@@ -322,14 +322,14 @@ def load_summaries(path: Path) -> Dict[str, Dict[str, Any]]:
         try:
             data = json.loads(line)
         except json.JSONDecodeError as error:
-            raise CaseFormatError(f"{path}:{line_number}: JSON 非法: {error}") from error
+            raise CaseFormatError(f"{path}:{line_number}: invalid JSON: {error}") from error
         if not isinstance(data, dict):
-            raise CaseFormatError(f"{path}:{line_number}: 候选结果必须是对象")
+            raise CaseFormatError(f"{path}:{line_number}: candidate result must be an object")
         case_id, summary = data.get("case_id"), data.get("summary")
         if not isinstance(case_id, str) or not isinstance(summary, str):
-            raise CaseFormatError(f"{path}:{line_number}: 需要字符串 case_id/summary")
+            raise CaseFormatError(f"{path}:{line_number}: string case_id and summary are required")
         if case_id in summaries:
-            raise CaseFormatError(f"{path}:{line_number}: 重复 case_id {case_id!r}")
+            raise CaseFormatError(f"{path}:{line_number}: duplicate case_id {case_id!r}")
         summaries[case_id] = data
     return summaries
 
@@ -357,17 +357,17 @@ def evaluate_case(case: EvalCase, candidate: Dict[str, Any]) -> Dict[str, Any]:
             hard_failures.append(item)
 
     if not summary:
-        fail("empty_summary", "摘要为空")
+        fail("empty_summary", "summary is empty")
     heading_positions: List[int] = []
     for heading in SUMMARY_HEADINGS:
         count = summary.count(heading)
         if count != 1:
-            fail("heading_count", f"{heading} 出现 {count} 次，期望 1 次")
+            fail("heading_count", f"{heading} appears {count} times; expected once")
         heading_positions.append(summary.find(heading))
     if all(position >= 0 for position in heading_positions) and heading_positions != sorted(heading_positions):
-        fail("heading_order", "八个固定章节顺序错误")
+        fail("heading_order", "the eight fixed sections are out of order")
     if summary and not summary.startswith(SUMMARY_HEADINGS[0]):
-        fail("leading_content", "摘要在第一个固定章节前包含额外内容")
+        fail("leading_content", "summary contains content before the first fixed section")
 
     invalid_seq = sorted({
         int(match.group(1))
@@ -375,17 +375,17 @@ def evaluate_case(case: EvalCase, candidate: Dict[str, Any]) -> Dict[str, Any]:
         if int(match.group(1)) < 0 or int(match.group(1)) > case.through_seq
     })
     if invalid_seq:
-        fail("out_of_source_seq", f"出现来源范围之外的 seq: {invalid_seq}")
+        fail("out_of_source_seq", f"seq references outside the source range: {invalid_seq}")
 
     leaked = [canary for canary in case.secret_canaries if canary in summary]
     if leaked:
-        fail("secret_leak", f"摘要泄露 {len(leaked)} 个合成凭据 canary")
+        fail("secret_leak", f"summary leaked {len(leaked)} synthetic credential canaries")
     leaked_fragments = [
         fragment for fragment in case.secret_forbidden_fragments
         if fragment in summary
     ]
     if leaked_fragments:
-        fail("secret_fragment_leak", f"摘要泄露 {len(leaked_fragments)} 个凭据片段")
+        fail("secret_fragment_leak", f"summary leaked {len(leaked_fragments)} credential fragments")
 
     assertions: List[Dict[str, Any]] = []
     for expectation in case.expectations:
@@ -401,7 +401,7 @@ def evaluate_case(case: EvalCase, candidate: Dict[str, Any]) -> Dict[str, Any]:
         if not matched and expectation.hard_failure:
             hard_failures.append({
                 "code": expectation.hard_failure,
-                "message": f"未保留关键状态: {expectation.statement}",
+                "message": f"required state was not preserved: {expectation.statement}",
             })
     for expectation in case.forbidden:
         matched = expectation.matches(summary)
@@ -416,7 +416,7 @@ def evaluate_case(case: EvalCase, candidate: Dict[str, Any]) -> Dict[str, Any]:
         if matched and expectation.hard_failure:
             hard_failures.append({
                 "code": expectation.hard_failure,
-                "message": f"出现禁止状态: {expectation.statement}",
+                "message": f"forbidden state appeared: {expectation.statement}",
             })
 
     applicable_weights = 5
@@ -471,7 +471,7 @@ def _generate(cases: Sequence[EvalCase]) -> Tuple[Dict[str, Dict[str, Any]], str
             [],
         )
         if not response.message.text:
-            raise RuntimeError(f"{case.case_id}: 模型返回空摘要")
+            raise RuntimeError(f"{case.case_id}: model returned an empty summary")
         usage = None
         if response.usage is not None:
             usage = {
@@ -618,11 +618,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--cases", type=Path, default=DEFAULT_CASES_PATH)
     parser.add_argument("--case", action="append", dest="case_ids")
     source = parser.add_mutually_exclusive_group()
-    source.add_argument("--summaries", type=Path, help="离线候选摘要 JSONL")
-    source.add_argument("--generate", action="store_true", help="调用当前配置的真实模型")
-    parser.add_argument("--output", type=Path, help="--generate 时保存候选摘要 JSONL")
-    parser.add_argument("--json-report", type=Path, help="保存机器可读报告")
-    parser.add_argument("--markdown-report", type=Path, help="保存 Markdown 报告")
+    source.add_argument("--summaries", type=Path, help="offline candidate-summary JSONL")
+    source.add_argument("--generate", action="store_true", help="call the currently configured model")
+    parser.add_argument("--output", type=Path, help="save candidate-summary JSONL with --generate")
+    parser.add_argument("--json-report", type=Path, help="save a machine-readable report")
+    parser.add_argument("--markdown-report", type=Path, help="save a Markdown report")
     return parser
 
 
@@ -634,12 +634,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         selected_ids = args.case_ids or [case.case_id for case in all_cases]
         unknown_cases = sorted(set(selected_ids) - set(by_id))
         if unknown_cases:
-            raise CaseFormatError(f"未知用例: {unknown_cases}")
+            raise CaseFormatError(f"Unknown cases: {unknown_cases}")
         cases = [by_id[case_id] for case_id in selected_ids]
         if not args.generate and args.summaries is None:
             print(
-                f"PASS: {len(cases)} 个 context Eval 用例资产有效；"
-                "使用 --generate 调用真实模型，或 --summaries 重放候选摘要。"
+                f"PASS: {len(cases)} context Eval case assets are valid; "
+                "use --generate to call a model or --summaries to replay candidates."
             )
             return 0
         if args.generate:
@@ -652,7 +652,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         missing = [case.case_id for case in cases if case.case_id not in candidates]
         unknown = sorted(set(candidates) - {case.case_id for case in cases})
         if missing or unknown:
-            raise CaseFormatError(f"候选集合不匹配: missing={missing}, unknown={unknown}")
+            raise CaseFormatError(f"candidate set mismatch: missing={missing}, unknown={unknown}")
         results = [evaluate_case(case, candidates[case.case_id]) for case in cases]
         report = build_report(cases, results, cases_path=args.cases, model=model)
         markdown = render_markdown(report)
@@ -664,7 +664,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             args.markdown_report.write_text(markdown + "\n", encoding="utf-8")
         return 1 if report["summary"]["hard_failure_count"] else 0
     except (CaseFormatError, OSError, RuntimeError) as error:
-        print(f"Eval 失败: {error}", file=sys.stderr)
+        print(f"Eval failed: {error}", file=sys.stderr)
         return 2
 
 

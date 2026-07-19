@@ -1,13 +1,14 @@
-"""工具地基层。
+"""Foundational tool types and registration.
 
-职责：定义工具的统一数据结构与注册机制，让「加工具」退化成「写一个带类型注解的函数」。
-本层**故意与 provider 无关**——这里只描述工具是什么（name/description/JSON schema），
-如何把它翻译成某个厂商的 function-calling 格式，是 client.py 适配器的事（接缝1）。
+Adding a tool should require only a typed function. This module is deliberately
+Provider-neutral: it describes tool names, descriptions, and JSON schemas, while
+Provider adapters translate them into wire-specific function-calling formats.
 
-工具契约（写工具的人只需记住）：
-  - 成功      → return 原始内容
-  - 领域错误  → raise ToolError("带领域信息的好提示")
-  - 其余一切（通用异常、超时、截断、确认、日志）由 executor 框架负责。
+Tool contract:
+  - success: return raw domain content;
+  - actionable domain failure: raise ToolError with a corrective message;
+  - generic failures, timeouts, truncation, approval, and logging belong to the
+    executor pipeline.
 """
 from __future__ import annotations
 
@@ -32,51 +33,53 @@ if TYPE_CHECKING:
 
 
 # ---------------------------------------------------------------------------
-# 风险级别：确认门据此决定是否拦截（拦不拦由 config 说了算，不在工具内写 input()）
+# Risk is a fact declared by a tool; the permission controller decides approval.
 # ---------------------------------------------------------------------------
 class Risk(str, Enum):
-    READ = "read"            # 只读，永不拦
-    WRITE = "write"          # 改动本地状态
-    DANGEROUS = "dangerous"  # 执行任意命令等，默认必须确认
+    READ = "read"            # Read-only operation.
+    WRITE = "write"          # Changes local state.
+    DANGEROUS = "dangerous"  # Arbitrary or high-impact operation.
 
 
 # ---------------------------------------------------------------------------
-# 工具主动抛出的错误：框架会把 message 当作「可被模型纠正」的错误回传给模型
+# Tool-raised domain errors are returned to the model as corrective feedback.
 # ---------------------------------------------------------------------------
 class ToolError(Exception):
-    """领域错误。message 应包含能让模型下一步自我修正的具体信息。"""
+    """Domain error whose message should tell the model how to recover."""
 
 
 # ---------------------------------------------------------------------------
-# 统一的工具结果：content 给模型，meta 给框架/日志，二者分开
+# Unified result: content is model-visible; meta remains framework-only.
 # ---------------------------------------------------------------------------
 @dataclass
 class ToolResult:
-    content: str                          # 喂回模型的文本
+    content: str                          # Text returned to the model.
     is_error: bool = False
     truncated: bool = False
-    meta: Dict[str, Any] = field(default_factory=dict)  # 耗时/原始长度等，不给模型
+    meta: Dict[str, Any] = field(default_factory=dict)  # Timing and raw-size metadata.
 
 
 # ---------------------------------------------------------------------------
-# 执行上下文：框架注入给「声明了 ctx: Context 首参」的工具，不进 schema
+# Execution context is injected into tools that declare ctx: Context first.
 # ---------------------------------------------------------------------------
 @dataclass
 class ReadRecord:
-    """一次文件读取的记录，供 write/edit 做「改前须先 read」+ staleness 校验。"""
+    """Read-tracker record used for read-before-write and staleness checks."""
     mtime: float
-    content: str          # 归一化(\r\n→\n)后的全文，仅 full read 有意义
-    is_partial: bool      # 带 offset/limit 的局部读 → True，不满足「先 read」要求
-    read_ranges: List[Tuple[int, int]] = field(default_factory=list)  # 模型实际看过的闭区间行号
-    total_lines: Optional[int] = None  # 已知总行数；读到 EOF 或整读预算截断时可得
+    content: str          # Full normalized content; meaningful only for a full read.
+    is_partial: bool      # Partial reads do not satisfy the read-before-write contract.
+    read_ranges: List[Tuple[int, int]] = field(default_factory=list)  # Inclusive visible ranges.
+    total_lines: Optional[int] = None  # Known after EOF or budget-limited full reads.
 
 
 @dataclass
 class Context:
-    """per-invocation 的执行上下文。workdir 决定相对路径与子进程 cwd；
-    read_state 是跨工具调用共享的文件读取状态机（read-tracker）；
-    process_runtime 冻结本次启动的子进程 backend 与沙箱策略；
-    permissions 集中管理当前会话的权限模式与工具授权。"""
+    """Per-invocation execution context.
+
+    ``workdir`` anchors relative paths and child-process cwd. ``read_state`` is
+    shared across file tools. ``process_runtime`` freezes the selected process
+    backend and sandbox policy, while ``permissions`` owns session authority.
+    """
     workdir: Path
     read_state: Dict[str, ReadRecord] = field(default_factory=dict)
     permissions: PermissionController = field(default_factory=PermissionController)
@@ -90,24 +93,23 @@ class Context:
 
 
 # ---------------------------------------------------------------------------
-# 工具定义：注册表里存的就是它
+# Tool definition stored in the registry.
 # ---------------------------------------------------------------------------
 @dataclass
 class Tool:
     name: str
     description: str
-    parameters: Dict[str, Any]   # JSON Schema（自动从函数签名生成）
+    parameters: Dict[str, Any]   # JSON Schema generated from the signature.
     func: Callable
     risk: Risk = Risk.READ
-    # 工具是否声明了 ctx: Context 首参（由框架注入，不进 schema）
+    # Whether the first parameter is an injected ctx: Context.
     wants_context: bool = False
-    # 可选：按参数动态评估风险（如 run_bash 把只读命令降级为 READ）。
-    # 风险在「这次调用」里，不总在「工具」上——返回值覆盖静态 risk。
+    # Optional per-argument risk assessment; the result overrides static risk.
     risk_assessor: Optional[Callable[[Dict[str, Any]], Risk]] = None
 
 
 # ---------------------------------------------------------------------------
-# 注册表
+# Registry.
 # ---------------------------------------------------------------------------
 _REGISTRY: Dict[str, Tool] = {}
 
@@ -121,7 +123,7 @@ def all_tools() -> List[Tool]:
 
 
 # ---------------------------------------------------------------------------
-# 类型注解 → JSON Schema 的自动推导
+# Automatic Python type annotation to JSON Schema conversion.
 # ---------------------------------------------------------------------------
 _PY_TO_JSON = {
     str: "string",
@@ -134,14 +136,14 @@ _PY_TO_JSON = {
 
 
 def _type_schema(py_type: Any) -> Dict[str, Any]:
-    """把一个 Python 类型注解转成 JSON Schema 片段。
+    """Convert a Python annotation into a conservative JSON Schema fragment.
 
-    支持裸类型、Optional[X] / X|None、List[X]、Dict、Literal[...]；
-    无法识别的类型退化为 string（保守，但至少不会瞎标成错误的具体类型）。
+    Supports bare types, Optional, list, dict, and Literal. Unknown annotations
+    fall back to string instead of inventing a more specific type.
     """
     origin = get_origin(py_type)
 
-    # Optional[X] / Union[X, None] / X | None → 取非 None 的那个；多类型 union 则不限制
+    # Optional uses its non-None member; multi-type unions remain unconstrained.
     if origin is Union or origin is getattr(types, "UnionType", None):
         non_none = [a for a in get_args(py_type) if a is not type(None)]
         return _type_schema(non_none[0]) if len(non_none) == 1 else {}
@@ -160,12 +162,7 @@ def _type_schema(py_type: Any) -> Dict[str, Any]:
 
 
 def _build_schema(func: Callable, param_descriptions: Dict[str, str]) -> Dict[str, Any]:
-    """从函数的类型注解 + 默认值推导出 JSON Schema。
-
-    - 类型注解 → 参数类型（未注解默认按 string 处理）
-    - 无默认值的参数 → required
-    - param_descriptions 提供每个参数的自然语言说明（模型很依赖它来正确填参）
-    """
+    """Derive JSON Schema from function annotations, defaults, and descriptions."""
     hints = get_type_hints(func)
     sig = inspect.signature(func)
 
@@ -176,7 +173,7 @@ def _build_schema(func: Callable, param_descriptions: Dict[str, str]) -> Dict[st
         if pname == "self":
             continue
         py_type = hints.get(pname, str)
-        if py_type is Context:          # 框架注入的上下文，不暴露给模型
+        if py_type is Context:          # Framework-injected and hidden from the model.
             continue
         prop: Dict[str, Any] = _type_schema(py_type)
         if pname in param_descriptions:
@@ -189,7 +186,7 @@ def _build_schema(func: Callable, param_descriptions: Dict[str, str]) -> Dict[st
 
 
 def _wants_context(func: Callable) -> bool:
-    """工具是否把第一个参数声明为 ctx: Context（据此决定是否注入）。"""
+    """Return whether the tool declares ctx: Context as its first parameter."""
     params = list(inspect.signature(func).parameters.values())
     if not params:
         return False
@@ -198,7 +195,7 @@ def _wants_context(func: Callable) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# @tool 装饰器：加工具的唯一入口
+# @tool is the only registration entry point.
 # ---------------------------------------------------------------------------
 def tool(
     risk: Risk = Risk.READ,
@@ -208,20 +205,20 @@ def tool(
     override: bool = False,
     risk_assessor: Optional[Callable[[Dict[str, Any]], Risk]] = None,
 ) -> Callable:
-    """把一个普通函数注册成工具。
+    """Register a regular typed function as a tool.
 
-    用法：
-        @tool(risk=Risk.READ, param_descriptions={"path": "要读取的文件路径"})
+    Example:
+        @tool(risk=Risk.READ, param_descriptions={"path": "File path to read"})
         def read_file(path: str) -> str:
-            '''读取指定路径的文件内容。'''
+            '''Read a file from the requested path.'''
             ...
 
-    description 取自函数 docstring；schema 自动从签名生成。
-    返回原函数本身（不包装），因此工具仍可像普通函数一样被直接调用/测试。
+    The description comes from the docstring and the schema from the signature.
+    The original function is returned unchanged, so direct calls and tests work.
 
-    重名默认 raise（fail-fast）：注册表定义了模型的「感官」，静默覆盖会让
-    模型可见的工具实现会取决于 import 顺序，是更隐蔽的故障。确为有意覆盖
-    （插件替换内置工具等）时显式传 override=True。
+    Duplicate names fail fast because silent replacement would make the model's
+    visible capabilities depend on import order. Set ``override=True`` only for
+    an intentional replacement.
     """
     def decorator(func: Callable) -> Callable:
         t = Tool(
@@ -235,11 +232,12 @@ def tool(
         )
         if t.name in _REGISTRY and not override:
             raise ValueError(
-                f"工具名 '{t.name}' 已注册；如确为有意覆盖请用 @tool(..., override=True)"
+                f"tool name '{t.name}' is already registered; use "
+                "@tool(..., override=True) for an intentional replacement"
             )
         _REGISTRY[t.name] = t
         return func
     return decorator
 
 
-# 内置工具实现在 noval/builtins.py（与框架分文件）。
+# Built-in implementations live in noval/builtins.py.

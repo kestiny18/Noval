@@ -1,1 +1,1 @@
-"""上下文 checkpoint 的离线评测。"""
+"""Offline evaluation of context checkpoints."""

@@ -1,4 +1,4 @@
-"""模型 token 用量的旁路计量与按日汇总。"""
+"""Side-channel model token metering and daily aggregation."""
 from __future__ import annotations
 
 import json
@@ -59,7 +59,7 @@ class UsageRecorder(Protocol):
 
 
 class JsonlUsageStore:
-    """每进程追加事件文件，汇总时读取当天所有文件，避免共享计数文件竞争。"""
+    """Append per-process events and aggregate daily files without shared-counter races."""
 
     def __init__(
         self,
@@ -116,7 +116,7 @@ class JsonlUsageStore:
         try:
             file = path.open("r", encoding="utf-8")
         except OSError:
-            log.warning("读取 token 用量文件失败: %s", path, exc_info=True)
+            log.warning("failed to read token usage file: %s", path, exc_info=True)
             return
         with file:
             for line_number, line in enumerate(file, 1):
@@ -125,7 +125,7 @@ class JsonlUsageStore:
                     if not _valid_event(event):
                         raise ValueError("invalid usage event")
                 except (json.JSONDecodeError, ValueError, TypeError):
-                    log.warning("跳过损坏的 token 用量记录: %s:%s", path, line_number)
+                    log.warning("skipping corrupt token usage record: %s:%s", path, line_number)
                     continue
                 summary.total.add(event)
                 model = event.get("model") or "unknown"
@@ -157,7 +157,7 @@ def _is_token_count(value: Any) -> bool:
 
 
 class MeteredLLMClient:
-    """给任意 Provider 适配器增加用量计量，不让统计故障影响模型结果。"""
+    """Meter any Provider adapter without allowing accounting failures to affect results."""
 
     def __init__(
         self,
@@ -184,7 +184,7 @@ class MeteredLLMClient:
         try:
             self.store.record(str(response_model), response.usage, purpose=self.purpose)
         except Exception:
-            log.warning("token 用量持久化失败，已跳过本次记录", exc_info=True)
+            log.warning("failed to persist token usage; skipping this record", exc_info=True)
         return response
 
     def render_request(

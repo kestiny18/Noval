@@ -1,5 +1,5 @@
-"""Noval — 通用 Agent 小核心。"""
-# 导入 builtins 以触发内置工具的 @tool 注册（副作用导入）
+"""Noval — a small, general-purpose agent core."""
+# Import builtins for the side effect of registering built-in @tool functions.
 from . import builtins as _builtins  # noqa: F401
 
 from .api import (  # noqa: F401
