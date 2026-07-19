@@ -1,0 +1,48 @@
+name: Architecture proposal
+description: Propose a change to a public contract, core seam, or invariant.
+title: "[ADR] "
+body:
+  - type: textarea
+    id: context
+    attributes:
+      label: Context and forces
+      description: What current behavior, constraint, and failure mode require a decision?
+    validations:
+      required: true
+  - type: textarea
+    id: decision
+    attributes:
+      label: Proposed decision
+      description: State the responsibility boundary, not only an implementation idea.
+    validations:
+      required: true
+  - type: textarea
+    id: invariants
+    attributes:
+      label: Invariants affected
+      description: Provider, registry, executor, state, process, authority, or evidence boundaries.
+    validations:
+      required: true
+  - type: textarea
+    id: consequences
+    attributes:
+      label: Consequences and failure modes
+      description: Include positive, negative, operational, security, and compatibility consequences.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives
+      description: Compare at least the status quo and one smaller alternative.
+    validations:
+      required: true
+  - type: checkboxes
+    id: doctrine
+    attributes:
+      label: Thin-harness check
+      options:
+        - label: This does not add mandatory workflow orchestration without evidence that the kernel needs it.
+          required: true
+        - label: Hard safety or integrity requirements are enforced outside model compliance.
+          required: true

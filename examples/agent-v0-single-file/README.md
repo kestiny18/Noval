@@ -1,24 +1,20 @@
-# Agent v0 Single File
+# Agent v0: single-file prototype
 
-这是 Noval 最早期的单文件 Agent 原型，用纯手工方式写成。
+[简体中文](README.zh-CN.md)
 
-它包含两个入口：
+This directory preserves Noval's earliest handwritten Agent prototype. It is a
+historical learning artifact, not the current architecture.
 
-- `run_v0`: 最小聊天循环
-- `run_v1`: 加入 OpenAI-compatible tool calling 后的工具循环
+- `run_v0` is a minimal chat loop.
+- `run_v1` adds OpenAI-compatible tool calling.
 
-运行前需要安装 `openai` 包，并设置 DeepSeek API Key：
-
-```bash
-export DEEPSEEK_API_KEY="sk-..."
-```
-
-Windows PowerShell：
+Install `openai`, set a DeepSeek API key, and run the file:
 
 ```powershell
-$env:DEEPSEEK_API_KEY="sk-..."
+$env:DEEPSEEK_API_KEY="your-key"
+python examples/agent-v0-single-file/agent.py
 ```
 
-```bash
-python agent.py
-```
+The production implementation lives under `noval/` and adds the registry,
+executor, authority, isolation, canonical state, recovery, and Application API
+boundaries that this prototype intentionally lacks.

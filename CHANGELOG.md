@@ -1,8 +1,28 @@
 # Changelog
 
-本文件记录 Noval 可对外识别的版本里程碑。项目尚处于 `0.x` 阶段，接口可能继续演进。
+This file records user-visible Noval milestones. The project remains pre-1.0,
+so public contracts may continue to evolve.
 
 ## [Unreleased]
+
+### Changed
+
+- Adopted the strong-model, thin-harness doctrine: the model chooses task
+  strategy while Noval owns authority, execution, durable state, and configured
+  validation boundaries.
+- Replaced the coding-specific default system prompt with the domain-neutral
+  `principle-guided-v1` operating contract.
+- Made English the canonical public documentation language with first-class
+  Simplified Chinese entry points and preserved the v0.1-v0.10 Chinese design
+  ledger as historical context.
+
+### Added
+
+- Public philosophy, canonical design summary, ADR index, and ADR-0004 for
+  principle-guided, invariant-enforced autonomy.
+- Structured GitHub Issue Forms, pull-request template, security policy,
+  Dependabot configuration, CodeQL workflow, package-build smoke checks, and a
+  non-publishing release verification workflow.
 
 ## [0.10.0] - 2026-07-19
 

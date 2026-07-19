@@ -1,16 +1,26 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=77.0.3"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "noval"
 version = "0.10.0"
-description = "一个与场景解耦的通用 Agent 小核心（不局限于 coding）"
+description = "A provider-neutral execution kernel for strong-model, thin-harness agents"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "kestiny" }]
-keywords = ["agent", "llm", "tool-calling", "deepseek", "openai"]
+keywords = ["agent", "llm", "tool-calling", "agent-runtime", "sandbox", "mcp"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Software Development :: Libraries :: Application Frameworks",
+]
 dependencies = ["openai>=1.0", "mcp>=1,<2"]
 
 [project.optional-dependencies]
@@ -22,6 +32,8 @@ Homepage = "https://github.com/kestiny18/Noval"
 Repository = "https://github.com/kestiny18/Noval"
 Issues = "https://github.com/kestiny18/Noval/issues"
 Changelog = "https://github.com/kestiny18/Noval/blob/main/CHANGELOG.md"
+Philosophy = "https://github.com/kestiny18/Noval/blob/main/PHILOSOPHY.md"
+Security = "https://github.com/kestiny18/Noval/security/policy"
 
 [project.scripts]
 noval = "noval.cli:run_cli"

@@ -320,21 +320,25 @@ def test_system_prompt_assembly_order():
 
 
 def test_default_system_prompt_when_not_overridden():
-    from noval.agent import DEFAULT_SYSTEM_PROMPT
+    from noval.agent import DEFAULT_SYSTEM_PROMPT, SYSTEM_PROMPT_VERSION
     agent = Agent(
         MockClient([mock_text("hi")]),
         cfg(),
         skill_registry=SkillRegistry([]),
     )        # 不传任何 system_prompt
     assert agent.messages[0].text == DEFAULT_SYSTEM_PROMPT
-    assert "默认先只读调查" in DEFAULT_SYSTEM_PROMPT
-    assert "等待确认后再执行" in DEFAULT_SYSTEM_PROMPT
+    assert SYSTEM_PROMPT_VERSION == "principle-guided-v1"
+    assert "least elaborate method" in DEFAULT_SYSTEM_PROMPT
+    assert "observed facts, inferences, and assumptions" in DEFAULT_SYSTEM_PROMPT
+    assert "read-only tools" in DEFAULT_SYSTEM_PROMPT
     assert "FULL_ACCESS" in DEFAULT_SYSTEM_PROMPT
-    assert "只授权执行验证" in DEFAULT_SYSTEM_PROMPT
-    assert "不授权修改源码" in DEFAULT_SYSTEM_PROMPT
-    assert "等待用户明确确认" in DEFAULT_SYSTEM_PROMPT
-    assert "运行相关测试" in DEFAULT_SYSTEM_PROMPT
-    assert "commit hash" in DEFAULT_SYSTEM_PROMPT
+    assert "does not expand the user's scope" in DEFAULT_SYSTEM_PROMPT
+    assert "verify in proportion" in DEFAULT_SYSTEM_PROMPT
+    assert "strength and freshness" in DEFAULT_SYSTEM_PROMPT
+    assert "workflow ritual" in DEFAULT_SYSTEM_PROMPT
+    assert "The model chooses the strategy" in DEFAULT_SYSTEM_PROMPT
+    assert "git commit" not in DEFAULT_SYSTEM_PROMPT.lower()
+    assert "planner" not in DEFAULT_SYSTEM_PROMPT.lower()
 
 
 def test_agent_injects_skill_index_without_full_skill_body(tmp_path):

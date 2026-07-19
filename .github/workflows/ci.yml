@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -14,7 +15,9 @@ concurrency:
 
 jobs:
   test:
+    name: Python ${{ matrix.python-version }} / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -24,21 +27,52 @@ jobs:
           - os: windows-latest
             python-version: "3.13"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-      - run: python -m pip install -e ".[dev]"
-      - run: python -m pytest -q
+      - name: Install development dependencies
+        run: python -m pip install -e ".[dev]"
+      - name: Compile Python sources
+        run: python -m compileall -q noval examples evals
+      - name: Run offline test suite
+        run: python -m pytest -q
+
+  package:
+    name: Build package
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install build frontend
+        run: python -m pip install build
+      - name: Build source and wheel distributions
+        run: python -m build
+      - name: Install built wheel
+        run: python -m pip install dist/*.whl
+      - name: Import installed package
+        run: python -c "import noval; print(noval.__name__)"
 
   bubblewrap:
+    name: Linux hard-sandbox escapes
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     env:
       NOVAL_REQUIRE_BUBBLEWRAP: "1"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.13"
           cache: pip
@@ -50,6 +84,7 @@ jobs:
             /usr/share/apparmor/extra-profiles/bwrap-userns-restrict \
             /etc/apparmor.d/bwrap-userns-restrict
           sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
-      - run: python -m pip install -e ".[dev]"
+      - name: Install development dependencies
+        run: python -m pip install -e ".[dev]"
       - name: Run real sandbox escape tests
         run: python -m pytest -q tests/test_bubblewrap.py tests/test_hooks.py

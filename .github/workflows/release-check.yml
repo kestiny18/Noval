@@ -1,0 +1,49 @@
+name: Release check
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify release artifact
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install release dependencies
+        run: python -m pip install -e ".[dev]" build
+      - name: Check tag matches package version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          python - <<'PY'
+          import os
+          import tomllib
+          from pathlib import Path
+
+          tag = os.environ["GITHUB_REF_NAME"]
+          version = tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"]
+          if tag != f"v{version}":
+              raise SystemExit(f"tag {tag!r} does not match project version {version!r}")
+          PY
+      - name: Run offline test suite
+        run: python -m pytest -q
+      - name: Build source and wheel distributions
+        run: python -m build
+      - name: Upload verified distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: noval-${{ github.ref_name }}
+          path: dist/*
+          if-no-files-found: error

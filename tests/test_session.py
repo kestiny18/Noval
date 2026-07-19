@@ -216,7 +216,7 @@ def test_v1_session_is_listed_as_incompatible_and_open_fails_without_mutation(tm
     assert meta.compatible is False
     assert meta.schema_version == 1
     assert "不兼容" in meta.title
-    with pytest.raises(UnsupportedSessionVersion, match="schema v1"):
+    with pytest.raises(UnsupportedSessionVersion, match="当前 Noval 只读取 schema v2"):
         JsonlSessionStore.open(base, workdir, "legacy", "model-a")
     assert path.read_text(encoding="utf-8") == original
 

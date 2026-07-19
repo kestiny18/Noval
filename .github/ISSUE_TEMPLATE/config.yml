@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/kestiny18/Noval/security/advisories/new
+    about: Report vulnerabilities privately. Do not open a public Issue.
+  - name: Design philosophy
+    url: https://github.com/kestiny18/Noval/blob/main/PHILOSOPHY.md
+    about: Read the strong-model, thin-harness doctrine before proposing a core workflow.

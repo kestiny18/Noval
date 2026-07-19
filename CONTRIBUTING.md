@@ -1,44 +1,79 @@
-# 贡献指南
+# Contributing to Noval
 
-欢迎参与 Noval。这是一个刻意保持最小的通用 agent 内核，贡献前请先读两份核心文档：
+[简体中文](CONTRIBUTING.zh-CN.md)
 
-- [AGENTS.md](AGENTS.md) —— 不可破坏的约束（三条接缝、工具契约、验收标准）
-- [DESIGN.md](DESIGN.md) —— 每个决策的「为什么」
+Thank you for helping build Noval. This repository values small, reviewable
+changes that strengthen a domain-neutral execution kernel.
 
-## 本地开发
+Before changing code, read:
+
+- [PHILOSOPHY.md](PHILOSOPHY.md) — why Noval uses a strong-model, thin-harness architecture;
+- [AGENTS.md](AGENTS.md) — implementation invariants;
+- [DESIGN.md](DESIGN.md) — current architecture;
+- [Architecture Decision Records](docs/adr/README.md) — normative decisions.
+
+## Local development
 
 ```bash
 git clone https://github.com/kestiny18/Noval.git
 cd Noval
-python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\Activate.ps1
-pip install -e ".[dev]"
-pytest -q
+python -m venv .venv
+
+# Windows PowerShell: .venv\Scripts\Activate.ps1
+# macOS/Linux: source .venv/bin/activate
+
+python -m pip install -e ".[dev]"
+python -m pytest -q
 ```
 
-## 加一个工具
+The normal suite is offline. Use `MockClient` to test complete model/tool loops
+without credentials or network calls.
 
-按设计，加工具 = 写一个带类型注解的函数 + 一行 `@tool`，错误/截断/确认/日志/schema 全自动继承：
+## Where a change belongs
+
+Before adding a core abstraction, ask whether it establishes a domain-neutral
+boundary for reality, authority, continuity, or evidence.
+
+- Domain procedure or prompt: Skill.
+- External capability: tool or MCP server.
+- Project acceptance policy: Hook.
+- UI, queueing, or transport: host application.
+- Cross-cutting execution invariant: Noval core, with an ADR when significant.
+
+Do not add mandatory Planner/Executor/Reviewer roles to solve one workflow.
+
+## Adding a tool
 
 ```python
-from noval.tools import tool, Risk, ToolError
+from noval.tools import Risk, ToolError, tool
 
-@tool(risk=Risk.WRITE, param_descriptions={"path": "目标路径"})
-def write_file(path: str, content: str) -> str:
-    """把内容写入文件，覆盖已有内容。"""
+@tool(risk=Risk.READ, param_descriptions={"path": "Target path"})
+def inspect_file(path: str) -> str:
+    """Inspect a domain-specific file."""
     ...
 ```
 
-工具契约（只需记住这条）：
-- 成功 → `return 原始内容`（别自己 try/except 兜底）
-- 领域错误 → `raise ToolError("带领域信息的好提示")`
-- 其余（通用异常、超时、截断、确认、日志）由框架负责
+- Return raw domain content on success.
+- Raise `ToolError` only for a corrective domain failure.
+- Leave generic errors, permission, timeout, truncation, redaction, and logging
+  to the executor.
 
-## 提 PR 前
+## Pull requests
 
-- `pytest -q` 全绿，并为新行为补测试（用 `MockClient` 可离线测整条循环）。
-- 改了原则性约束，请同步更新 AGENTS.md / DESIGN.md。
-- 提交信息说清「做了什么 + 为什么」。
+- Keep one coherent outcome per PR.
+- Add or update tests for behavior changes.
+- Add an ADR for a new public contract, core seam, or cross-cutting invariant.
+- Update English canonical documentation first; update the Chinese entry point
+  when user-facing meaning changes.
+- Run `python -m pytest -q`, `python -m compileall -q noval examples evals`, and
+  `git diff --check`.
+- Report exact validation results. Do not claim tests that were not run.
 
-## 报 Issue
+## Issues
 
-带上复现步骤、期望行为、实际行为，以及 Python 版本 / 操作系统。
+Use the structured templates. Include a minimal reproduction, expected and
+actual behavior, operating system, Python version, and whether persistent
+Sessions or external processes are involved.
+
+Security vulnerabilities must follow [SECURITY.md](SECURITY.md), not a public
+Issue.

@@ -86,7 +86,7 @@ class UnsupportedSessionVersion(ValueError):
         self.version = version
         super().__init__(
             f"会话 {session_id} 使用不兼容的 schema v{version}; "
-            f"Noval v0.9 只读取 schema v{SCHEMA_VERSION}，原文件未被修改"
+            f"当前 Noval 只读取 schema v{SCHEMA_VERSION}，原文件未被修改"
         )
 
 

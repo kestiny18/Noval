@@ -1,0 +1,67 @@
+name: Bug report
+description: Report a reproducible defect in Noval core.
+title: "[Bug] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for helping improve Noval. Do not include credentials, private session logs, or proprietary code.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What went wrong, in one clear paragraph?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Include the smallest code, configuration, or command sequence that reproduces the problem.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include sanitized error text. Do not paste complete Provider responses or Session files.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Noval version or commit
+      placeholder: v0.10.0 or 2dc44c0
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Python and operating system
+      placeholder: Python 3.13.5, Windows 11
+    validations:
+      required: true
+  - type: dropdown
+    id: persistence
+    attributes:
+      label: Session mode
+      options:
+        - Ephemeral
+        - Persistent
+        - Not applicable
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Safety check
+      options:
+        - label: I removed credentials, private paths, private code, and opaque reasoning from this report.
+          required: true

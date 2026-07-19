@@ -1,0 +1,49 @@
+name: Capability request
+description: Propose a domain-neutral capability or extension seam.
+title: "[Capability] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Noval keeps the core thin. Please explain why this belongs in the kernel rather than a Skill, MCP server, project Hook, or host application.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What real limitation or failure does this address?
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Provide a sanitized reproduction, trace, or Eval case rather than only a desired feature list.
+    validations:
+      required: true
+  - type: dropdown
+    id: boundary
+    attributes:
+      label: Proposed boundary
+      options:
+        - Core execution invariant
+        - Provider adapter
+        - Tool or MCP capability
+        - Skill or project Hook
+        - Host application
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Include the smallest viable alternative and its trade-offs.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance evidence
+      description: What deterministic test, Eval, or observable result would prove this works?
+    validations:
+      required: true
