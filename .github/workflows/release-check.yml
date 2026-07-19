@@ -42,7 +42,7 @@ jobs:
       - name: Build source and wheel distributions
         run: python -m build
       - name: Upload verified distributions
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: noval-${{ github.ref_name }}
           path: dist/*
