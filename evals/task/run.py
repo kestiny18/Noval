@@ -256,7 +256,7 @@ def render_markdown(report: Dict[str, Any]) -> str:
     ]
     for result in report["results"]:
         mark = "PASS" if result["passed"] else "FAIL"
-        lines.append(f"- {mark} `{result['case_id']}` — {result['title']}")
+        lines.append(f"- {mark} `{result['case_id']}` - {result['title']}")
         for failure in result["failures"]:
             lines.append(f"  - {failure['code']}: {failure['message']}")
     return "\n".join(lines)

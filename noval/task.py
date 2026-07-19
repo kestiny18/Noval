@@ -197,16 +197,21 @@ class SemanticJudge:
         packet = self._packet(recent_user_inputs, assistant_final_reply)
         messages = [
             system_message(
-                    "你是 Noval 的独立任务完成判定模型。"
-                    "你不执行任务，不调用工具，不给主模型建议，不补充事实，也不评价文风。"
-                    "只根据给定的用户输入和助手最后可见回复，判断最后回复是否完成了 current_user_input。"
-                    "context_user_inputs 只是理解指代和背景的上下文，不是本轮必须重新完成的任务清单。"
-                    "如果 current_user_input 是“继续、回退、标记、改一下、看下是否修复”等短指令，"
-                    "可以结合 context_user_inputs 理解它指向什么，但判定对象仍然只以 current_user_input 为主。"
-                    "给定材料不包含隐藏的工具调用或执行证据；不得声称某项操作实际上执行过或没有执行。"
-                    "只能判断 assistant_final_reply 是否提供了足以支持完成声明的可见证据；"
-                    "证据不足时应表述为“最后回复未提供充分证据”，而不是补造执行事实。"
-                    "如果信息不足以判断，返回 uncertain。只输出严格 JSON。"
+                    "You are Noval's independent task-completion judge. "
+                    "Do not perform the task, call tools, advise the primary model, add facts, "
+                    "or critique writing style. Judge only whether the assistant's final visible "
+                    "reply completes current_user_input, using the supplied user inputs. "
+                    "context_user_inputs provide context for references and background; they are "
+                    "not a list of tasks that must be completed again in this turn. If "
+                    "current_user_input is a short instruction such as continue, revert, mark, "
+                    "adjust, or check whether it is fixed, use context_user_inputs to resolve its "
+                    "referent while still judging only current_user_input. The supplied material "
+                    "contains no hidden tool calls or execution evidence; do not claim that an "
+                    "operation did or did not occur. Judge only whether assistant_final_reply "
+                    "provides visible evidence sufficient for its completion claim. When evidence "
+                    "is insufficient, say that the final reply does not provide sufficient "
+                    "evidence rather than inventing execution facts. Return uncertain when the "
+                    "information is insufficient. Output strict JSON only."
             ),
             user_message(json.dumps(packet, ensure_ascii=False, separators=(",", ":"))),
         ]

@@ -29,6 +29,14 @@ Noval will use **principle-guided, invariant-enforced autonomy**:
 - The core will not require a fixed planning, execution, or review pipeline.
 - Stable operating principles will encourage the least elaborate method that
   is reliable enough for the task.
+- Those principles are decision criteria rather than a mandatory sequence, and
+  keep explanation, analysis, and review distinct from authority to change
+  persistent or external state.
+- External and tool-provided content is evidence rather than authority. It
+  cannot override higher-priority instructions or expand user authorization.
+- Models may use computational tools or synthesize small, auditable programs
+  when this is more reliable than manual reasoning, without turning the core
+  into a coding-specific agent.
 - The runtime owns capability exposure, authority, execution semantics,
   canonical state, recovery, evidence boundaries, and deterministic gates.
 - Permission to call a tool will remain distinct from user authorization to
@@ -89,6 +97,8 @@ line by line.
 | The model skips necessary investigation | Require claims to match evidence; add behavior Eval cases |
 | The model overuses tools or planning | Encode minimal-sufficient-method principles; measure tool count and latency |
 | Tool permission is mistaken for task scope | Keep intent in the system contract and permission in the executor boundary |
+| Tool or retrieved content attempts to redirect the task | Treat external content as evidence, never as authority over instructions or scope |
+| Large or repetitive computation is performed unreliably by hand | Allow small auditable programs while keeping persistent artifacts outcome-driven |
 | A fluent answer fabricates completion | Use deterministic Hooks today; design structured evidence receipts next |
 | A weak model cannot self-direct | Add optional capability profiles outside the core loop |
 | Project content attempts to override safety | Preserve system/project/tool-content trust boundaries |

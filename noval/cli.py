@@ -69,14 +69,14 @@ def _choose_resume_session(sessions: Sequence[SessionInfo]) -> Optional[str]:
     if not sessions:
         return None
     shown = list(sessions[:20])
-    print("\n可恢复的会话：")
+    print("\nResumable sessions:")
     for index, session in enumerate(shown, 1):
-        compatibility = "" if session.compatible else "  [不可恢复]"
+        compatibility = "" if session.compatible else "  [incompatible]"
         print(
-            f"  {index}. {session.title or '(无标题)'}  [{session.session_id}]  "
-            f"{session.last_active or ''}  {session.message_count} 条{compatibility}"
+            f"  {index}. {session.title or '(untitled)'}  [{session.session_id}]  "
+            f"{session.last_active or ''}  {session.message_count} messages{compatibility}"
         )
-    answer = input("选择编号/session id（回车=最近，n=新会话）: ").strip()
+    answer = input("Select a number or session ID (Enter=latest, n=new): ").strip()
     if not answer:
         selected = next((item for item in shown if item.compatible), None)
         return selected.session_id if selected is not None else None
@@ -86,28 +86,28 @@ def _choose_resume_session(sessions: Sequence[SessionInfo]) -> Optional[str]:
         selected = shown[int(answer) - 1]
         if not selected.compatible:
             raise SystemExit(
-                f"会话 {selected.session_id} 使用不兼容的 schema，不能恢复"
+                f"Session {selected.session_id} uses an incompatible schema and cannot be resumed"
             )
         return selected.session_id
     matches = [item for item in sessions if item.session_id.startswith(answer)]
     if len(matches) == 1:
         if not matches[0].compatible:
             raise SystemExit(
-                f"会话 {matches[0].session_id} 使用不兼容的 schema，不能恢复"
+                f"Session {matches[0].session_id} uses an incompatible schema and cannot be resumed"
             )
         return matches[0].session_id
-    raise SystemExit(f"无效的会话选择: {answer}")
+    raise SystemExit(f"Invalid session selection: {answer}")
 
 
 def _permission_status(session: AgentSession) -> str:
     state = session.permission_state()
-    approved = ", ".join(state.approved_tools) or "无"
+    approved = ", ".join(state.approved_tools) or "none"
     if state.mode is PermissionMode.FULL_ACCESS:
-        lines = ["权限模式: 完全访问 (full_access)", "工具审批: 全部允许"]
+        lines = ["Permission mode: full access (full_access)", "Tool approval: all allowed"]
         if state.approved_tools:
-            lines.append(f"请求批准模式保留授权: {approved}")
+            lines.append(f"Approvals retained for ask mode: {approved}")
         return "\n".join(lines)
-    return f"权限模式: 请求批准 (ask)\n本会话始终允许: {approved}"
+    return f"Permission mode: ask for approval (ask)\nAlways allowed in this session: {approved}"
 
 
 def _handle_permissions_command(
@@ -133,7 +133,7 @@ def _handle_permissions_command(
         tool_name = parts[2]
         if action == "allow" and tool_name not in session.available_tools:
             return (
-                f"未知工具 '{tool_name}'。可用工具: "
+                f"Unknown tool '{tool_name}'. Available tools: "
                 + ", ".join(sorted(session.available_tools))
             )
         if action == "allow":
@@ -142,18 +142,18 @@ def _handle_permissions_command(
             session.revoke_tool(tool_name)
         return _permission_status(session)
     return (
-        "用法: /permissions [ask|full-access|reset|"
+        "Usage: /permissions [ask|full-access|reset|"
         "allow <tool>|revoke <tool>]"
     )
 
 
 def _cli_permission_handler(request: PermissionRequest) -> PermissionDecision:
-    print(f"\n工具 '{request.tool_name}' (风险: {request.risk}) 请求执行")
-    print(f"    参数: {request.arguments}")
-    always = f"[a]本会话总是允许 {request.tool_name}"
+    print(f"\nTool '{request.tool_name}' requests execution (risk: {request.risk})")
+    print(f"    Arguments: {request.arguments}")
+    always = f"[a] always allow {request.tool_name} for this session"
     if request.tool_name == "run_bash":
-        always += "（包括后续任意命令）"
-    answer = input(f"    允许执行? [y]是 / {always} / [N]否 ").strip().lower()
+        always += " (including any later command)"
+    answer = input(f"    Allow execution? [y] yes / {always} / [N] no ").strip().lower()
     if answer in {"a", "always"}:
         return PermissionDecision.ALLOW_SESSION
     if answer in {"y", "yes"}:
@@ -166,17 +166,17 @@ def _reasoning_mode_status(config: Config) -> str:
         "deepseek" in config.base_url.lower()
         or config.model.lower().startswith("deepseek")
     ):
-        return "已开启（DeepSeek 默认）"
-    return "由 Provider 决定"
+        return "enabled (DeepSeek default)"
+    return "provider-controlled"
 
 
 def _format_reasoning_summary(metrics: TurnMetrics) -> Optional[str]:
     if not metrics.model_calls or not metrics.reasoning_tokens:
         return None
     return (
-        f"思考: {metrics.reasoning_tokens:,} reasoning tokens · "
-        f"模型耗时 {metrics.model_duration_ms / 1000:.1f}s · "
-        f"{metrics.tool_calls} 次工具调用"
+        f"Reasoning: {metrics.reasoning_tokens:,} tokens · "
+        f"model time {metrics.model_duration_ms / 1000:.1f}s · "
+        f"{metrics.tool_calls} tool calls"
     )
 
 
@@ -187,38 +187,38 @@ def _handle_reasoning_command(
 ) -> Optional[str]:
     if user_input.strip().lower() != "/reasoning":
         return None
-    summary = _format_reasoning_summary(metrics) or "上次请求: 无"
-    if summary.startswith("思考: "):
-        summary = "上次请求: " + summary[len("思考: "):]
+    summary = _format_reasoning_summary(metrics) or "Last request: none"
+    if summary.startswith("Reasoning: "):
+        summary = "Last request: " + summary[len("Reasoning: "):]
     return (
-        f"思考模式: {_reasoning_mode_status(config)}\n"
-        "思考强度: Provider 自动\n"
+        f"Reasoning mode: {_reasoning_mode_status(config)}\n"
+        "Reasoning effort: provider-controlled\n"
         f"{summary}\n"
-        "原始思考过程: 不展示"
+        "Raw reasoning trace: hidden"
     )
 
 
 def _format_usage_breakdown(usage: UsageBreakdown, *, indent: str = "") -> List[str]:
     lines = [
-        f"{indent}请求次数: {usage.requests:,}",
-        f"{indent}输入: {usage.prompt_tokens:,}",
+        f"{indent}Requests: {usage.requests:,}",
+        f"{indent}Input: {usage.prompt_tokens:,}",
     ]
     if usage.cache_reported:
         cache_total = usage.cache_hit_tokens + usage.cache_miss_tokens
         hit_rate = usage.cache_hit_tokens / cache_total * 100 if cache_total else 0.0
         lines.extend([
-            f"{indent}  缓存命中: {usage.cache_hit_tokens:,} ({hit_rate:.1f}%)",
-            f"{indent}  缓存未命中: {usage.cache_miss_tokens:,}",
+            f"{indent}  Cache hits: {usage.cache_hit_tokens:,} ({hit_rate:.1f}%)",
+            f"{indent}  Cache misses: {usage.cache_miss_tokens:,}",
         ])
-    lines.append(f"{indent}输出: {usage.completion_tokens:,}")
+    lines.append(f"{indent}Output: {usage.completion_tokens:,}")
     if usage.reasoning_reported:
-        lines.append(f"{indent}  其中 reasoning: {usage.reasoning_tokens:,}")
-    lines.append(f"{indent}总计: {usage.total_tokens:,}")
+        lines.append(f"{indent}  Reasoning: {usage.reasoning_tokens:,}")
+    lines.append(f"{indent}Total: {usage.total_tokens:,}")
     return lines
 
 
 def _format_usage_summary(summary: UsageSummary) -> str:
-    lines = [f"今日 Token 使用 ({summary.day.isoformat()})"]
+    lines = [f"Token usage today ({summary.day.isoformat()})"]
     lines.extend(_format_usage_breakdown(summary.total))
     return "\n".join(lines)
 
@@ -230,17 +230,17 @@ def _handle_usage_command(
     if user_input.strip().lower() != "/usage":
         return None
     if store is None:
-        return "Token 统计已关闭。"
+        return "Token usage tracking is disabled."
     try:
         return _format_usage_summary(store.summarize())
     except Exception:
-        log.warning("读取 token 用量统计失败", exc_info=True)
-        return "Token 统计暂时无法读取，请查看运行日志。"
+        log.warning("failed to read token usage statistics", exc_info=True)
+        return "Token usage statistics are temporarily unavailable; check the runtime log."
 
 
 def _parse_args(argv: Optional[List[str]]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="noval")
-    parser.add_argument("--workdir", help="工作目录；不指定则用当前启动目录")
+    parser.add_argument("--workdir", help="working directory; defaults to the launch directory")
     parser.add_argument(
         "--sandbox",
         choices=[mode.value for mode in SandboxMode],
@@ -256,7 +256,7 @@ def _parse_args(argv: Optional[List[str]]) -> argparse.Namespace:
         nargs="?",
         const="",
         metavar="SESSION_ID",
-        help="恢复当前 workdir 的历史会话；不填 ID 时进入选择器",
+        help="resume a session for the current workdir; omit the ID to open the selector",
     )
     return parser.parse_args(argv)
 
@@ -265,11 +265,11 @@ def run_cli(argv: Optional[List[str]] = None) -> None:
     args = _parse_args(argv)
     workdir = Path(args.workdir).expanduser().resolve() if args.workdir else Path.cwd()
     if not workdir.is_dir():
-        raise SystemExit(f"--workdir 不是有效目录: {workdir}")
+        raise SystemExit(f"--workdir is not a valid directory: {workdir}")
 
     config = Config.load()
     if args.resume is not None and not config.persist_sessions:
-        raise SystemExit("--resume 需要 settings.json 中 persist_sessions=true")
+        raise SystemExit("--resume requires persist_sessions=true in settings.json")
     options = SessionOptions(
         workdir=str(workdir),
         persistence=SessionPersistence.DEFAULT,
@@ -300,7 +300,7 @@ def run_cli(argv: Optional[List[str]] = None) -> None:
                 )
                 resumed = True
             else:
-                print("没有选择可恢复会话，已开启新会话。")
+                print("No resumable session was selected; started a new session.")
                 session = runtime.create_session(
                     options,
                     permission_handler=_cli_permission_handler,
@@ -313,19 +313,19 @@ def run_cli(argv: Optional[List[str]] = None) -> None:
         JsonlUsageStore(config.usage_dir(), session.info.session_id)
         if config.persist_usage else None
     )
-    print(f"Noval 已就绪 (workdir: {workdir})。输入 'exit' 退出。")
+    print(f"Noval is ready (workdir: {workdir}). Type 'exit' to quit.")
     if resumed:
         print(
-            f"已恢复会话 {session.info.session_id}"
-            f"（{session.info.message_count} 条历史消息）"
+            f"Resumed session {session.info.session_id} "
+            f"({session.info.message_count} historical messages)"
         )
     elif session.info.persistence is SessionPersistence.PERSISTENT:
-        print(f"会话持久化已开启（session: {session.info.session_id}）")
+        print(f"Session persistence is enabled (session: {session.info.session_id})")
     state = session.permission_state()
-    print(f"权限模式: {state.mode.label}")
+    print(f"Permission mode: {state.mode.label}")
     if state.approved_tools:
-        print(f"本会话始终允许: {', '.join(state.approved_tools)}")
-    print(f"思考模式: {_reasoning_mode_status(config)}")
+        print(f"Always allowed in this session: {', '.join(state.approved_tools)}")
+    print(f"Reasoning mode: {_reasoning_mode_status(config)}")
 
     last_metrics = TurnMetrics()
     try:
@@ -356,15 +356,15 @@ def run_cli(argv: Optional[List[str]] = None) -> None:
                 result = session.run_turn(TurnRequest(user_input))
             except NovalError as error:
                 print()
-                _print_turn("Noval", f"[出错 {error.code}: {error.safe_message}]")
+                _print_turn("Noval", f"[Error {error.code}: {error.safe_message}]")
                 continue
             last_metrics = result.metrics
             if result.message is not None:
                 reply = result.message.text
             elif result.error is not None:
-                reply = f"[出错 {result.error.code}: {result.error.safe_message}]"
+                reply = f"[Error {result.error.code}: {result.error.safe_message}]"
             else:
-                reply = "（本轮没有可显示的结果。）"
+                reply = "(No displayable result for this turn.)"
             print()
             _print_turn("Noval", reply)
             summary = _format_reasoning_summary(result.metrics)
@@ -375,7 +375,7 @@ def run_cli(argv: Optional[List[str]] = None) -> None:
     finally:
         session.close()
         runtime.close()
-    print("\n再见！")
+    print("\nGoodbye!")
 
 
 if __name__ == "__main__":

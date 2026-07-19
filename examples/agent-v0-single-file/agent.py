@@ -5,7 +5,7 @@ from openai import OpenAI
 
 api_key = os.environ.get("DEEPSEEK_API_KEY")
 if not api_key:
-    raise RuntimeError("请先设置环境变量 DEEPSEEK_API_KEY")
+    raise RuntimeError("Set the DEEPSEEK_API_KEY environment variable first")
 
 client = OpenAI(
     base_url="https://api.deepseek.com",
@@ -13,7 +13,7 @@ client = OpenAI(
 )
 
 
-# 定义工具的结构
+# Define the tool structure.
 class ToolDefinition:
     def __init__(self, name: str, description: str, parameters: Dict[str, Any], function: Callable):
         self.name = name
@@ -22,7 +22,7 @@ class ToolDefinition:
         self.function = function
 
 
-# read_file 工具的实现
+# read_file implementation.
 def read_file(path: str) -> str:
     try:
         with open(path, 'r', encoding='utf-8') as file:
@@ -44,11 +44,11 @@ read_file_parameters = {
 
 read_file_tool = ToolDefinition(
     name="read_file",
-    description="读取指定路径的文件内容。当你需要查看文件内容时使用此工具。不要用于目录。",
+    description="Read file content from a path. Use this to inspect files, not directories.",
     parameters=read_file_parameters,
     function=read_file
 )
-# read_file 工具的定义 END
+# End of read_file definition.
 
 
 def to_openai_tool(tool: ToolDefinition) -> Dict:

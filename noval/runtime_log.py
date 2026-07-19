@@ -151,5 +151,7 @@ def setup_runtime_logging(
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("openai").setLevel(logging.WARNING)
     if file_error is not None:
-        logging.getLogger("noval.runtime_log").warning("运行日志文件不可用: %s", file_error)
+        logging.getLogger("noval.runtime_log").warning(
+            "runtime log file is unavailable: %s", file_error
+        )
     return path

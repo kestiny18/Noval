@@ -1,13 +1,17 @@
-"""会话持久化（接缝4）—— 与具体存储后端解耦的「会话日志」抽象。
+"""Session persistence (seam 4), independent of the storage backend.
 
-设计见 DESIGN.md 决策 18。一句话契约：
-  - **持久态**：canonical user/assistant/tool block messages，一条不少，append-only。
-  - **派生态**：system(人设+env+项目记忆) 不存，恢复时按当前环境重建。
-  - **形状**：schema v2 每会话一个 `.jsonl`，每行 `{seq, ts, message}`，首行 `{_meta}`。
-        时间(ts)留在信封层，不进入 canonical message 或 Provider 请求。
+See DESIGN.md decision 18. The contract is:
+  - **Persistent state**: every canonical user/assistant/tool block message,
+    stored append-only.
+  - **Derived state**: system identity, environment, and project instructions
+    are rebuilt from the current environment instead of being stored.
+  - **Shape**: schema v2 uses one `.jsonl` file per session, with
+    `{seq, ts, message}` envelopes after an initial `{_meta}` record. Timestamps
+    stay in the envelope and never enter canonical messages or provider input.
 
-`agent.py` 只依赖 `SessionStore` 协议(像依赖 LLMClient/approver 一样注入)，
-永不直接 json.dump。换 DB = 写一个新适配器，循环与 Agent 一行不动。
+`agent.py` depends only on the injected `SessionStore` protocol, just as it
+depends on the LLM client and permission handler. Replacing the database means
+adding an adapter, without changing the agent loop.
 """
 from __future__ import annotations
 
@@ -33,7 +37,7 @@ _SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 
 # ---------------------------------------------------------------------------
-# Agent 看到的接缝：只有「往当前会话追加」和「读回当前会话」两件事
+# The agent-facing seam only appends to and reads from the current session.
 # ---------------------------------------------------------------------------
 class SessionStore(Protocol):
     def append(self, message: ConversationMessage) -> None: ...
@@ -41,12 +45,12 @@ class SessionStore(Protocol):
 
 
 class SessionMetadataStore(Protocol):
-    def load_metadata(self) -> Dict[str, Any]: ...       # sidecar 可变会话属性
+    def load_metadata(self) -> Dict[str, Any]: ...       # Mutable session sidecar attributes.
     def update_metadata(self, updates: Dict[str, Any]) -> None: ...
 
 
 class PersistentSessionStore(SessionStore, SessionMetadataStore, Protocol):
-    """CLI 持久化会话所需的完整能力；Agent 循环仍只依赖 SessionStore。"""
+    """Full CLI persistence contract; the agent loop still uses SessionStore."""
 
     session_id: str
 
@@ -68,10 +72,10 @@ class SessionRecord:
 
 @dataclass
 class SessionMeta:
-    """给 --resume 选择器看的会话摘要（不含正文）。"""
+    """Message-free session summary for the --resume selector."""
     session_id: str
     created_at: str
-    last_active: str       # 取 .jsonl 文件 mtime，不另存
+    last_active: str       # Derived from the .jsonl mtime instead of stored.
     title: str
     message_count: int
     model: str
@@ -85,15 +89,17 @@ class UnsupportedSessionVersion(ValueError):
         self.session_id = session_id
         self.version = version
         super().__init__(
-            f"会话 {session_id} 使用不兼容的 schema v{version}; "
-            f"当前 Noval 只读取 schema v{SCHEMA_VERSION}，原文件未被修改"
+            f"Session {session_id} uses incompatible schema v{version}; "
+            f"this Noval version reads only schema v{SCHEMA_VERSION}, and the original file was not modified"
         )
 
 
 class SessionLockedError(RuntimeError):
     def __init__(self, session_id: str):
         self.session_id = session_id
-        super().__init__(f"会话 {session_id} 已被另一个进程打开，不能同时写入")
+        super().__init__(
+            f"Session {session_id} is already open in another process and cannot be written concurrently"
+        )
 
 
 class _WriterLease:
@@ -147,10 +153,10 @@ class _WriterLease:
 
 
 # ---------------------------------------------------------------------------
-# 寻址：全局 ~/.noval/sessions/<workdir-hash>/，真实路径写进 project.json 反查
+# Addressing: ~/.noval/sessions/<workdir-hash>/, with the real path in project.json.
 # ---------------------------------------------------------------------------
 def _project_hash(workdir: Path) -> str:
-    """workdir 绝对路径 → 文件系统安全的目录名（裸路径太长/含非法字符/跨机冲突）。"""
+    """Map an absolute workdir to a short, filesystem-safe directory name."""
     return hashlib.sha256(str(workdir.resolve()).encode("utf-8")).hexdigest()[:16]
 
 
@@ -159,29 +165,32 @@ def _project_dir(base_dir: Path, workdir: Path) -> Path:
 
 
 def _now_iso() -> str:
-    """带时区的 ISO8601（跨时区/DST 不歧义）。"""
+    """Return timezone-aware ISO 8601 without cross-timezone or DST ambiguity."""
     return datetime.now().astimezone().isoformat(timespec="milliseconds")
 
 
 def _atomic_write(path: Path, text: str) -> None:
-    """小文件原子写：临时文件 + os.replace（Windows 上 replace 也能覆盖目标）。
-    append-only 日志不走这里；只有 project.json / sidecar 这种「整体覆盖」的小文件用。"""
+    """Atomically replace a small file through a temporary file and os.replace.
+
+    Append-only logs do not use this path. It is reserved for small files that
+    are replaced as a whole, such as project.json and metadata sidecars.
+    """
     tmp = path.parent / (path.name + ".tmp")
     tmp.write_text(text, encoding="utf-8")
     os.replace(tmp, path)
 
 
 def _derive_title(user_content: str) -> str:
-    """无自定义标题时，从首条 user 消息派生：剥掉 <context> 时间前缀 + 截断。"""
+    """Derive a title from the first user message after removing context metadata."""
     stripped = re.sub(r"^<context>.*?</context>\s*", "", user_content, flags=re.S).strip()
     first_line = stripped.splitlines()[0] if stripped else ""
     if len(first_line) > _TITLE_MAXLEN:
         first_line = first_line[:_TITLE_MAXLEN] + "…"
-    return first_line or "(无标题)"
+    return first_line or "(untitled)"
 
 
 def _iter_records(path: Path):
-    """逐行解析 .jsonl，坏行 skip+warn（含崩溃留下的半截尾行），永不因一行废掉整会话。"""
+    """Parse JSONL records, skipping corrupt lines without losing the session."""
     try:
         fh = path.open(encoding="utf-8", errors="replace")
     except OSError:
@@ -194,21 +203,22 @@ def _iter_records(path: Path):
             try:
                 yield json.loads(line)
             except json.JSONDecodeError:
-                log.warning("跳过损坏的会话行 %s:%d", path.name, lineno)
+                log.warning("skipping corrupt session line %s:%d", path.name, lineno)
 
 
 # ---------------------------------------------------------------------------
-# JSONL 适配器：每会话一个文件，append-only
+# JSONL adapter: one append-only file per session.
 # ---------------------------------------------------------------------------
 class JsonlSessionStore:
-    """绑定到「单个会话」的存储句柄。
-    - create(): 新会话，懒创建（第一条消息落盘时才建文件/目录/header）。
-    - open():   恢复已有会话，读出末尾 seq 续号，继续追加到同一文件。
+    """Storage handle bound to one session.
+
+    - create(): lazily creates a new session on the first appended message.
+    - open(): resumes an existing session and continues after its last sequence.
     """
 
     def __init__(self, base_dir: Path, workdir: Path, session_id: str, model: str):
         if not _SESSION_ID_RE.fullmatch(session_id):
-            raise ValueError(f"非法会话 ID: {session_id!r}")
+            raise ValueError(f"invalid session ID: {session_id!r}")
         self.base_dir = Path(base_dir)
         self.workdir = Path(workdir)
         self.session_id = session_id
@@ -218,26 +228,26 @@ class JsonlSessionStore:
         self._meta_path = self._dir / f"{session_id}.meta.json"
         self._next_seq = 0
         self._header_written = False
-        self._fh = None  # type: ignore[assignment]  # 懒打开的 append 句柄
+        self._fh = None  # type: ignore[assignment]  # Lazily opened append handle.
         self._pending_metadata: Optional[Dict[str, Any]] = None
         self._lease = _WriterLease(
             self._dir / "locks" / f"{session_id}.lock",
             session_id,
         )
 
-    # --- 构造入口 ----------------------------------------------------------
+    # --- Construction ------------------------------------------------------
     @classmethod
     def create(cls, base_dir: Path, workdir: Path, model: str) -> "JsonlSessionStore":
-        """新会话。此刻不碰磁盘——空会话(进来啥也没说就退)永不落盘。"""
+        """Create a session lazily so an unused session never touches disk."""
         sid = datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(2)
         return cls(base_dir, workdir, sid, model)
 
     @classmethod
     def open(cls, base_dir: Path, workdir: Path, session_id: str, model: str) -> "JsonlSessionStore":
-        """恢复已有会话：扫一遍现有行，把 _next_seq 续到末尾，后续追加不与历史撞号。"""
+        """Resume a session and advance _next_seq beyond its persisted records."""
         store = cls(base_dir, workdir, session_id, model)
         if not store._path.exists():
-            raise FileNotFoundError(f"会话不存在: {session_id}")
+            raise FileNotFoundError(f"session not found: {session_id}")
         version = _session_schema_version(store._path)
         if version != SCHEMA_VERSION:
             raise UnsupportedSessionVersion(session_id, version if version is not None else "unknown")
@@ -250,10 +260,13 @@ class JsonlSessionStore:
         store._lease.acquire()
         return store
 
-    # --- 写 ----------------------------------------------------------------
+    # --- Write -------------------------------------------------------------
     def append(self, message: ConversationMessage) -> None:
-        """追加一条消息。首次调用时才真正建目录/文件/header（懒创建）。
-        每行写完即 flush，硬崩最多丢尾行（_iter_records 容忍半截行）。"""
+        """Append one message, creating the directory, file, and header lazily.
+
+        Each line is flushed immediately. A hard crash can lose at most the
+        incomplete tail record, which _iter_records tolerates.
+        """
         if self._fh is None:
             self._open_for_append()
         line = json.dumps(
@@ -274,7 +287,7 @@ class JsonlSessionStore:
         except Exception:
             self._lease.release()
             raise
-        try:                       # 0600：对话可能含粘贴的密钥/文件内容，收紧权限（Win 上是 no-op）
+        try:                       # 0600 protects pasted secrets and file content; a no-op on Windows.
             os.chmod(self._path, 0o600)
         except OSError:
             pass
@@ -292,7 +305,7 @@ class JsonlSessionStore:
         self._flush_metadata()
 
     def _ensure_project_json(self) -> None:
-        """project.json 写一次、纯显示元数据（反查 hash 目录对应的真实路径）。"""
+        """Write display-only metadata that maps the hash directory to its path."""
         pj = self._dir / "project.json"
         if pj.exists():
             return
@@ -302,17 +315,17 @@ class JsonlSessionStore:
         ))
 
     def set_title(self, title: str) -> None:
-        """改名 = 原子覆盖 sidecar（可变会话属性，不进 append-only 日志）。"""
+        """Rename through the mutable sidecar, outside the append-only log."""
         self.update_metadata({"title": title})
 
     def load_metadata(self) -> Dict[str, Any]:
-        """读取 sidecar；损坏或不存在时按空元数据处理。"""
+        """Read the sidecar, treating missing or corrupt content as empty."""
         if self._pending_metadata is not None:
             return dict(self._pending_metadata)
         return _read_json_object(self._meta_path)
 
     def update_metadata(self, updates: Dict[str, Any]) -> None:
-        """合并更新 sidecar；新会话仍保持懒创建，首条消息落盘时再写。"""
+        """Merge sidecar updates while preserving lazy creation for new sessions."""
         data = self.load_metadata()
         data.update(updates)
         self._pending_metadata = data
@@ -330,20 +343,20 @@ class JsonlSessionStore:
         self._pending_metadata = None
 
     def context_path(self) -> Path:
-        """该会话的派生上下文 checkpoint 文件；与原始消息日志分目录。"""
+        """Return the derived context checkpoint path, separate from raw messages."""
         return self._dir / "context" / f"{self.session_id}.jsonl"
 
     def task_path(self) -> Path:
-        """该会话的派生任务完成判定事件文件；任务事件是 append-only。"""
+        """Return the append-only path for derived task-completion events."""
         return self._dir / "task" / f"{self.session_id}.jsonl"
 
     def request_path(self) -> Path:
-        """该会话的模型请求来源日志；与 canonical Session 分开保存。"""
+        """Return the model request journal path, separate from the canonical session."""
         return self._dir / "requests" / f"{self.session_id}.jsonl"
 
-    # --- 读 ----------------------------------------------------------------
+    # --- Read --------------------------------------------------------------
     def load_records(self) -> List[SessionRecord]:
-        """读回合法消息信封，保留 seq/ts 供 checkpoint 标记来源。"""
+        """Load valid message envelopes, retaining seq and ts for checkpoints."""
         records: List[SessionRecord] = []
         for rec in _iter_records(self._path):
             if "_meta" in rec:
@@ -356,7 +369,7 @@ class JsonlSessionStore:
             try:
                 message = ConversationMessage.from_dict(raw_message)
             except MessageFormatError:
-                log.warning("跳过损坏的 canonical 会话消息: %s seq=%s", self._path, seq)
+                log.warning("skipping corrupt canonical session message: %s seq=%s", self._path, seq)
                 continue
             records.append(SessionRecord(seq=seq, ts=ts, message=message))
         return records
@@ -375,10 +388,10 @@ class JsonlSessionStore:
 
 
 # ---------------------------------------------------------------------------
-# 项目级：列举会话（无 index —— 扫目录，session 文件是唯一真相源）
+# Project-level session listing scans the source-of-truth files without an index.
 # ---------------------------------------------------------------------------
 def list_sessions(base_dir: Path, workdir: Path) -> List[SessionMeta]:
-    """列出当前 workdir 的所有会话，按最近活跃排序。供 --resume 选择器。"""
+    """List workdir sessions by most recent activity for the resume selector."""
     pdir = _project_dir(Path(base_dir), Path(workdir))
     if not pdir.is_dir():
         return []
@@ -392,7 +405,7 @@ def list_sessions(base_dir: Path, workdir: Path) -> List[SessionMeta]:
 
 
 def _read_session_meta(path: Path) -> Optional[SessionMeta]:
-    """从一个 .jsonl 读出摘要：首行 _meta + 首条 user 消息(派生标题) + 文件 mtime。"""
+    """Read a summary from metadata, the first user message, and file mtime."""
     session_id = path.stem
     created_at = ""
     model = ""
@@ -425,7 +438,7 @@ def _read_session_meta(path: Path) -> Optional[SessionMeta]:
     except OSError:
         last_active = created_at
 
-    # 标题：sidecar 优先（用户自定义），否则从首条 user 消息派生
+    # Prefer a custom sidecar title; otherwise derive it from the first user message.
     compatible = schema_version == SCHEMA_VERSION
     sidecar = _read_json_object(path.parent / (path.stem + ".meta.json"))
     title_value = sidecar.get("title")
@@ -437,9 +450,9 @@ def _read_session_meta(path: Path) -> Optional[SessionMeta]:
         else ""
     )
     if not compatible:
-        title = f"[不兼容 v{schema_version if schema_version is not None else '?'}] {title or path.stem}"
+        title = f"[incompatible v{schema_version if schema_version is not None else '?'}] {title or path.stem}"
     elif title is None:
-        title = _derive_title(first_user) if first_user else "(空会话)"
+        title = _derive_title(first_user) if first_user else "(empty session)"
     return SessionMeta(
         session_id, created_at, last_active, title, msg_count, model,
         compatible=compatible, schema_version=schema_version, provider=provider,

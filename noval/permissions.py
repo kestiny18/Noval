@@ -15,7 +15,7 @@ class PermissionMode(str, Enum):
 
     @property
     def label(self) -> str:
-        return "请求批准" if self is PermissionMode.ASK else "完全访问"
+        return "ask for approval" if self is PermissionMode.ASK else "full access"
 
 
 @dataclass
@@ -113,4 +113,7 @@ class PermissionController:
         try:
             self._on_change(self._state.to_dict())
         except Exception:
-            log.warning("会话权限状态持久化失败，当前进程内仍然生效", exc_info=True)
+            log.warning(
+                "failed to persist session permission state; in-process state remains active",
+                exc_info=True,
+            )

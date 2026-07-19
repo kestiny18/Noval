@@ -1,4 +1,4 @@
-"""内置工具行为测试 + 文件工具状态机（read-tracker / staleness）。"""
+"""Built-in tool behavior and file-state-machine tests."""
 import os
 import re
 import subprocess
@@ -153,7 +153,7 @@ def test_read_file_not_found_suggests(tmp_path):
 
 def test_read_file_empty_warns(tmp_path):
     (tmp_path / "e.txt").write_text("", encoding="utf-8")
-    assert "空" in read_file(ctx(tmp_path), "e.txt")
+    assert "empty" in read_file(ctx(tmp_path), "e.txt")
 
 
 def test_read_file_dir_rejected(tmp_path):
@@ -174,8 +174,8 @@ def test_read_file_self_limits_visible_output_and_marks_partial(tmp_path, monkey
 
     out = read_file(c, "wide.txt")
 
-    assert "继续阅读" in out
-    assert "不要声称已完整阅读" in out
+    assert "Continue with read_file" in out
+    assert "Do not claim to have read the complete file" in out
     assert "offset=" in out
     assert c.read_state[str((tmp_path / "wide.txt").resolve())].is_partial is True
     with pytest.raises(ToolError):
@@ -189,9 +189,9 @@ def test_read_file_partial_window_gives_next_offset_without_executor_style_gap(t
     out = read_file(ctx(tmp_path), "n.txt", offset=5, limit=10)
 
     assert "5\tline-5" in out
-    assert "继续阅读" in out
+    assert "Continue with read_file" in out
     assert "offset=" in out
-    assert "输出过长，已省略中间" not in out
+    assert "output truncated" not in out
 
 
 def test_read_file_chunked_windows_can_satisfy_full_read_for_edit(tmp_path, monkeypatch):
@@ -227,14 +227,14 @@ def test_read_file_partial_window_after_full_read_does_not_downgrade(tmp_path):
 
 
 def test_read_file_large_file_streams_partial(tmp_path):
-    # 整文件超过上限 → 整读被拒；但带 offset/limit 可流式读片段（不爆内存）
+    # Oversized whole-file reads fail, while offset/limit streams a bounded section.
     f = tmp_path / "big.txt"
     f.write_text("\n".join(f"line{i}" for i in range(50000)), encoding="utf-8")  # ~400KB
     c = ctx(tmp_path)
     with pytest.raises(ToolError) as e:
         read_file(c, "big.txt")
-    assert "太大" in str(e.value)
-    out = read_file(c, "big.txt", offset=100, limit=3)   # 1-based 第100行 = "line99"
+    assert "too large" in str(e.value)
+    out = read_file(c, "big.txt", offset=100, limit=3)   # 1-based line 100 is line99.
     assert "line99" in out and "line100" in out and "line102" not in out
 
 
@@ -248,7 +248,7 @@ def test_write_existing_requires_prior_read(tmp_path):
     (tmp_path / "x.txt").write_text("old", encoding="utf-8")
     with pytest.raises(ToolError) as e:
         write_file(ctx(tmp_path), "x.txt", "new")
-    assert "read" in str(e.value) or "读" in str(e.value)
+    assert "read" in str(e.value)
 
 
 def test_write_after_read_ok(tmp_path):
@@ -273,7 +273,7 @@ def test_edit_unique_then_replace_all(tmp_path):
     c = ctx(tmp_path)
     read_file(c, "e.py")
     with pytest.raises(ToolError) as e:
-        edit_file(c, "e.py", "x=1", "x=2")          # 两处匹配 → 拒绝
+        edit_file(c, "e.py", "x=1", "x=2")          # Two matches are rejected.
     assert "2" in str(e.value)
     edit_file(c, "e.py", "x=1", "x=2", replace_all=True)
     assert f.read_text(encoding="utf-8") == "x=2\nx=2"
@@ -296,7 +296,7 @@ def test_edit_old_equals_new(tmp_path):
 
 
 def test_edit_then_edit_again_no_false_stale(tmp_path):
-    # 编辑后回写 read_state，紧接着再编辑不该被自己误判为 stale
+    # Updating read_state after an edit prevents a false stale-read error.
     f = tmp_path / "e.py"
     f.write_text("a=1\nb=2", encoding="utf-8")
     c = ctx(tmp_path)
@@ -312,23 +312,23 @@ def test_staleness_blocks_write(tmp_path):
     f.write_text("v1", encoding="utf-8")
     c = ctx(tmp_path)
     read_file(c, "s.txt")
-    f.write_text("v2-external", encoding="utf-8")          # 外部改动
+    f.write_text("v2-external", encoding="utf-8")          # External change.
     rec = next(iter(c.read_state.values()))
-    rec.mtime -= 10                                          # 模拟磁盘 mtime 比记录新
+    rec.mtime -= 10                                          # Simulate a newer disk mtime.
     with pytest.raises(ToolError) as e:
         write_file(c, "s.txt", "v3")
-    assert "改动过" in str(e.value)
+    assert "changed after the last read" in str(e.value)
 
 
 def test_staleness_false_positive_allows_when_content_same(tmp_path):
-    # mtime 被推后但内容没变时，内容回退比对应放行
+    # Content comparison permits a harmless mtime-only change.
     f = tmp_path / "s.txt"
     f.write_text("same", encoding="utf-8")
     c = ctx(tmp_path)
     read_file(c, "s.txt")
     rec = next(iter(c.read_state.values()))
     rec.mtime -= 10
-    assert "updated" in write_file(c, "s.txt", "new-ok")    # 内容未变 → 不误报
+    assert "updated" in write_file(c, "s.txt", "new-ok")    # Unchanged content avoids a false positive.
 
 
 # --- list_directory -------------------------------------------------------
@@ -343,13 +343,13 @@ def test_list_directory(tmp_path):
 def test_glob_mtime_sorted(tmp_path):
     (tmp_path / "old.py").write_text("o", encoding="utf-8")
     (tmp_path / "new.py").write_text("n", encoding="utf-8")
-    os.utime(tmp_path / "old.py", (1, 1))                   # old.py 设为很旧
+    os.utime(tmp_path / "old.py", (1, 1))                   # Make old.py much older.
     out = glob(ctx(tmp_path), "*.py")
-    assert out.splitlines()[0] == "new.py"                  # 最近的在前
+    assert out.splitlines()[0] == "new.py"                  # Most recent first.
 
 
 def test_glob_no_match(tmp_path):
-    assert "未找到" in glob(ctx(tmp_path), "*.nope")
+    assert "No matching files" in glob(ctx(tmp_path), "*.nope")
 
 
 # --- grep -----------------------------------------------------------------
@@ -384,19 +384,19 @@ def test_grep_glob_filter(tmp_path):
 
 def test_grep_no_match(tmp_path):
     (tmp_path / "a.py").write_text("x", encoding="utf-8")
-    assert "未找到" in grep(ctx(tmp_path), "zzzz")
+    assert "No matches" in grep(ctx(tmp_path), "zzzz")
 
 
 def test_grep_searches_non_utf8_text(tmp_path):
-    # latin-1 文本(非 UTF-8)曾被静默跳过；现在 ASCII 匹配能搜到
-    (tmp_path / "log.txt").write_bytes("café TODO fix".encode("latin-1"))  # 0xe9 非法 UTF-8
+    # Latin-1 text remains searchable for ASCII matches.
+    (tmp_path / "log.txt").write_bytes("café TODO fix".encode("latin-1"))  # 0xe9 is invalid UTF-8.
     assert "log.txt" in grep(ctx(tmp_path), "TODO")
 
 
 def test_grep_skips_true_binary(tmp_path):
-    # 含 NUL 的真二进制仍跳过，不污染搜索结果
+    # True binary data containing NUL is skipped.
     (tmp_path / "blob.bin").write_bytes(b"\x00\x01SECRET\x00")
-    assert "未找到" in grep(ctx(tmp_path), "SECRET")
+    assert "No matches" in grep(ctx(tmp_path), "SECRET")
 
 
 # --- run_bash -------------------------------------------------------------
@@ -532,45 +532,45 @@ def test_run_bash_timeout(tmp_path):
     ])
     with pytest.raises(ToolError) as e:
         run_bash(Context(workdir=tmp_path, shell_backend=backend), command, timeout=1)
-    assert "超时" in str(e.value)
+    assert "timed out" in str(e.value)
 
 
-# --- run_bash 动态风险分级 ------------------------------------------------
+# --- Dynamic run_bash risk classification ---------------------------------
 def test_bash_risk_readonly():
     assert _bash_risk({"command": "grep -n x f"}) is Risk.READ
     assert _bash_risk({"command": "grep x f | grep y | head -20"}) is Risk.READ
     assert _bash_risk({"command": "wc -l f && ls -lh f"}) is Risk.READ
     assert _bash_risk({"command": "sed -n '100,200p' f"}) is Risk.READ
-    assert _bash_risk({"command": "zcat a.gz | grep x"}) is Risk.READ      # 扩充的只读命令
+    assert _bash_risk({"command": "zcat a.gz | grep x"}) is Risk.READ      # Additional read-only command.
 
 
 def test_bash_risk_safe_redirect_not_dangerous():
-    # 2>&1（fd 复制）与 2>/dev/null（丢黑洞）都不是真写文件 —— 不该误判（曾经的 bug）
+    # Descriptor duplication and /dev/null are not real file writes.
     assert _bash_risk({"command": 'ls -lh "c:/x" 2>&1'}) is Risk.READ
     assert _bash_risk({"command": "pwd && ls 2>&1"}) is Risk.READ
     assert _bash_risk({"command": "find / -name x 2>/dev/null | head"}) is Risk.READ
-    assert _bash_risk({"command": "grep x f > out.txt"}) is Risk.DANGEROUS    # 写真实文件
+    assert _bash_risk({"command": "grep x f > out.txt"}) is Risk.DANGEROUS    # Writes a real file.
 
 
 def test_bash_risk_dangerous():
-    assert _bash_risk({"command": "rm -rf /tmp/x"}) is Risk.DANGEROUS      # 非只读程序
-    assert _bash_risk({"command": "echo x > f"}) is Risk.DANGEROUS         # 重定向写
-    assert _bash_risk({"command": "sed -i 's/a/b/' f"}) is Risk.DANGEROUS  # 原地改
-    assert _bash_risk({"command": "cat $(rm x)"}) is Risk.DANGEROUS        # 命令替换
+    assert _bash_risk({"command": "rm -rf /tmp/x"}) is Risk.DANGEROUS      # Write-capable program.
+    assert _bash_risk({"command": "echo x > f"}) is Risk.DANGEROUS         # Output redirection.
+    assert _bash_risk({"command": "sed -i 's/a/b/' f"}) is Risk.DANGEROUS  # In-place edit.
+    assert _bash_risk({"command": "cat $(rm x)"}) is Risk.DANGEROUS        # Command substitution.
     assert _bash_risk({"command": "grep foo bar.txt\nrm -rf junk"}) is Risk.DANGEROUS
     assert _bash_risk({"command": "grep foo bar.txt\r\nrm -rf junk"}) is Risk.DANGEROUS
-    assert _bash_risk({"command": ""}) is Risk.DANGEROUS                   # 空命令保守
+    assert _bash_risk({"command": ""}) is Risk.DANGEROUS                   # Empty commands are conservative.
 
 
 def test_wsl_to_windows_translation():
     assert _wsl_to_windows("/mnt/e/WorkSpace/x") == "E:/WorkSpace/x"
-    assert _wsl_to_windows("/mnt/c") == "C:/"                 # 盘根
-    assert _wsl_to_windows("relative/path") == "relative/path"  # 非 /mnt 不动
-    assert _wsl_to_windows("/usr/local/bin") == "/usr/local/bin"  # 非挂载点不动
+    assert _wsl_to_windows("/mnt/c") == "C:/"                 # Drive root.
+    assert _wsl_to_windows("relative/path") == "relative/path"  # Non-/mnt path unchanged.
+    assert _wsl_to_windows("/usr/local/bin") == "/usr/local/bin"  # Non-mount path unchanged.
 
 
 def test_bash_risk_cd_whitelisted():
-    # cd 无害 → cd X && 只读命令 不该弹窗；但链里真危险的仍拦下
+    # cd plus a read-only command remains READ; dangerous chained commands do not.
     assert _bash_risk({"command": "cd /mnt/e/proj && grep foo bar.txt"}) is Risk.READ
     assert _bash_risk({"command": "cd /x && rm -rf y"}) is Risk.DANGEROUS
 
@@ -578,7 +578,7 @@ def test_bash_risk_cd_whitelisted():
 def test_bash_risk_git_readonly():
     assert _bash_risk({"command": "git log --oneline -5"}) is Risk.READ
     assert _bash_risk({"command": "cd /mnt/e/p && git show --stat HEAD"}) is Risk.READ
-    assert _bash_risk({"command": "git -C /path status"}) is Risk.READ       # 跳过 -C 参数
+    assert _bash_risk({"command": "git -C /path status"}) is Risk.READ       # Skip the -C argument.
     assert _bash_risk({"command": "git --no-pager diff | head"}) is Risk.READ
     assert _bash_risk({"command": "git branch -a"}) is Risk.READ
     assert _bash_risk({"command": "git branch -vv"}) is Risk.READ

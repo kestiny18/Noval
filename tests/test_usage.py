@@ -65,7 +65,7 @@ def test_store_uses_actual_event_day_and_skips_corrupt_lines(tmp_path, caplog):
 
     assert june.total.requests == 1
     assert july.total.requests == 1
-    assert "跳过损坏" in caplog.text
+    assert "skipping corrupt" in caplog.text
 
 
 def test_metered_client_records_actual_response_model(tmp_path):
@@ -90,7 +90,7 @@ def test_usage_records_and_summarizes_purpose(tmp_path):
 
     assert set(summary.by_purpose) == {"agent", "completion_judge"}
     assert summary.by_purpose["completion_judge"].requests == 1
-    assert "按用途" in text
+    assert "By purpose" in text
     assert "completion_judge" in text
 
 
@@ -117,7 +117,7 @@ def test_metering_failure_does_not_hide_model_response(caplog):
     client = MeteredLLMClient(MockClient([response]), BrokenStore(), "model")
 
     assert client.complete([], []).message.text == "still works"
-    assert "持久化失败" in caplog.text
+    assert "failed to persist token usage" in caplog.text
 
 
 def test_usage_format_shows_cache_reasoning_and_multi_model(tmp_path):
@@ -127,21 +127,21 @@ def test_usage_format_shows_cache_reasoning_and_multi_model(tmp_path):
 
     text = _format_usage_summary(store.summarize())
 
-    assert "今日 Token 使用 (2026-06-30)" in text
-    assert "请求次数: 2" in text
-    assert "缓存命中: 75 (50.0%)" in text
-    assert "其中 reasoning: 12" in text
-    assert "按模型:" in text
+    assert "Token usage today (2026-06-30)" in text
+    assert "Requests: 2" in text
+    assert "Cache hits: 75 (50.0%)" in text
+    assert "Reasoning: 12" in text
+    assert "By model:" in text
     assert text.index("model-a") < text.index("model-b")
 
 
 def test_usage_command_is_local_exact_and_supports_disabled(tmp_path):
     store = JsonlUsageStore(tmp_path, "session", now=lambda: NOW)
 
-    assert "请求次数: 0" in _handle_usage_command("/usage", store)
+    assert "Requests: 0" in _handle_usage_command("/usage", store)
     assert _handle_usage_command("/usage today", store) is None
     assert _handle_usage_command("question", store) is None
-    assert _handle_usage_command("/usage", None) == "Token 统计已关闭。"
+    assert _handle_usage_command("/usage", None) == "Token usage tracking is disabled."
 
 
 def test_single_model_without_optional_details_stays_compact(tmp_path):
@@ -150,6 +150,6 @@ def test_single_model_without_optional_details_stays_compact(tmp_path):
 
     text = _format_usage_summary(store.summarize())
 
-    assert "缓存命中" not in text
+    assert "Cache hits" not in text
     assert "reasoning" not in text
-    assert "按模型:" not in text
+    assert "By model:" not in text

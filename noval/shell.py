@@ -69,14 +69,14 @@ def _probe_bash(
             executable,
             "WSL",
             uname,
-            "Windows 路径 C:\\X 在 run_bash 里要写成 /mnt/c/X（盘符小写）",
+            "Use /mnt/c/X (with a lowercase drive letter) for Windows path C:\\X in run_bash",
         )
     if "mingw" in low or "msys" in low:
         return ShellBackend(
             executable,
             "Git Bash",
             uname,
-            "Windows 路径 C:\\X 在 run_bash 里要写成 /c/X",
+            "Use /c/X for Windows path C:\\X in run_bash",
         )
     return ShellBackend(executable, "Linux/Unix", uname)
 

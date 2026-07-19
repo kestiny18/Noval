@@ -11,10 +11,15 @@ so public contracts may continue to evolve.
   strategy while Noval owns authority, execution, durable state, and configured
   validation boundaries.
 - Replaced the coding-specific default system prompt with the domain-neutral
-  `principle-guided-v1` operating contract.
+  `principle-guided-v2` operating contract: decision principles remain
+  non-sequential, external content is evidence rather than authority, and
+  computation is available as a general reliability method without making the
+  core coding-specific.
 - Made English the canonical public documentation language with first-class
   Simplified Chinese entry points and preserved the v0.1-v0.10 Chinese design
   ledger as historical context.
+- Standardized source comments, runtime prompts, CLI output, diagnostics,
+  examples, tests, and Eval assets on clear English contracts.
 
 ### Added
 

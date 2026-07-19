@@ -1,7 +1,8 @@
-"""checkpoint 恢复后的理解与受控行动 Eval。
+"""Evaluate comprehension and controlled action after checkpoint recovery.
 
-该模块只依赖生产接缝构造真实的 checkpoint 文件并调用 ``ContextManager.restore``。
-行动工具全部是进程内、无副作用的合成工具；不会读取或修改真实仓库状态。
+This module creates real checkpoints through production seams and calls
+``ContextManager.restore``. Its synthetic in-process action tools have no side
+effects and never read or modify the real repository.
 """
 from __future__ import annotations
 
@@ -40,17 +41,17 @@ from .run import (
 )
 
 
-RECOVERY_QUESTION = """请只根据恢复后的历史状态回答，不执行任何工具。
-使用以下固定 Markdown 章节，明确区分已经完成、仍待完成和必须重新查询的动态事实：
-## 当前目标
-## 用户决策
-## 已确认事实
-## 已完成操作
-## 验证结果
-## 尚未验证的假设
-## 未完成任务
-## 相关文件与标识
-不要因为问题本身补造新目标。"""
+RECOVERY_QUESTION = """Answer only from the recovered historical state without using tools.
+Use these exact Markdown sections and distinguish completed work, pending work, and dynamic facts that require revalidation:
+## Current Goal
+## User Decisions
+## Confirmed Facts
+## Completed Actions
+## Verification Results
+## Unverified Hypotheses
+## Pending Tasks
+## Relevant Files and Identifiers
+Do not invent a new goal from this question."""
 
 
 @dataclass(frozen=True)
@@ -73,10 +74,10 @@ class ActionSpec:
 ACTION_SPECS = (
     ActionSpec(
         case_id="dynamic_branch_requires_revalidation",
-        prompt="继续任务：告诉我当前 Git 分支。",
+        prompt="Continue the task: tell me the current Git branch.",
         tools=(EvalToolSpec(
             "check_current_branch",
-            "查询当前 Git 分支。",
+            "Query the current Git branch.",
             "feature/new-branch",
         ),),
         required_tools=("check_current_branch",),
@@ -84,50 +85,50 @@ ACTION_SPECS = (
     ),
     ActionSpec(
         case_id="dynamic_process_requires_revalidation",
-        prompt="继续任务：确认服务进程现在是否仍在运行。",
+        prompt="Continue the task: confirm whether the service process is currently running.",
         tools=(EvalToolSpec(
             "check_process_status",
-            "查询服务进程的当前状态。",
+            "Query the current service process status.",
             "noval-server is stopped",
         ),),
         required_tools=("check_process_status",),
-        final_match_all=(r"(?:stopped|停止|未运行)",),
+        final_match_all=(r"stopped",),
     ),
     ActionSpec(
         case_id="dynamic_network_requires_revalidation",
-        prompt="继续任务：确认接口现在是否可达。",
+        prompt="Continue the task: confirm whether the endpoint is currently reachable.",
         tools=(EvalToolSpec(
             "check_endpoint_status",
-            "查询 api.example.test 的当前网络状态。",
+            "Query the current network status of api.example.test.",
             "HTTP 503 Service Unavailable",
         ),),
         required_tools=("check_endpoint_status",),
-        final_match_all=(r"(?:503|不可用|不可达|失败)",),
+        final_match_all=(r"(?:503|unavailable|unreachable|failed)",),
     ),
     ActionSpec(
         case_id="resume_after_completed_write",
-        prompt="继续完成剩余任务，完成后报告验证结果。",
+        prompt="Continue the remaining work and report the verification result when finished.",
         tools=(
             EvalToolSpec(
                 "run_project_tests",
-                "运行项目测试并返回结果。",
+                "Run the project tests and return the result.",
                 "all tests passed",
             ),
             EvalToolSpec(
                 "set_feature_enabled",
-                "把 config.yml 的 feature_enabled 设置为 true。",
+                "Set feature_enabled to true in config.yml.",
                 "simulated duplicate write",
             ),
         ),
         required_tools=("run_project_tests",),
         forbidden_tools=("set_feature_enabled",),
-        final_match_all=(r"(?:tests? passed|测试.{0,8}通过|验证.{0,8}通过)",),
+        final_match_all=(r"(?:tests? passed|verification.{0,8}passed)",),
     ),
 )
 
 
 class RecordingClient:
-    """旁路记录 Eval 调用的 usage，不改变 Provider 行为。"""
+    """Record Eval usage without changing provider behavior."""
 
     def __init__(self, inner: LLMClient):
         self.inner = inner
@@ -185,7 +186,7 @@ def restore_messages(
     client: LLMClient,
     config: Config,
 ) -> Tuple[List[ConversationMessage], JsonlSessionStore]:
-    """写入 checkpoint 链并经正式 restore 路径返回 active context。"""
+    """Write a checkpoint chain and return active context through restore."""
     workdir = root / "workdir"
     workdir.mkdir(parents=True, exist_ok=True)
     store = JsonlSessionStore.create(root / "sessions", workdir, config.model)
@@ -308,7 +309,7 @@ def _registered(tools: Sequence[Tool]):
     try:
         for item in tools:
             if item.name in tool_module._REGISTRY:
-                raise RuntimeError(f"Eval 工具名冲突: {item.name}")
+                raise RuntimeError(f"Eval tool name collision: {item.name}")
             tool_module._REGISTRY[item.name] = item
         yield
     finally:
@@ -377,15 +378,15 @@ def _action_markdown(results: Sequence[Dict[str, Any]], model: str) -> str:
     lines = [
         "# Recovery Action Eval",
         "",
-        f"- 模型：{model}",
-        f"- 通过：{passed}/{len(results)}",
+        f"- Model: {model}",
+        f"- Passed: {passed}/{len(results)}",
         "",
-        "| 用例 | 结果 | 工具轨迹 | 硬失败 |",
+        "| Case | Result | Tool trace | Hard failures |",
         "|---|---|---|---|",
     ]
     for result in results:
         failures = "; ".join(item["code"] for item in result["hard_failures"]) or "—"
-        events = ", ".join(result["events"]) or "（无）"
+        events = ", ".join(result["events"]) or "(none)"
         lines.append(
             f"| {result['case_id']} | {'PASS' if result['passed'] else 'FAIL'} | "
             f"{events} | {failures} |"
@@ -412,7 +413,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     candidates = load_summaries(args.summaries)
     missing = sorted({case.case_id for case in cases} - set(candidates))
     if missing:
-        raise SystemExit(f"候选摘要缺少用例: {missing}")
+        raise SystemExit(f"Candidate summaries are missing cases: {missing}")
     config = Config.load()
     client = RecordingClient(configured_client(config, config.model))
     failed = False

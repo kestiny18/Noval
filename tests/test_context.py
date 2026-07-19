@@ -64,14 +64,14 @@ def agent_config():
 
 def context_summary(label="summary"):
     return (
-        f"## 当前目标\n{label}\n"
-        "## 用户决策\n（无）\n"
-        "## 已确认事实\n（无）\n"
-        "## 已完成操作\n（无）\n"
-        "## 验证结果\n（无）\n"
-        "## 尚未验证的假设\n（无）\n"
-        "## 未完成任务\n（无）\n"
-        "## 相关文件与标识\n（无）"
+        f"## Current Goal\n{label}\n"
+        "## User Decisions\n(none)\n"
+        "## Confirmed Facts\n(none)\n"
+        "## Completed Actions\n(none)\n"
+        "## Verification Results\n(none)\n"
+        "## Unverified Hypotheses\n(none)\n"
+        "## Pending Tasks\n(none)\n"
+        "## Relevant Files and Identifiers\n(none)"
     )
 
 
@@ -81,7 +81,7 @@ def test_first_compaction_persists_checkpoint_and_keeps_raw_history(tmp_path):
         append_turn(store, number)
     original = store.load()
     manager = ContextManager(
-        MockClient([mock_text(context_summary("继续任务"))]),
+        MockClient([mock_text(context_summary("Continue the task"))]),
         store,
         "model-a",
         100,
@@ -94,7 +94,7 @@ def test_first_compaction_persists_checkpoint_and_keeps_raw_history(tmp_path):
     assert compacted[0].role is MessageRole.SYSTEM
     assert compacted[1].role is MessageRole.USER
     assert "<historical_context" in compacted[1].text
-    assert "继续任务" in compacted[1].text
+    assert "Continue the task" in compacted[1].text
     assert compacted[-2:] == original[-2:]
     assert manager.checkpoint is not None
     assert manager.checkpoint.source_from_seq == 0
@@ -199,8 +199,8 @@ def test_checkpoint_loader_skips_corrupt_tail_and_invalid_source(tmp_path, caplo
     ).load_latest(store.load_records())
 
     assert latest == valid
-    assert "损坏" in caplog.text
-    assert "无效" in caplog.text
+    assert "corrupt" in caplog.text
+    assert "invalid" in caplog.text
 
 
 def test_v1_checkpoint_is_not_reused(tmp_path):
@@ -260,7 +260,7 @@ def test_summary_missing_required_sections_is_not_persisted(tmp_path):
         append_turn(store, number)
     messages = active_messages(store)
     manager = ContextManager(
-        MockClient([mock_text("## 当前目标\n只有一个章节")]),
+        MockClient([mock_text("## Current Goal\nOnly one section")]),
         store,
         "model-a",
         100,
@@ -286,7 +286,7 @@ def test_compacted_context_over_hard_limit_is_not_persisted(tmp_path):
         preferred_recent_turns=1,
     )
 
-    with pytest.raises(ContextLimitError, match="压缩后上下文仍约"):
+    with pytest.raises(ContextLimitError, match="compacted context is still approximately"):
         manager.prepare(active_messages(store), [])
     assert manager.checkpoint is None
     assert not store.context_path().exists()
@@ -333,7 +333,7 @@ def test_soft_failure_keeps_original_but_hard_limit_stops(tmp_path):
     hard = ContextManager(
         MockClient([]), incomplete, "model-a", 100, estimator=FixedEstimator(90),
     )
-    with pytest.raises(ContextLimitError, match="没有可安全压缩"):
+    with pytest.raises(ContextLimitError, match="no complete historical turn can be compacted safely"):
         hard.prepare(active_messages(incomplete), [])
 
 

@@ -1,4 +1,4 @@
-"""使 `python -m noval` 启动 CLI。"""
+"""Launch the CLI with `python -m noval`."""
 from .cli import run_cli
 
 if __name__ == "__main__":

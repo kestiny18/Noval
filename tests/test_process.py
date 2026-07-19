@@ -110,7 +110,7 @@ def test_off_mode_uses_explicit_no_sandbox(tmp_path):
     assert prepared.sandbox.strength is SandboxStrength.NONE
     assert prepared.sandbox.reason == "sandbox disabled explicitly"
     assert backend.seen == []
-    assert "显式关闭" in sandbox_status_text(runtime)
+    assert "disabled explicitly" in sandbox_status_text(runtime)
 
 
 def test_auto_mode_reports_honest_no_sandbox_status():

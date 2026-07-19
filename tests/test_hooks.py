@@ -109,8 +109,8 @@ def test_invalid_event_and_duplicate_ids_are_reported_without_crashing(tmp_path)
 
     registry = HookRegistry.discover(tmp_path)
 
-    assert any("未知 Hook 事件" in error for error in registry.errors)
-    assert any("重复" in error for error in registry.errors)
+    assert any("unknown hook event" in error for error in registry.errors)
+    assert any("duplicate" in error for error in registry.errors)
     assert len(registry.hooks_for(HookEvent.PRE_TOOL_USE)) == 1
 
 
@@ -125,7 +125,7 @@ def test_unknown_config_version_disables_all_hooks(tmp_path):
     registry = HookRegistry.discover(tmp_path)
 
     assert not registry.has_hooks()
-    assert any("version 必须是 1" in error for error in registry.errors)
+    assert any("version must be 1" in error for error in registry.errors)
 
 
 @pytest.mark.parametrize("timeout", ["NaN", "Infinity", "-Infinity"])
@@ -142,7 +142,7 @@ def test_non_finite_timeout_is_rejected(tmp_path, timeout):
     registry = HookRegistry.discover(tmp_path)
 
     assert not registry.has_hooks()
-    assert any("timeout 必须是有限正数" in error for error in registry.errors)
+    assert any("timeout must be a finite positive number" in error for error in registry.errors)
 
 
 def test_hook_config_symlink_cannot_escape_workdir(tmp_path):
@@ -158,7 +158,7 @@ def test_hook_config_symlink_cannot_escape_workdir(tmp_path):
     registry = HookRegistry.discover(project)
 
     assert not registry.has_hooks()
-    assert any("符号链接逃出" in error for error in registry.errors)
+    assert any("escape the workdir through a symbolic link" in error for error in registry.errors)
 
 
 def test_pre_tool_use_stops_after_first_deny(tmp_path):
@@ -272,7 +272,7 @@ def test_hook_approval_failure_is_isolated_as_deny(tmp_path):
     )
 
     assert batch.blocked
-    assert "Hook 框架异常" in (batch.feedback() or "")
+    assert "Hook framework failure" in (batch.feedback() or "")
 
 
 def test_json_protocol_returns_redacted_context(tmp_path):
@@ -548,7 +548,7 @@ def test_repeated_stop_failure_without_tool_activity_stops_loop(tmp_path):
 
     result = agent.send("finish")
 
-    assert "没有执行新的修复操作" in result
+    assert "no new repair action" in result
     assert "same failure" in result
     assert len(client.seen_messages) == 3
 

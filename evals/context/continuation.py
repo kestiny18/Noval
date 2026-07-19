@@ -1,4 +1,4 @@
-"""同一 Agent 在对话内触发压缩后继续工作的 Eval。"""
+"""Evaluate continuation after in-conversation compaction by the same agent."""
 from __future__ import annotations
 
 import argparse
@@ -36,20 +36,20 @@ CONTINUATION_CASE_IDS = (
     "resume_after_completed_write",
 )
 
-CONTINUATION_QUESTION = """请基于压缩后的当前状态继续回答，不执行工具，也不要补造新目标。
-使用以下固定 Markdown 章节，明确区分已经完成、仍待完成和必须重新查询的动态事实：
-## 当前目标
-## 用户决策
-## 已确认事实
-## 已完成操作
-## 验证结果
-## 尚未验证的假设
-## 未完成任务
-## 相关文件与标识"""
+CONTINUATION_QUESTION = """Continue from the compacted current state without using tools or inventing a new goal.
+Use these exact Markdown sections and distinguish completed work, pending work, and dynamic facts that require revalidation:
+## Current Goal
+## User Decisions
+## Confirmed Facts
+## Completed Actions
+## Verification Results
+## Unverified Hypotheses
+## Pending Tasks
+## Relevant Files and Identifiers"""
 
 
 class BoundaryEstimator:
-    """原历史触发软水位，移除较早回合后落入目标范围。"""
+    """Trigger the soft limit on full history and fall below it after compaction."""
 
     def estimate(self, messages, tools):
         non_system = sum(message.role is not MessageRole.SYSTEM for message in messages)
@@ -66,15 +66,15 @@ def run_continuation_case(
     root: Path,
 ) -> Dict[str, Any]:
     if case.previous_summary is not None:
-        raise ValueError(f"{case.case_id}: 对话内首次压缩用例不能预置 previous_summary")
+        raise ValueError(f"{case.case_id}: first in-conversation compaction must not include previous_summary")
     workdir = root / "workdir"
     workdir.mkdir(parents=True, exist_ok=True)
     store = JsonlSessionStore.create(root / "sessions", workdir, config.model)
     for record in case.records:
         store.append(record.message)
     expected_through_seq = store.load_records()[-1].seq
-    store.append(user_message("（最近回合占位：没有新任务或状态变化。）"))
-    store.append(assistant_message("（收到，任务状态不变。）"))
+    store.append(user_message("(Recent-turn placeholder: no new task or state change.)"))
+    store.append(assistant_message("(Acknowledged; task state is unchanged.)"))
 
     manager = ContextManager(
         client,
@@ -99,7 +99,7 @@ def run_continuation_case(
     checkpoint = manager.checkpoint
     duration_ms = round((time.perf_counter() - started) * 1000, 1)
     if checkpoint is None:
-        raise RuntimeError(f"{case.case_id}: 没有生成 checkpoint")
+        raise RuntimeError(f"{case.case_id}: no checkpoint was generated")
 
     summary_candidate = {
         "case_id": case.case_id,
@@ -120,8 +120,8 @@ def run_continuation_case(
         failure = {
             "code": "unexpected_compaction_boundary",
             "message": (
-                f"期望覆盖至 seq {expected_through_seq}，"
-                f"实际为 {checkpoint.source_through_seq}"
+                f"expected coverage through seq {expected_through_seq}, "
+                f"but got {checkpoint.source_through_seq}"
             ),
         }
         boundary_failures.append(failure)
@@ -186,9 +186,9 @@ def _parser() -> argparse.ArgumentParser:
         "--case",
         action="append",
         dest="case_ids",
-        help="只运行指定 case id；可重复提供",
+        help="run only the specified case ID; may be repeated",
     )
-    parser.add_argument("--repeat", type=int, default=1, help="每个选定用例重复次数")
+    parser.add_argument("--repeat", type=int, default=1, help="number of repetitions per selected case")
     return parser
 
 
@@ -198,9 +198,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     selected_ids = args.case_ids or list(CONTINUATION_CASE_IDS)
     unknown = sorted(set(selected_ids) - set(by_id))
     if unknown:
-        raise SystemExit(f"未知用例: {unknown}")
+        raise SystemExit(f"Unknown cases: {unknown}")
     if args.repeat < 1:
-        raise SystemExit("--repeat 必须大于等于 1")
+        raise SystemExit("--repeat must be at least 1")
     cases = [
         by_id[case_id]
         for _ in range(args.repeat)
@@ -236,14 +236,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     print("# In-conversation Compaction Eval")
     print()
     print(
-        f"- 摘要通过：{summary_report['summary']['passed_count']}/{len(cases)}"
+        f"- Summaries passed: {summary_report['summary']['passed_count']}/{len(cases)}"
     )
     print(
-        "- 继续回答通过："
+        "- Continuations passed: "
         f"{continuation_report['summary']['passed_count']}/{len(cases)}"
     )
     print(
-        "- 边界通过："
+        "- Boundaries passed: "
         f"{sum(not item['boundary_failures'] for item in results)}/{len(cases)}"
     )
     failed = (

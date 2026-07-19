@@ -1,4 +1,4 @@
-"""执行管道测试：错误归一化、截断、确认门、Context 注入。"""
+"""Executor tests for normalized errors, truncation, approval, and Context injection."""
 import json
 
 from noval.config import Config
@@ -22,7 +22,7 @@ def cfg(**over):
 
 def test_unknown_tool_lists_available():
     r = execute_tool_call("nope", "{}", cfg())
-    assert r.is_error and "可用工具" in r.content
+    assert r.is_error and "Available tools" in r.content
 
 
 def test_invalid_json_is_error(tmp_path):
@@ -31,15 +31,15 @@ def test_invalid_json_is_error(tmp_path):
 
 
 def test_missing_required_param(tmp_path):
-    # schema 校验先于 context 检查：缺 path 应报「缺少必填参数」
+    # Schema validation precedes Context validation.
     r = execute_tool_call("read_file", "{}", cfg(), context=Context(workdir=tmp_path))
-    assert r.is_error and "缺少必填参数" in r.content
+    assert r.is_error and "missing required arguments" in r.content
 
 
 def test_missing_context_reported():
-    # read_file 需要 context，调用方没传 → 明确报错（而非静默崩）
+    # read_file reports a missing injected Context explicitly.
     r = execute_tool_call("read_file", json.dumps({"path": "x"}), cfg())
-    assert r.is_error and "执行上下文" in r.content
+    assert r.is_error and "execution context" in r.content
 
 
 def test_tool_error_surfaced(tmp_path):
@@ -60,7 +60,7 @@ def test_tool_error_is_truncated():
 
     assert r.is_error
     assert r.truncated
-    assert "省略" in r.content
+    assert "omitted" in r.content
     assert r.meta["original_chars"] == 507
 
 
@@ -87,7 +87,7 @@ def test_truncation():
         return "x" * 500
 
     r = execute_tool_call("_big", "{}", cfg(max_tool_output_chars=100))
-    assert r.truncated and "省略" in r.content
+    assert r.truncated and "omitted" in r.content
     assert r.meta["original_chars"] == 500
 
 
@@ -160,7 +160,7 @@ def test_internal_typeerror_not_mislabeled():
         return len(None)  # type: ignore[arg-type]
 
     r = execute_tool_call("_internal_te", "{}", cfg())
-    assert r.is_error and "签名不匹配" not in r.content and "执行异常" in r.content
+    assert r.is_error and "signature mismatch" not in r.content and "execution failed" in r.content
 
 
 def test_signature_mismatch_reported():
@@ -170,7 +170,7 @@ def test_signature_mismatch_reported():
         return x
 
     r = execute_tool_call("_needs_x", '{"x": "a", "y": "b"}', cfg())
-    assert r.is_error and "签名不匹配" in r.content
+    assert r.is_error and "do not match the tool signature" in r.content
 
 
 def test_confirmation_gate():
@@ -179,13 +179,13 @@ def test_confirmation_gate():
         """danger"""
         return "did it"
 
-    assert execute_tool_call("_danger", "{}", cfg()).is_error                 # 无 approver → 拒绝
-    r = execute_tool_call("_danger", "{}", cfg(), approver=lambda t, a: True)  # 放行
+    assert execute_tool_call("_danger", "{}", cfg()).is_error                 # No approver means denied.
+    r = execute_tool_call("_danger", "{}", cfg(), approver=lambda t, a: True)  # Allowed.
     assert not r.is_error and r.content == "did it"
 
 
 def test_dynamic_risk_allows_readonly_bash_without_prompt(tmp_path):
-    # run_bash 的只读命令被 risk_assessor 降级为 READ → 免确认（无 approver 也能跑）
+    # A read-only run_bash command is downgraded to READ and needs no approver.
     import json as _j
     r = execute_tool_call("run_bash", _j.dumps({"command": "echo hi"}),
                           cfg(), context=Context(workdir=tmp_path))
@@ -195,8 +195,8 @@ def test_dynamic_risk_allows_readonly_bash_without_prompt(tmp_path):
 def test_dynamic_risk_still_blocks_mutating_bash(tmp_path):
     import json as _j
     r = execute_tool_call("run_bash", _j.dumps({"command": "rm -rf somedir"}),
-                          cfg(), context=Context(workdir=tmp_path))   # 无 approver
-    assert r.is_error and "拒绝" in r.content                          # 危险命令仍拦下，rm 没执行
+                          cfg(), context=Context(workdir=tmp_path))   # No approver.
+    assert r.is_error and "denied" in r.content                      # Dangerous command remains blocked.
 
 
 def test_always_decision_remembered_for_session():
@@ -215,7 +215,7 @@ def test_always_decision_remembered_for_session():
     r1 = execute_tool_call("_dang_remember", "{}", cfg(), approver=approver, context=c)
     r2 = execute_tool_call("_dang_remember", "{}", cfg(), approver=approver, context=c)
     assert not r1.is_error and not r2.is_error
-    assert calls["n"] == 1                       # 第二次没再问
+    assert calls["n"] == 1                       # No second prompt.
 
 
 def test_always_decision_persists_across_resume(tmp_path):
@@ -262,7 +262,7 @@ def test_full_access_bypasses_approval():
 
 
 def test_duration_excludes_approval_wait():
-    # 确认门通过后才开始计执行耗时；批准等待单列
+    # Execution timing begins after approval; approval wait is separate.
     slow_approve = lambda t, a: (__import__("time").sleep(0.05) or True)
 
     @tool(name="_dang_timing", risk=Risk.DANGEROUS)
@@ -273,7 +273,7 @@ def test_duration_excludes_approval_wait():
     r = execute_tool_call("_dang_timing", "{}", cfg(), approver=slow_approve,
                           context=Context(workdir=__import__("pathlib").Path(".")))
     assert not r.is_error
-    assert r.meta["duration_ms"] < 40            # 执行本身很快，不含那 50ms 等待
+    assert r.meta["duration_ms"] < 40            # Excludes the 50ms approval wait.
     assert r.meta.get("approval_wait_ms", 0) >= 40
 
 

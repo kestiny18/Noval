@@ -32,10 +32,10 @@ def test_task_eval_detects_wrong_expected_status(tmp_path):
         "id": "wrong",
         "title": "wrong",
         "events": [
-            {"type": "user", "input": "解释错误原因"},
+            {"type": "user", "input": "Explain the cause of the error"},
             {
                 "type": "reply",
-                "content": "还没查完。",
+                "content": "The investigation is incomplete.",
                 "judge": {"status": "incomplete", "reason": "not done"},
             },
         ],
@@ -73,4 +73,4 @@ def test_task_eval_tracks_recent_user_inputs():
     result = evaluate_case(case)
 
     assert result["passed"] is True
-    assert result["state"]["recent_user_inputs"] == ["目标 A", "目标 C", "目标 D"]
+    assert result["state"]["recent_user_inputs"] == ["Goal A", "Goal C", "Goal D"]
