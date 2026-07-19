@@ -6,12 +6,12 @@ __pycache__/
 build/
 dist/
 
-# 虚拟环境
+# Virtual environments
 .venv/
 venv/
 env/
 
-# 测试 / 工具缓存
+# Test and tool caches
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
@@ -26,10 +26,10 @@ htmlcov/
 .DS_Store
 Thumbs.db
 
-# 本地密钥 / 配置
+# Local secrets and configuration
 .env
 *.local
-settings.json          # 真实配置只放 ~/.noval/，仓库内只留 settings.example.json
+settings.json          # Real configuration belongs in ~/.noval/; keep only settings.example.json here.
 
-# 文章草稿，暂不发布
+# Unpublished article drafts
 /articles/

@@ -47,6 +47,7 @@
 - **timeout 只对子进程类工具承诺**：纯 Python 函数无法安全强杀，不假装给它们超时（详见 DESIGN.md）。
 - **确认门**：每个工具只声明事实 `Risk`（READ/WRITE/DANGEROUS），会话级 `PermissionController` 统一决定是否拦截，不在工具内写 `input()`。风险可按参数动态评估（`risk_assessor`，如 run_bash 把只读命令降级为 READ 免确认）；权限模式为 ASK（默认）/ FULL_ACCESS，ASK 下确认为三态：允许一次 / 本会话总是允许该工具 / 拒绝。模式与工具授权写入 session sidecar，恢复时直接生效。
 - **Path-jail**：进程内文件工具（read/list/glob/grep/write/edit）默认受 `ConfinementPolicy` 限制，read/write roots 均为当前 `workdir`；可显式扩展只读 roots，但写入默认不出 `workdir`。`FULL_ACCESS` 只跳过确认门，不关闭 path-jail。外部进程不受 path-jail 保护，走独立的子进程运行时接缝。
+- **文件发现过滤**：`list_directory` / `glob` / `grep` 与文件名建议依次应用 workdir 根目录的 `.gitignore` 和 `.llmignore`，递归时必须在进入被忽略目录前剪枝。它只优化发现范围；明确路径的 `read_file` 和外部进程不受影响，不能把它描述为访问控制边界。
 - **子进程运行时**：仓库内只有 `process.py` 可以直接调用 `subprocess`。`run_bash`、Skill script 和环境探测必须走 `ProcessRuntime.run()`；MCP stdio 必须先走 `ProcessRuntime.prepare()`，再由官方 SDK 持有双向 transport。Linux Bubblewrap 只有通过实际 namespace probe 才能报告 `HARD`；工作区外读写、网络拒绝和 PID 隔离能力必须有 Linux CI 真实逃逸测试。`NoSandbox` 必须明确报告未启用硬隔离，`required` 模式缺硬后端时 fail-closed。沙箱策略是 per-invocation 状态，不写 session sidecar；`FULL_ACCESS` 不关闭沙箱。timeout/启动错误由 runtime 归一化，权限、截断、脱敏仍由 executor 统一处理。
 - **Hooks**：只读取项目级 `<workdir>/.noval/hooks.json`，不读取用户级配置。配置按 `PreToolUse` / `PostToolUse` / `Stop` 事件分组，组内声明顺序即串行执行顺序。CommandHook 必须走 DANGEROUS 确认与 `ProcessRuntime.run()`，授权绑定 Hook id + 配置 hash；配置变化后重新确认。Pre deny 阻止工具，Post 诊断附到 tool result，Stop deny/context 在 completion judge 前要求模型继续修复。Hook 命令不递归触发 Hook，结果进入模型/session 前必须截断和脱敏，且不能覆盖 system、权限、path-jail、沙箱或用户指令。
 - **项目记忆**：启动时读 workdir 的 `AGENTS.md`（开放标准，回退 `CLAUDE.md`），用 `<project_instructions>` 包安全边界后注入 system prompt；**只读不写**。system 顺序按稳定性：人设 → 环境 → 项目记忆（见 DESIGN 决策 14）。
@@ -94,6 +95,7 @@ noval/
   client.py     # LLMClient + OpenAI-compatible/Anthropic adapters   [接缝1]
   tools.py      # 框架：ToolResult/ToolError/Context/@tool 注册表   [接缝2]
   confinement.py # 进程内文件工具 path-jail policy/read-write roots
+  discovery.py # .gitignore + .llmignore 文件发现策略（不是访问控制）
   process.py    # 统一子进程 runtime + sandbox backend 接缝
   builtins.py   # 内置工具实现（read/write/edit/bash/ls/grep/glob）
   executor.py   # 执行管道（含 Context 注入）                 [接缝3]

@@ -75,6 +75,9 @@ told what to correct.
 
 - File read/list/glob/grep/write/edit share the same path resolution and
   confinement entry point.
+- File discovery combines root `.gitignore` followed by `.llmignore` and must
+  prune ignored directories before descent. This is relevance policy only;
+  explicit `read_file` paths and external processes remain unaffected.
 - A file must be fully read before write/edit; detect stale external changes.
 - Do not infer authorization to change state from a request to inspect, explain,
   review, test, build, or discuss.
