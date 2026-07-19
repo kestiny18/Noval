@@ -5,7 +5,7 @@
 [![CI](https://github.com/kestiny18/Noval/actions/workflows/ci.yml/badge.svg)](https://github.com/kestiny18/Noval/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
-[![Release](https://img.shields.io/badge/release-v0.9.0-brightgreen.svg)](https://github.com/kestiny18/Noval/releases/tag/v0.9.0)
+[![Release](https://img.shields.io/badge/release-v0.10.0-brightgreen.svg)](https://github.com/kestiny18/Noval/releases/tag/v0.10.0)
 
 <p align="center">
   <strong>模型负责思考。Noval 负责让它安全、可恢复、可验证地行动。</strong><br>
@@ -30,7 +30,7 @@ Noval 起源于一次最朴素的 tool-calling 实验：由人亲自扮演工具
 
 如果你正在构建自己的 Code Agent 或领域 Agent，希望保留完全可读、可替换、可测试的执行内核，而不是把产品交给一个巨型黑盒，Noval 就是为你准备的。它仍处于 `0.x`，不提供拖拽式工作流或“一键自治团队”；它提供的是一块可以长期演进的地基。
 
-> **当前状态**：`v0.9.0` 是当前已发布稳定版本。主分支正在形成 `v1.0.0`：在 Provider-neutral 内核之上增加可嵌入的 Headless/Application API、多 Session 隔离和请求重建能力。
+> **当前状态**：`v0.10.0` 是当前已发布稳定版本。在 Provider-neutral 内核之上，它提供可嵌入的 Headless/Application API、多 Session 隔离、实时事件、writer lease 和安全请求重建。
 
 ## 核心设计
 
@@ -368,7 +368,7 @@ v0.9 不读取或迁移旧 schema v1 Session：会话列表会标记为不兼容
 | `v0.8.0` | Hooks 与验证闭环：Pre 阻断、Post 诊断回流、Stop 修复再验证、配置指纹授权 | `v0.8.0` |
 | `v0.8.1` | Hooks 发布加固：所有候选结束均进入 Stop，严格校验 timeout 有限值 | `v0.8.1` |
 | `v0.9.0` | Provider 真中立：canonical messages、Session v2、OpenAI-compatible 与 Anthropic adapters | `v0.9.0` |
-| `v1.0.0` | 可嵌入稳定内核：多 Session Application API、并发/权限/取消、writer lease、实时事件与请求重建 | 开发中 |
+| `v0.10.0` | 可嵌入内核：多 Session Application API、并发/权限/取消、writer lease、实时事件与请求重建 | `v0.10.0` |
 
 详细变化见 [CHANGELOG.md](CHANGELOG.md)。
 
@@ -391,9 +391,9 @@ python -m evals.context.run
 
 ## 当前状态与方向
 
-Noval 当前已发布到 `0.9.x`，主分支正在准备 `v1.0.0`。核心能力包括工具注册表、统一 executor、会话持久化、上下文 checkpoint、Skills/MCP MVP、任务完成 judge、项目级 Hooks、运行日志、Token 用量统计，以及可嵌入的多 Session Application API。
+Noval 当前已发布到 `0.10.x`。核心能力包括工具注册表、统一 executor、会话持久化、上下文 checkpoint、Skills/MCP MVP、任务完成 judge、项目级 Hooks、运行日志、Token 用量统计，以及可嵌入的多 Session Application API。
 
-接下来的重点不是堆更多工具，而是完成 v1.0 发布门禁，并在后续版本讨论 Desktop 宿主与 transport/SDK；这些宿主继续复用同一组 JSON-safe 公共契约。详细路线、版本门槛和设计权衡见 [DESIGN.md](DESIGN.md#能力演进路线)。
+接下来的重点不是堆更多工具，而是验证 Desktop 宿主与 transport/SDK，并逐步收紧 v1.0 的公共契约稳定性和发布门禁；这些宿主继续复用同一组 JSON-safe 公共契约。详细路线、版本门槛和设计权衡见 [DESIGN.md](DESIGN.md#能力演进路线)。
 
 ## 参与项目
 

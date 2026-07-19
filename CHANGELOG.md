@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-07-19
+
 ### Added
 
 - Headless/Application API with `NovalRuntime`, isolated `AgentSession`
@@ -28,6 +30,17 @@
 - Runtime logs carry Session, Turn, and Request correlation ids. CLI enables
   runtime logging explicitly; embedded runtimes leave host logging unchanged
   by default.
+
+### Fixed
+
+- Request journals recursively redact credentials at the persistence boundary
+  and deduplicate repeated messages, tool schemas, and adapter payload objects
+  without losing complete request reconstruction.
+- Session close, permission updates, and turn startup now use one atomic
+  lifecycle transition, preventing turns from starting against a closed Store
+  or released writer lease.
+- Provider request start, completion, and failure logs now carry their request
+  correlation id without recording message, response, or exception contents.
 
 ## [0.9.0] - 2026-07-17
 
@@ -277,7 +290,8 @@
 - 带 `max_steps` 的 Agent 循环与 CLI。
 - `MockClient` 和离线测试。
 
-[Unreleased]: https://github.com/kestiny18/Noval/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/kestiny18/Noval/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/kestiny18/Noval/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/kestiny18/Noval/compare/v0.8.1...v0.9.0
 [0.8.1]: https://github.com/kestiny18/Noval/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/kestiny18/Noval/compare/v0.7.0...v0.8.0

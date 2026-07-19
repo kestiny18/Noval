@@ -463,9 +463,9 @@ v0.9 用两个真实 wire adapter 证明边界：现有 OpenAI-compatible adapte
 
 出口标准不是“第二个 SDK 能返回文本”，而是：Agent / Context / Session / Task / Usage 不再读写 Provider wire key；静态架构测试把这些 key 限制在 adapter 与测试 fixture；同一工具场景经两种 adapter fixture 产生等价 canonical transcript；两类私有 replay state 在工具链和崩溃恢复后原样回传且不泄露到语义视图；Session v2 round-trip、悬空工具调用修复、Context 压缩和 Provider 错误归一化均有确定性回归。
 
-## 决策 33：v1.0 用 Application API 隔离宿主与 Agent 组合
+## 决策 33：v0.10 用 Application API 隔离宿主与 Agent 组合
 
-CLI、未来 Desktop 和 Web 都需要创建会话、发送回合、处理权限、消费事件并展示错误，但这些宿主不应重复组装 Provider、Store、Context、Task、ProcessRuntime、Hooks、Skills 和 MCP。v1.0 在 Agent 之上增加 Application 层：进程级 `NovalRuntime` 持有不可变默认配置、tool catalog snapshot、依赖工厂和 live Session registry；每个 `AgentSession` 独占所有可变执行状态；Turn 只持有 request/turn id、临时上下文、指标、取消状态和 terminal result。依赖只向下指向现有核心接缝，Agent 不反向依赖 Application API。
+CLI、未来 Desktop 和 Web 都需要创建会话、发送回合、处理权限、消费事件并展示错误，但这些宿主不应重复组装 Provider、Store、Context、Task、ProcessRuntime、Hooks、Skills 和 MCP。v0.10 在 Agent 之上增加 Application 层：进程级 `NovalRuntime` 持有不可变默认配置、tool catalog snapshot、依赖工厂和 live Session registry；每个 `AgentSession` 独占所有可变执行状态；Turn 只持有 request/turn id、临时上下文、指标、取消状态和 terminal result。依赖只向下指向现有核心接缝，Agent 不反向依赖 Application API。
 
 一个 Runtime 支持不同 Session 从不同宿主线程并行执行，但同一 Session 只有一个 non-blocking turn lock。第二个 turn 立即返回可重试 `session_busy`，内核不排队；宿主可以按自己的 UX、预算和优先级决定是否重试。关闭 active Session/Runtime 同样 fail-closed。取消是协作式的：在模型/工具步骤边界停止，并由 `ProcessRuntime` 终止当前持有的子进程；阻塞 Provider SDK 仍受 request timeout 约束，不承诺强杀 Python 线程。
 
@@ -475,7 +475,7 @@ CLI、未来 Desktop 和 Web 都需要创建会话、发送回合、处理权限
 
 每次模型调用生成 request id，并把 Session、Turn、跨 Agent/Judge 共享的 step、purpose、Provider identity、canonical semantic messages、tool schema、checkpoint 来源和 adapter 自己渲染的 request 追加到独立 journal。adapter rendering 不含 credentials、headers、SDK raw object 或 opaque replay/thinking；核心保存和返回该 JSON，但不读取 Provider wire key。request id 通过 context-local 状态传播到最内层 adapter 和结构化日志，`inspect_request` 可在恢复 Session 后重建同一输入语义。
 
-CLI 从 v1.0 起只解析参数、实现终端 PermissionHandler、格式化 public result/event 和处理 slash command；console entry point 不再构造 Agent，也不调用 `os.chdir()`。Electron、Node SDK、stdio/HTTP/WebSocket transport、streaming、多 Agent、Runtime 队列和同 Session 并行 turn 都不进入 v1.0；未来宿主建立在同一 JSON-safe contract 上，而不是反向改变内核。
+CLI 从 v0.10 起只解析参数、实现终端 PermissionHandler、格式化 public result/event 和处理 slash command；console entry point 不再构造 Agent，也不调用 `os.chdir()`。Electron、Node SDK、stdio/HTTP/WebSocket transport、streaming、多 Agent、Runtime 队列和同 Session 并行 turn 都不进入 v0.10；未来宿主建立在同一 JSON-safe contract 上，而不是反向改变内核。
 
 ## 施工顺序
 
@@ -518,7 +518,8 @@ CLI 从 v1.0 起只解析参数、实现终端 PermissionHandler、格式化 pub
 | `v0.7.0` | 统一子进程运行时与 Linux 硬沙箱 | `ProcessRuntime.run/prepare` 收束 shell、Skill、探测和 MCP；`NoSandbox` 诚实降级；Bubblewrap 提供显式文件根、空 `/tmp`、PID namespace 与网络 `inherit` / `deny` | 只有 `process.py` 可直接调用 subprocess；Linux CI 真实阻断工作区外读取、写入与宿主 loopback；不可用时 auto 诚实降级、required fail-closed |
 | `v0.8.0` | Hooks 与验证闭环 | 项目级 `.noval/hooks.json` 按事件分组；Pre 阻断、Post 诊断回流、Stop 可否决结束；CommandHook 复用确认门与 `ProcessRuntime.run` | hook 不能覆盖 system、权限、沙箱、脱敏或用户指令；组内顺序、配置变更授权失效、失败隔离、Stop 修复与重复失败保护均可测 |
 | `v0.9.0` | Provider 真中立 | canonical block message；adapter-owned opaque replay state；Session/Checkpoint schema v2（不兼容 v1）；OpenAI-compatible 与 Anthropic client-tool 双向适配；Provider identity/usage/error 归一化 | Agent、Context、Session、Task、Usage 不读写 wire key；两种 adapter 产生等价 canonical transcript；私有回放状态可恢复且不进入 compactor/judge/log；v1 Session 被清晰拒绝 |
-| `v1.0.0` | 可嵌入稳定内核 | headless API / SDK；精确重建第 N 步模型 request；Eval 成为发布门槛；Terminal-Bench 小切片作为客观回归信号 | 公共契约稳定；公开基准只做回归测量，不驱动内核变形 |
+| `v0.10.0` | 可嵌入 Application API | 多 Session headless API；JSON-safe DTO；并发/权限/取消；writer lease；实时事件；安全请求重建 | Session 状态隔离；同 Session 忙时立即返回；请求 journal 不保存凭证或 opaque thinking；CLI 复用同一 API |
+| `v1.0.0` | 公共契约稳定化 | 收紧兼容策略与 SDK/transport 边界；Eval 成为发布门槛；Terminal-Bench 小切片作为客观回归信号 | 公共契约稳定；公开基准只做回归测量，不驱动内核变形 |
 
 被版本门约束的长期能力：
 - **长任务与记忆**：等 `v0.7.0` Linux 硬后端与 `v0.8` 验证闭环稳定后推进；所有记忆必须有来源、时效、冲突与删除边界。
