@@ -38,7 +38,7 @@ body:
     id: version
     attributes:
       label: Noval version or commit
-      placeholder: v0.10.0 or 2dc44c0
+      placeholder: v0.11.0 or a commit SHA
     validations:
       required: true
   - type: input

@@ -7,7 +7,7 @@
 [![CI](https://github.com/kestiny18/Noval/actions/workflows/ci.yml/badge.svg)](https://github.com/kestiny18/Noval/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
-[![Release](https://img.shields.io/badge/release-v0.10.0-brightgreen.svg)](https://github.com/kestiny18/Noval/releases/tag/v0.10.0)
+[![Release](https://img.shields.io/badge/release-v0.11.0-brightgreen.svg)](https://github.com/kestiny18/Noval/releases/tag/v0.11.0)
 
 <p align="center">
   <strong>Strong models need a thin harness.</strong><br>
@@ -253,9 +253,11 @@ separate from normal CI. See [`evals/README.md`](evals/README.md).
 
 ## Current status
 
-`v0.10.0` is the current stable release. Noval is still `0.x`: public contracts
-may evolve before v1.0, and it is not a hosted product, a drag-and-drop workflow
-builder, or an autonomous multi-agent team.
+`v0.11.0` is the current stable release. It establishes the principle-guided,
+strong-model, thin-harness contract and adds project-controlled discovery through
+`.llmignore`. Noval is still `0.x`: public contracts may evolve before v1.0, and
+it is not a hosted product, a drag-and-drop workflow builder, or an autonomous
+multi-agent team.
 
 The next architectural work is evidence-aware completion, effect-aware
 authority, behavior Eval, and v1.0 contract stabilization—not adding mandatory
