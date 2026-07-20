@@ -580,6 +580,73 @@ def _plain_anthropic_block(block: Any) -> Dict[str, Any]:
     return data
 
 
+def _anthropic_response(
+    response: Any,
+    *,
+    default_model: str,
+    duration_ms: float,
+) -> LLMResponse:
+    model = _value(response, "model")
+    identity = ProviderIdentity(
+        "anthropic",
+        model if isinstance(model, str) and model else default_model,
+        ANTHROPIC_ADAPTER,
+    )
+    try:
+        text_parts: List[str] = []
+        calls: List[ToolCallBlock] = []
+        replay_blocks: List[Dict[str, Any]] = []
+        for raw_block in (_value(response, "content") or []):
+            block = _plain_anthropic_block(raw_block)
+            block_type = block.get("type")
+            if block_type == "text" and isinstance(block.get("text"), str):
+                text_parts.append(block["text"])
+            elif block_type == "tool_use":
+                calls.append(ToolCallBlock(
+                    str(block.get("id") or ""),
+                    str(block.get("name") or ""),
+                    json.dumps(
+                        block.get("input", {}),
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ),
+                ))
+            elif block_type in {"thinking", "redacted_thinking"}:
+                replay_blocks.append(block)
+            else:
+                raise ValueError(f"unsupported content block: {block_type!r}")
+        replay = (
+            AdapterReplayState(
+                ANTHROPIC_ADAPTER,
+                ADAPTER_SCHEMA_VERSION,
+                {"blocks": replay_blocks},
+            )
+            if replay_blocks else None
+        )
+        canonical = assistant_message(
+            "".join(text_parts) if text_parts else None,
+            tool_calls=calls,
+            replay_state=replay,
+            provenance=identity.provenance(),
+        )
+    except (TypeError, ValueError) as error:
+        raise ProviderError(
+            ProviderErrorKind.PROTOCOL,
+            "anthropic provider returned an invalid response",
+            retryable=False,
+            identity=identity,
+        ) from error
+    return LLMResponse(
+        message=canonical,
+        usage=_normalize_anthropic_usage(_value(response, "usage")),
+        provider=identity,
+        meta={
+            "thinking_enabled": bool(replay_blocks),
+            "duration_ms": duration_ms,
+        },
+    )
+
+
 class AnthropicMessagesClient:
     def __init__(
         self,
@@ -664,64 +731,61 @@ class AnthropicMessagesClient:
         except Exception as error:
             raise _normalized_error(error, self.identity) from error
         duration_ms = round((time.perf_counter() - started) * 1000, 1)
-        model = _value(response, "model")
-        identity = ProviderIdentity(
-            "anthropic",
-            model if isinstance(model, str) and model else self.model,
-            ANTHROPIC_ADAPTER,
+        return _anthropic_response(
+            response,
+            default_model=self.model,
+            duration_ms=duration_ms,
         )
+
+    def stream_complete(
+        self,
+        messages: Sequence[ConversationMessage],
+        tools: Sequence[ToolDefinition],
+        on_event: LLMStreamObserver,
+    ) -> LLMResponse:
         try:
-            text_parts: List[str] = []
-            calls: List[ToolCallBlock] = []
-            replay_blocks: List[Dict[str, Any]] = []
-            for raw_block in (_value(response, "content") or []):
-                block = _plain_anthropic_block(raw_block)
-                block_type = block.get("type")
-                if block_type == "text" and isinstance(block.get("text"), str):
-                    text_parts.append(block["text"])
-                elif block_type == "tool_use":
-                    calls.append(ToolCallBlock(
-                        str(block.get("id") or ""),
-                        str(block.get("name") or ""),
-                        json.dumps(
-                            block.get("input", {}),
-                            ensure_ascii=False,
-                            separators=(",", ":"),
-                        ),
-                    ))
-                elif block_type in {"thinking", "redacted_thinking"}:
-                    replay_blocks.append(block)
-                else:
-                    raise ValueError(f"unsupported content block: {block_type!r}")
-            replay = (
-                AdapterReplayState(
-                    ANTHROPIC_ADAPTER,
-                    ADAPTER_SCHEMA_VERSION,
-                    {"blocks": replay_blocks},
-                )
-                if replay_blocks else None
-            )
-            canonical = assistant_message(
-                "".join(text_parts) if text_parts else None,
-                tool_calls=calls,
-                replay_state=replay,
-                provenance=identity.provenance(),
-            )
+            system, provider_messages = _anthropic_messages(messages)
+        except ProviderError:
+            raise
+        except (ValueError, json.JSONDecodeError) as error:
+            raise ProviderError(
+                ProviderErrorKind.PROTOCOL,
+                "canonical messages cannot be represented by the anthropic adapter",
+                retryable=False,
+                identity=self.identity,
+            ) from error
+        kwargs: Dict[str, Any] = {
+            "model": self.model,
+            "max_tokens": self.max_tokens,
+            "messages": provider_messages,
+        }
+        if system:
+            kwargs["system"] = system
+        provider_tools = _anthropic_tools(tools)
+        if provider_tools:
+            kwargs["tools"] = provider_tools
+        started = time.perf_counter()
+        try:
+            with self._client.messages.stream(**kwargs) as stream:
+                for text in stream.text_stream:
+                    if not isinstance(text, str):
+                        raise ValueError("stream text delta must be a string")
+                    if text:
+                        on_event(LLMStreamEvent(text))
+                response = stream.get_final_message()
         except (TypeError, ValueError) as error:
             raise ProviderError(
                 ProviderErrorKind.PROTOCOL,
-                "anthropic provider returned an invalid response",
+                "anthropic provider returned an invalid stream",
                 retryable=False,
-                identity=identity,
+                identity=self.identity,
             ) from error
-        return LLMResponse(
-            message=canonical,
-            usage=_normalize_anthropic_usage(_value(response, "usage")),
-            provider=identity,
-            meta={
-                "thinking_enabled": bool(replay_blocks),
-                "duration_ms": duration_ms,
-            },
+        except Exception as error:
+            raise _normalized_error(error, self.identity) from error
+        return _anthropic_response(
+            response,
+            default_model=self.model,
+            duration_ms=round((time.perf_counter() - started) * 1000, 1),
         )
 
 

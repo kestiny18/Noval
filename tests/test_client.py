@@ -125,6 +125,34 @@ def anthropic_response(content, *, model="claude-provider"):
     )
 
 
+class FakeAnthropicStream:
+    def __init__(self, text_stream, response):
+        self.text_stream = text_stream
+        self.response = response
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        return False
+
+    def get_final_message(self):
+        return self.response
+
+
+class FakeAnthropicMessages:
+    def __init__(self, streams):
+        self.streams = list(streams)
+        self.calls = []
+
+    def stream(self, **kwargs):
+        self.calls.append(kwargs)
+        result = self.streams.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+
 def test_response_has_one_canonical_message_and_no_raw_sdk_object():
     client, _ = openai_client([openai_response(content="answer")])
 
@@ -283,6 +311,76 @@ def test_anthropic_thinking_round_trips_without_entering_semantic_view():
     replayed = create.calls[1]["messages"][1]["content"]
     assert replayed[0] == thinking
     assert replayed[1]["type"] == "tool_use"
+
+
+def test_anthropic_stream_emits_visible_text_and_keeps_thinking_opaque():
+    thinking = {"type": "thinking", "thinking": "private", "signature": "sig"}
+    final = anthropic_response([
+        thinking,
+        {"type": "text", "text": "Inspecting"},
+        {
+            "type": "tool_use",
+            "id": "call-1",
+            "name": "read_file",
+            "input": {"path": "a"},
+        },
+    ])
+    messages = FakeAnthropicMessages([
+        FakeAnthropicStream(iter(["Inspect", "ing"]), final),
+    ])
+    client = AnthropicMessagesClient.__new__(AnthropicMessagesClient)
+    client._client = SimpleNamespace(messages=messages)
+    client.model = "claude-test"
+    client.max_tokens = 4096
+    client.identity = ProviderIdentity("anthropic", client.model, ANTHROPIC_ADAPTER)
+    deltas = []
+
+    response = client.stream_complete(
+        [user_message("read")],
+        [ToolDefinition("read_file", "read", {"type": "object"})],
+        deltas.append,
+    )
+
+    assert [event.text for event in deltas] == ["Inspect", "ing"]
+    assert response.message.text == "Inspecting"
+    assert response.message.tool_calls == (
+        ToolCallBlock("call-1", "read_file", '{"path":"a"}'),
+    )
+    assert response.message.replay_state.payload == {"blocks": [thinking]}
+    assert response.provider.model == "claude-provider"
+    assert response.usage.total_tokens == 95
+    assert messages.calls[0]["tools"][0]["name"] == "read_file"
+    assert all("private" not in event.text for event in deltas)
+
+
+def test_anthropic_stream_normalizes_iteration_failures_after_visible_output():
+    class ServerError(Exception):
+        status_code = 500
+
+    def broken_text_stream():
+        yield "partial"
+        raise ServerError("secret response body")
+
+    messages = FakeAnthropicMessages([
+        FakeAnthropicStream(
+            broken_text_stream(),
+            anthropic_response([{"type": "text", "text": "unused"}]),
+        ),
+    ])
+    client = AnthropicMessagesClient.__new__(AnthropicMessagesClient)
+    client._client = SimpleNamespace(messages=messages)
+    client.model = "claude-test"
+    client.max_tokens = 4096
+    client.identity = ProviderIdentity("anthropic", client.model, ANTHROPIC_ADAPTER)
+    deltas = []
+
+    with pytest.raises(ProviderError) as caught:
+        client.stream_complete([user_message("question")], [], deltas.append)
+
+    assert [event.text for event in deltas] == ["partial"]
+    assert caught.value.kind is ProviderErrorKind.SERVER
+    assert caught.value.retryable is True
+    assert "secret response body" not in caught.value.safe_message
 
 
 def test_two_adapters_produce_equivalent_canonical_tool_transcript():
