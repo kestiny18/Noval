@@ -9,9 +9,11 @@ from pathlib import Path
 from typing import List, Optional, Sequence
 
 from .api import (
+    EventType,
     NovalError,
     PermissionDecision,
     PermissionRequest,
+    RuntimeEvent,
     SessionInfo,
     SessionOptions,
     SessionPersistence,
@@ -63,6 +65,58 @@ def _print_turn(label: str, text: str) -> None:
 def _read_turn(label: str) -> str:
     print(_turn_prefix(label, use_color=_supports_color()), end="", flush=True)
     return input()
+
+
+class _CliStreamRenderer:
+    """Render visible deltas while retaining terminal-result fallback."""
+
+    def __init__(self) -> None:
+        self._active_request_id: Optional[str] = None
+        self._active_turn_id: Optional[str] = None
+        self._active_text = ""
+        self._last_turn_id: Optional[str] = None
+        self._last_text = ""
+
+    def handle(self, event: RuntimeEvent) -> None:
+        if event.type == EventType.MODEL_OUTPUT_DELTA.value:
+            text = event.payload.get("text")
+            request_id = event.payload.get("request_id")
+            if not isinstance(text, str) or not text:
+                return
+            if request_id != self._active_request_id:
+                self._finish_active()
+                self._active_request_id = (
+                    request_id if isinstance(request_id, str) else None
+                )
+                self._active_turn_id = event.turn_id
+                self._active_text = ""
+                print(
+                    _turn_prefix("Noval", use_color=_supports_color()),
+                    end="",
+                    flush=True,
+                )
+            print(text, end="", flush=True)
+            self._active_text += text
+            return
+        if event.type == EventType.MODEL_COMPLETED.value:
+            self._finish_active(completed=True)
+            return
+        if event.type == EventType.MODEL_OUTPUT_ABORTED.value:
+            self._finish_active()
+
+    def displayed(self, turn_id: str, text: str) -> bool:
+        return self._last_turn_id == turn_id and self._last_text == text
+
+    def _finish_active(self, *, completed: bool = False) -> None:
+        if self._active_request_id is None:
+            return
+        print()
+        if completed:
+            self._last_turn_id = self._active_turn_id
+            self._last_text = self._active_text
+        self._active_request_id = None
+        self._active_turn_id = None
+        self._active_text = ""
 
 
 def _choose_resume_session(sessions: Sequence[SessionInfo]) -> Optional[str]:
@@ -277,7 +331,12 @@ def run_cli(argv: Optional[List[str]] = None) -> None:
         network_access=NetworkAccess(args.sandbox_network),
     )
 
-    runtime = NovalRuntime(config, configure_logging=True)
+    stream_renderer = _CliStreamRenderer()
+    runtime = NovalRuntime(
+        config,
+        configure_logging=True,
+        event_sink=stream_renderer.handle,
+    )
     session: Optional[AgentSession] = None
     resumed = False
     try:
@@ -365,8 +424,9 @@ def run_cli(argv: Optional[List[str]] = None) -> None:
                 reply = f"[Error {result.error.code}: {result.error.safe_message}]"
             else:
                 reply = "(No displayable result for this turn.)"
-            print()
-            _print_turn("Noval", reply)
+            if not stream_renderer.displayed(result.turn_id, reply):
+                print()
+                _print_turn("Noval", reply)
             summary = _format_reasoning_summary(result.metrics)
             if summary:
                 print(" " * len(_turn_prefix("Noval")) + summary)
@@ -380,3 +440,4 @@ def run_cli(argv: Optional[List[str]] = None) -> None:
 
 if __name__ == "__main__":
     run_cli()
+    RuntimeEvent,
