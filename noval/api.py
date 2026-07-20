@@ -1467,6 +1467,65 @@ class RuntimeEvent:
 
 
 @dataclass(frozen=True)
+class EventPage:
+    events: Tuple[RuntimeEvent, ...] = ()
+    oldest_sequence: int = 0
+    latest_sequence: int = 0
+    next_sequence: int = 0
+    gap_detected: bool = False
+    has_more: bool = False
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.events, tuple):
+            raise ApiFormatError("events must be an immutable tuple")
+        if not all(isinstance(item, RuntimeEvent) for item in self.events):
+            raise ApiFormatError("events items must be RuntimeEvent")
+        for name in ("oldest_sequence", "latest_sequence", "next_sequence"):
+            _integer(getattr(self, name), name)
+        _boolean(self.gap_detected, "gap_detected")
+        _boolean(self.has_more, "has_more")
+        if self.latest_sequence and self.oldest_sequence > self.latest_sequence:
+            raise ApiFormatError(
+                "oldest_sequence must not exceed latest_sequence"
+            )
+
+    def to_dict(self) -> Dict[str, JSONValue]:
+        return {
+            "schema_version": API_SCHEMA_VERSION,
+            "events": [event.to_dict() for event in self.events],
+            "oldest_sequence": self.oldest_sequence,
+            "latest_sequence": self.latest_sequence,
+            "next_sequence": self.next_sequence,
+            "gap_detected": self.gap_detected,
+            "has_more": self.has_more,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "EventPage":
+        obj = _object(data, "event_page")
+        _schema(obj, "event_page")
+        events = obj.get("events", [])
+        if not isinstance(events, list):
+            raise ApiFormatError("events must be an array")
+        return cls(
+            events=tuple(RuntimeEvent.from_dict(item) for item in events),
+            oldest_sequence=_integer(
+                obj.get("oldest_sequence", 0), "oldest_sequence"
+            ),
+            latest_sequence=_integer(
+                obj.get("latest_sequence", 0), "latest_sequence"
+            ),
+            next_sequence=_integer(
+                obj.get("next_sequence", 0), "next_sequence"
+            ),
+            gap_detected=_boolean(
+                obj.get("gap_detected", False), "gap_detected"
+            ),
+            has_more=_boolean(obj.get("has_more", False), "has_more"),
+        )
+
+
+@dataclass(frozen=True)
 class PermissionStateView:
     mode: PermissionMode
     approved_tools: Tuple[str, ...] = ()

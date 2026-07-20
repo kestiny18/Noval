@@ -7,6 +7,7 @@ import logging
 import re
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,6 +19,7 @@ from .api import (
     CompletionReport,
     CompletionStatus,
     ErrorInfo,
+    EventPage,
     EventType,
     NovalError,
     PermissionDecision,
@@ -86,6 +88,8 @@ from .usage import JsonlUsageStore, MeteredLLMClient
 log = logging.getLogger("noval.application")
 
 _TRANSCRIPT_PAGE_LIMIT = 200
+_EVENT_PAGE_LIMIT = 200
+_EVENT_BUFFER_MAX_EVENTS = 512
 _TURN_CONTEXT_RE = re.compile(r"^<context>.*?</context>\s*", re.DOTALL)
 
 
@@ -289,6 +293,7 @@ class AgentSession:
         self._closed = False
         self._active_turn_id: Optional[str] = None
         self._event_sequence = 0
+        self._events = deque(maxlen=_EVENT_BUFFER_MAX_EVENTS)
 
     @property
     def info(self) -> SessionInfo:
@@ -436,13 +441,58 @@ class AgentSession:
             has_more=len(entries) > limit,
         )
 
+    def replay_events(
+        self,
+        *,
+        after_sequence: int = 0,
+        limit: int = 100,
+    ) -> EventPage:
+        """Replay a bounded window of observations from this live Session."""
+        if (
+            not isinstance(after_sequence, int)
+            or isinstance(after_sequence, bool)
+            or after_sequence < 0
+        ):
+            raise ValueError("after_sequence must be an integer >= 0")
+        if (
+            not isinstance(limit, int)
+            or isinstance(limit, bool)
+            or limit < 1
+            or limit > _EVENT_PAGE_LIMIT
+        ):
+            raise ValueError(
+                f"limit must be an integer between 1 and {_EVENT_PAGE_LIMIT}"
+            )
+        with self._state_lock:
+            if self._closed:
+                raise NovalError(
+                    "session_closed",
+                    "Session is closed.",
+                    session_id=self._base_info.session_id,
+                )
+            retained = tuple(self._events)
+        oldest = retained[0].sequence if retained else 0
+        latest = retained[-1].sequence if retained else 0
+        gap_detected = bool(retained and after_sequence < oldest - 1)
+        candidates = tuple(
+            event for event in retained if event.sequence > after_sequence
+        )
+        events = candidates[:limit]
+        return EventPage(
+            events=events,
+            oldest_sequence=oldest,
+            latest_sequence=latest,
+            next_sequence=(events[-1].sequence if events else after_sequence),
+            gap_detected=gap_detected,
+            has_more=len(candidates) > limit,
+        )
+
     def record_verification(
         self,
         verification: VerificationResult,
     ) -> CompletionReport:
         if not isinstance(verification, VerificationResult):
             raise TypeError("verification must be VerificationResult")
-        event = None
         with self._state_lock:
             self._require_idle_locked()
             try:
@@ -460,24 +510,22 @@ class AgentSession:
                         "verification_id": verification.verification_id,
                     },
                 ) from error
-            if self._event_sink is not None:
-                event = self._new_event_locked(
-                    EventType.VERIFICATION_RECORDED.value,
-                    payload={
-                        "verification": {
-                            "verification_id": verification.verification_id,
-                            "goal_id": verification.goal_id,
-                            "criterion_id": verification.criterion_id,
-                            "source": verification.source,
-                            "outcome": verification.outcome.value,
-                            "observed_at": verification.observed_at,
-                            "receipt_ids": list(verification.receipt_ids),
-                        },
-                        "completion": report.to_dict(),
+            event = self._new_event_locked(
+                EventType.VERIFICATION_RECORDED.value,
+                payload={
+                    "verification": {
+                        "verification_id": verification.verification_id,
+                        "goal_id": verification.goal_id,
+                        "criterion_id": verification.criterion_id,
+                        "source": verification.source,
+                        "outcome": verification.outcome.value,
+                        "observed_at": verification.observed_at,
+                        "receipt_ids": list(verification.receipt_ids),
                     },
-                )
-        if event is not None:
-            self._dispatch_event(event)
+                    "completion": report.to_dict(),
+                },
+            )
+        self._dispatch_event(event)
         return report
 
     def _require_idle_locked(self) -> None:
@@ -776,9 +824,6 @@ class AgentSession:
         payload: Optional[Dict[str, object]] = None,
         turn_id: Optional[str] = None,
     ) -> None:
-        sink = self._event_sink
-        if sink is None:
-            return
         with self._state_lock:
             event = self._new_event_locked(
                 event_type,
@@ -795,7 +840,7 @@ class AgentSession:
         turn_id: Optional[str] = None,
     ) -> RuntimeEvent:
         self._event_sequence += 1
-        return RuntimeEvent(
+        event = RuntimeEvent(
             event_id="event-" + uuid4().hex,
             session_id=self._base_info.session_id,
             turn_id=turn_id,
@@ -804,6 +849,8 @@ class AgentSession:
             type=event_type,
             payload=dict(payload or {}),
         )
+        self._events.append(event)
+        return event
 
     def _dispatch_event(self, event: RuntimeEvent) -> None:
         sink = self._event_sink
