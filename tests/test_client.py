@@ -80,6 +80,38 @@ def openai_call(call_id="call-1", name="read_file", arguments='{"path":"a"}'):
     )
 
 
+def openai_chunk(
+    *,
+    content=None,
+    reasoning=None,
+    calls=(),
+    usage=None,
+    model="provider-stream-model",
+):
+    delta = SimpleNamespace(
+        content=content,
+        reasoning_content=reasoning,
+        tool_calls=list(calls),
+    )
+    choices = [SimpleNamespace(delta=delta)] if any(
+        value is not None and value != ()
+        for value in (content, reasoning, calls)
+    ) else []
+    return SimpleNamespace(
+        choices=choices,
+        usage=usage,
+        model=model,
+    )
+
+
+def openai_call_delta(index, *, call_id=None, name=None, arguments=None):
+    return SimpleNamespace(
+        index=index,
+        id=call_id,
+        function=SimpleNamespace(name=name, arguments=arguments),
+    )
+
+
 def anthropic_response(content, *, model="claude-provider"):
     return SimpleNamespace(
         content=content,
@@ -137,6 +169,77 @@ def test_plain_reasoning_is_not_retained_but_usage_is_normalized():
     assert response.meta["thinking_enabled"] is True
     assert response.usage.prompt_tokens == 100
     assert response.usage.reasoning_tokens == 12
+
+
+def test_openai_stream_emits_only_visible_text_and_reconstructs_final_response():
+    raw_usage = SimpleNamespace(
+        prompt_tokens=10,
+        completion_tokens=5,
+        total_tokens=15,
+        completion_tokens_details=SimpleNamespace(reasoning_tokens=2),
+    )
+    client, create = openai_client([[
+        openai_chunk(reasoning="need "),
+        openai_chunk(
+            content="Inspect",
+            calls=(openai_call_delta(
+                0,
+                call_id="call-1",
+                name="read_file",
+                arguments='{"pa',
+            ),),
+        ),
+        openai_chunk(
+            content="ing",
+            reasoning="the file",
+            calls=(openai_call_delta(0, arguments='th":"a"}'),),
+        ),
+        openai_chunk(usage=raw_usage),
+    ]])
+    deltas = []
+
+    response = client.stream_complete(
+        [user_message("read")],
+        [ToolDefinition("read_file", "read", {"type": "object"})],
+        deltas.append,
+    )
+
+    assert [event.text for event in deltas] == ["Inspect", "ing"]
+    assert response.message.text == "Inspecting"
+    assert response.message.tool_calls == (
+        ToolCallBlock("call-1", "read_file", '{"path":"a"}'),
+    )
+    assert response.message.replay_state.payload == {
+        "reasoning_content": "need the file",
+    }
+    assert response.provider.model == "provider-stream-model"
+    assert response.usage.total_tokens == 15
+    assert response.usage.reasoning_tokens == 2
+    assert create.calls[0]["stream"] is True
+    assert create.calls[0]["stream_options"] == {"include_usage": True}
+    assert create.calls[0]["tool_choice"] == "auto"
+
+
+def test_openai_stream_normalizes_iteration_failures_after_visible_output():
+    class RateLimitError(Exception):
+        status_code = 429
+
+    class BrokenStream:
+        def __iter__(self):
+            yield openai_chunk(content="partial")
+            raise RateLimitError("secret response body")
+
+    client, _ = openai_client([BrokenStream()])
+    deltas = []
+
+    with pytest.raises(ProviderError) as caught:
+        client.stream_complete(
+            [user_message("question")], [], deltas.append
+        )
+
+    assert [event.text for event in deltas] == ["partial"]
+    assert caught.value.kind is ProviderErrorKind.RATE_LIMIT
+    assert "secret response body" not in caught.value.safe_message
 
 
 def test_openai_tool_reasoning_round_trips_as_adapter_owned_state():
