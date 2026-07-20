@@ -25,7 +25,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Protocol
+from typing import Any, Dict, List, Optional, Protocol, Tuple
 
 from .messages import ConversationMessage, MessageFormatError, MessageRole
 
@@ -55,6 +55,9 @@ class PersistentSessionStore(SessionStore, SessionMetadataStore, Protocol):
     session_id: str
 
     def load_records(self) -> List["SessionRecord"]: ...
+    def load_record_page(
+        self, after_seq: int, limit: int
+    ) -> Tuple[List["SessionRecord"], bool]: ...
     def context_path(self) -> Path: ...
     def task_path(self) -> Path: ...
     def request_path(self) -> Path: ...
@@ -357,6 +360,15 @@ class JsonlSessionStore:
     # --- Read --------------------------------------------------------------
     def load_records(self) -> List[SessionRecord]:
         """Load valid message envelopes, retaining seq and ts for checkpoints."""
+        records, _ = self.load_record_page(-1, sys.maxsize)
+        return records
+
+    def load_record_page(
+        self,
+        after_seq: int,
+        limit: int,
+    ) -> Tuple[List[SessionRecord], bool]:
+        """Scan a bounded record page without materializing the complete Session."""
         records: List[SessionRecord] = []
         for rec in _iter_records(self._path):
             if "_meta" in rec:
@@ -371,8 +383,12 @@ class JsonlSessionStore:
             except MessageFormatError:
                 log.warning("skipping corrupt canonical session message: %s seq=%s", self._path, seq)
                 continue
+            if seq <= after_seq:
+                continue
             records.append(SessionRecord(seq=seq, ts=ts, message=message))
-        return records
+            if len(records) > limit:
+                return records[:limit], True
+        return records, False
 
     def load(self) -> List[ConversationMessage]:
         return [record.message for record in self.load_records()]

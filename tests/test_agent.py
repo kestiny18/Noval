@@ -186,6 +186,40 @@ def test_failed_stream_marks_partial_output_aborted_without_persisting_it():
     assert all("partial private draft" not in message.text for message in agent.messages)
 
 
+def test_cancellation_after_last_delta_marks_output_aborted():
+    events = []
+
+    class CancelAfterDeltaClient:
+        cancel = None
+
+        def complete(self, messages, tools):
+            raise AssertionError("streaming capability should be selected")
+
+        def stream_complete(self, messages, tools, on_event):
+            on_event(LLMStreamEvent("not canonical yet"))
+            assert self.cancel is not None
+            self.cancel()
+            return mock_text("not canonical yet")
+
+    client = CancelAfterDeltaClient()
+    agent = Agent(
+        client,
+        cfg(),
+        observer=lambda event, payload: events.append((event, payload)),
+    )
+    client.cancel = agent.process_runtime.cancel
+
+    outcome = agent.run_turn("hi")
+
+    assert outcome.stop_reason == "cancelled"
+    assert [event for event, _ in events] == [
+        "model.started",
+        "model.output.delta",
+        "model.output.aborted",
+    ]
+    assert all("not canonical yet" not in message.text for message in agent.messages)
+
+
 def test_provider_receives_schema_only_tool_definitions(tmp_path):
     client = MockClient([mock_text("done")])
     Agent(client, cfg(), workdir=str(tmp_path)).send("hello")

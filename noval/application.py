@@ -88,6 +88,7 @@ from .usage import JsonlUsageStore, MeteredLLMClient
 log = logging.getLogger("noval.application")
 
 _TRANSCRIPT_PAGE_LIMIT = 200
+_TRANSCRIPT_ARGUMENT_KEY_LIMIT = 64
 _EVENT_PAGE_LIMIT = 200
 _EVENT_BUFFER_MAX_EVENTS = 512
 _TURN_CONTEXT_RE = re.compile(r"^<context>.*?</context>\s*", re.DOTALL)
@@ -207,7 +208,12 @@ def _tool_argument_keys(arguments: str) -> Tuple[str, ...]:
         return ()
     if not isinstance(parsed, dict):
         return ()
-    return tuple(sorted(str(key) for key in parsed))
+    keys = (
+        str(key)[:4000]
+        for key in parsed
+        if str(key).strip()
+    )
+    return tuple(sorted(keys)[:_TRANSCRIPT_ARGUMENT_KEY_LIMIT])
 
 
 def _transcript_entry(
@@ -334,10 +340,11 @@ class AgentSession:
                 self._store.update_metadata({"title": normalized})
             self._base_info = replace(self._base_info, title=normalized)
             info = replace(self._base_info, is_open=True)
-        self._emit(
-            EventType.SESSION_RENAMED.value,
-            payload={"title": normalized},
-        )
+            event = self._new_event_locked(
+                EventType.SESSION_RENAMED.value,
+                payload={"title": normalized},
+            )
+        self._dispatch_event(event)
         return info
 
     def _permission_state_locked(self) -> PermissionStateView:
@@ -416,9 +423,26 @@ class AgentSession:
                     session_id=self._base_info.session_id,
                 )
             if self._store is not None:
-                source = (
-                    (record.seq + 1, record.ts, record.message)
-                    for record in self._store.load_records()
+                records, has_more = self._store.load_record_page(
+                    after_sequence - 1,
+                    limit,
+                )
+                page_entries = tuple(
+                    entry
+                    for record in records
+                    if (entry := _transcript_entry(
+                        record.seq + 1,
+                        record.ts,
+                        record.message,
+                    )) is not None
+                )
+                return TranscriptPage(
+                    entries=page_entries,
+                    next_sequence=(
+                        page_entries[-1].sequence
+                        if page_entries else after_sequence
+                    ),
+                    has_more=has_more,
                 )
             else:
                 source = (

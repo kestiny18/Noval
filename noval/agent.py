@@ -721,6 +721,7 @@ class Agent:
                 response = self.client.complete(request_messages, provider_tools)
                 response.meta = dict(response.meta)
                 response.meta.setdefault("request_id", request_id)
+            self._raise_if_cancelled()
         except Exception:
             if streamed_output:
                 self._emit(
@@ -729,7 +730,6 @@ class Agent:
                 )
             self._raise_if_cancelled()
             raise
-        self._raise_if_cancelled()
         self._emit(
             "model.completed",
             request_id=response.meta.get("request_id", request_id),
