@@ -599,6 +599,18 @@ class Agent:
             status=status,
             after_tools=observed,
         )
+        if event is HookEvent.STOP:
+            receipt_ids = tuple(
+                receipt.receipt_id for receipt in self._current_turn_receipts
+                if receipt.executed
+                and (not observed or receipt.tool_name in observed)
+            )
+            for hook_result in result.results:
+                self.task_controller.record_stop_hook_result(
+                    hook_result.hook_id,
+                    hook_result.outcome.value,
+                    receipt_ids=receipt_ids,
+                )
         if has_hooks:
             self._emit(
                 "validation.completed",

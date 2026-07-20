@@ -14,7 +14,8 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
+from uuid import uuid4
 
 from .api import (
     ActionReceipt,
@@ -434,6 +435,50 @@ class TaskController:
             "source": safe.source,
             "outcome": safe.outcome.value,
         })
+        return report
+
+    def record_stop_hook_result(
+        self,
+        hook_id: str,
+        hook_outcome: str,
+        *,
+        receipt_ids: Sequence[str] = (),
+    ) -> Optional[CompletionReport]:
+        goal = self.state.active_goal
+        if goal is None:
+            return None
+        source = f"hook:{hook_id}"
+        matching = [
+            criterion for criterion in goal.acceptance_criteria
+            if criterion.verification_source == source
+        ]
+        if not matching:
+            return self.completion_report()
+        outcome_map = {
+            "allow": EvidenceOutcome.PASSED,
+            "deny": EvidenceOutcome.FAILED,
+            "context": EvidenceOutcome.UNKNOWN,
+        }
+        try:
+            outcome = outcome_map[hook_outcome]
+        except KeyError as error:
+            raise ValueError(
+                f"unsupported Stop Hook outcome {hook_outcome!r}"
+            ) from error
+        observed_at = _timestamp_text(self._current_time())
+        report = self.completion_report()
+        for criterion in matching:
+            report = self.record_verification(VerificationResult(
+                verification_id="verification-" + uuid4().hex,
+                goal_id=goal.goal_id,
+                criterion_id=criterion.criterion_id,
+                source=source,
+                outcome=outcome,
+                observed_at=observed_at,
+                subject=f"Stop Hook {hook_id}",
+                summary=f"Stop Hook outcome: {hook_outcome}",
+                receipt_ids=tuple(receipt_ids),
+            ))
         return report
 
     def completion_report(self) -> Optional[CompletionReport]:

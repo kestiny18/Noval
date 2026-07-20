@@ -5,6 +5,12 @@ from pathlib import Path
 import pytest
 
 from noval.agent import Agent
+from noval.api import (
+    AcceptanceCriterion,
+    CompletionStatus,
+    CriterionStatus,
+    GoalContract,
+)
 from noval.client import MockClient, mock_text, mock_tool_call
 from noval.config import Config
 from noval.hooks import HookEvent, HookOutcome, HookRegistry
@@ -13,6 +19,7 @@ from noval.process import NoSandbox, ProcessResult, SandboxStatus
 from noval.messages import MessageRole
 from noval.shell import ShellBackend
 from noval.tools import Context, Risk, tool
+from noval.task import TaskController
 
 
 def cfg():
@@ -63,6 +70,20 @@ def full_access():
     permissions = PermissionController()
     permissions.set_mode(PermissionMode.FULL_ACCESS)
     return permissions
+
+
+def hook_goal(hook_id):
+    return GoalContract(
+        goal_id="hook-goal",
+        objective="Pass the configured project validation.",
+        acceptance_criteria=(
+            AcceptanceCriterion(
+                criterion_id="validation",
+                description="The configured validation passes.",
+                verification_source=f"hook:{hook_id}",
+            ),
+        ),
+    )
 
 
 def test_grouped_config_preserves_order_and_match_fields(tmp_path):
@@ -492,6 +513,73 @@ def test_unfiltered_stop_hook_runs_for_direct_reply_without_tool_use(tmp_path):
 
     assert agent.send("hello") == "direct reply"
     assert marker.read_text(encoding="utf-8") == "ok"
+
+
+def test_stop_hook_allow_completes_matching_explicit_goal(tmp_path):
+    write_hooks(tmp_path, {
+        "Stop": [{
+            "id": "tests",
+            "command": sys.executable,
+            "args": ["-c", "print('passed')"],
+        }]
+    })
+    controller = TaskController()
+    controller.activate_goal(hook_goal("tests"))
+    agent = Agent(
+        MockClient([mock_text("Validated completion.")]),
+        cfg(),
+        workdir=str(tmp_path),
+        permissions=full_access(),
+        task_controller=controller,
+    )
+
+    assert agent.send("finish") == "Validated completion."
+    report = controller.completion_report()
+
+    assert report is not None
+    assert report.status is CompletionStatus.COMPLETED
+    assert report.criteria[0].status is CriterionStatus.PASSED
+    assert controller.state.verifications[-1].source == "hook:tests"
+
+
+def test_pre_and_post_hooks_do_not_satisfy_stop_hook_criterion(tmp_path):
+    @tool(name="_hook_evidence_target")
+    def target() -> str:
+        """Exercise non-Stop Hooks."""
+        return "ok"
+
+    write_hooks(tmp_path, {
+        "PreToolUse": [{
+            "id": "pre-check",
+            "command": sys.executable,
+            "args": ["-c", "print('pre passed')"],
+        }],
+        "PostToolUse": [{
+            "id": "post-check",
+            "command": sys.executable,
+            "args": ["-c", "print('post passed')"],
+        }],
+    })
+    controller = TaskController()
+    controller.activate_goal(hook_goal("required"))
+    agent = Agent(
+        MockClient([
+            mock_tool_call("c1", "_hook_evidence_target", "{}"),
+            mock_text("Done."),
+        ]),
+        cfg(),
+        workdir=str(tmp_path),
+        permissions=full_access(),
+        task_controller=controller,
+    )
+
+    assert agent.send("finish") == "Done."
+    report = controller.completion_report()
+
+    assert report is not None
+    assert report.status is CompletionStatus.UNCERTAIN
+    assert report.criteria[0].status is CriterionStatus.MISSING
+    assert controller.state.verifications == []
 
 
 def test_filtered_stop_hook_skips_direct_reply_without_matching_tool(tmp_path):

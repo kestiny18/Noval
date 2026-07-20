@@ -351,6 +351,41 @@ def test_goal_context_is_observed_data_and_not_a_permission_grant():
     assert "does not grant permission" in context
 
 
+@pytest.mark.parametrize(
+    ("hook_outcome", "expected_criterion", "expected_completion"),
+    [
+        ("allow", CriterionStatus.PASSED, CompletionStatus.COMPLETED),
+        ("deny", CriterionStatus.FAILED, CompletionStatus.INCOMPLETE),
+        ("context", CriterionStatus.UNKNOWN, CompletionStatus.UNCERTAIN),
+    ],
+)
+def test_stop_hook_outcomes_map_to_contracted_verification(
+    hook_outcome, expected_criterion, expected_completion
+):
+    now = datetime(2026, 7, 20, 12, 0, tzinfo=timezone.utc)
+    controller = TaskController(now=lambda: now)
+    controller.activate_goal(structured_goal(source="hook:test-suite"))
+
+    report = controller.record_stop_hook_result("test-suite", hook_outcome)
+
+    assert report is not None
+    assert report.status is expected_completion
+    assert report.criteria[0].status is expected_criterion
+    assert controller.state.verifications[-1].source == "hook:test-suite"
+
+
+def test_unmapped_stop_hook_does_not_create_completion_evidence():
+    controller = TaskController()
+    controller.activate_goal(structured_goal(source="hook:required"))
+
+    report = controller.record_stop_hook_result("another-hook", "allow")
+
+    assert report is not None
+    assert report.status is CompletionStatus.UNCERTAIN
+    assert report.criteria[0].status is CriterionStatus.MISSING
+    assert controller.state.verifications == []
+
+
 def test_completion_verifier_uses_judge_without_deterministic_completion_rules():
     state = TaskState(recent_user_inputs=["Fix the configuration loading issue"])
     judge = SemanticJudge(
