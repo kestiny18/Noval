@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+import noval.application as application_module
 from noval.application import ClientSpec, NovalRuntime
 from noval.api import (
     AcceptanceCriterion,
@@ -19,6 +20,7 @@ from noval.api import (
     CriterionStatus,
     ErrorInfo,
     EvidenceOutcome,
+    EventPage,
     EventType,
     GoalContract,
     NovalError,
@@ -678,6 +680,78 @@ def test_runtime_event_preserves_unknown_event_types_for_forward_compatibility()
 
     assert RuntimeEvent.from_dict(json_round_trip(known.to_dict())) == known
     assert RuntimeEvent.from_dict(unknown).type == "future.event"
+
+    page = EventPage(
+        events=(known,),
+        oldest_sequence=4,
+        latest_sequence=4,
+        next_sequence=4,
+        gap_detected=True,
+    )
+    assert EventPage.from_dict(json_round_trip(page.to_dict())) == page
+
+
+def test_live_event_replay_is_bounded_ordered_and_reports_gaps(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setattr(application_module, "_EVENT_BUFFER_MAX_EVENTS", 3)
+    runtime = NovalRuntime(
+        application_config(tmp_path),
+        client_factory=QueueClientFactory([]),
+    )
+    session = runtime.create_session(SessionOptions(
+        workdir=str(tmp_path),
+        persistence=SessionPersistence.EPHEMERAL,
+    ))
+    for title in ("One", "Two", "Three", "Four"):
+        session.rename(title)
+
+    first = session.replay_events(limit=2)
+    second = session.replay_events(
+        after_sequence=first.next_sequence,
+        limit=2,
+    )
+
+    assert first.oldest_sequence == 3
+    assert first.latest_sequence == 5
+    assert [event.sequence for event in first.events] == [3, 4]
+    assert first.gap_detected is True
+    assert first.has_more is True
+    assert [event.sequence for event in second.events] == [5]
+    assert second.gap_detected is False
+    assert second.has_more is False
+    assert second.events[0].payload == {"title": "Four"}
+
+    session.close()
+    with pytest.raises(NovalError) as closed:
+        session.replay_events()
+    assert closed.value.code == "session_closed"
+    runtime.close()
+
+
+def test_event_replay_survives_sink_failure(tmp_path):
+    def broken_sink(_event):
+        raise RuntimeError("consumer unavailable")
+
+    runtime = NovalRuntime(
+        application_config(tmp_path),
+        client_factory=QueueClientFactory([]),
+        event_sink=broken_sink,
+    )
+    session = runtime.create_session(SessionOptions(
+        workdir=str(tmp_path),
+        persistence=SessionPersistence.EPHEMERAL,
+    ))
+    session.rename("Buffered")
+
+    page = session.replay_events()
+
+    assert [event.type for event in page.events] == [
+        EventType.SESSION_OPENED.value,
+        EventType.SESSION_RENAMED.value,
+    ]
+    session.close()
+    runtime.close()
 
 
 def test_public_errors_round_trip_without_raw_exception_data():

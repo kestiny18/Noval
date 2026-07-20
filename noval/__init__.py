@@ -13,6 +13,7 @@ from .api import (  # noqa: F401
     CriterionStatus,
     ErrorInfo,
     EvidenceOutcome,
+    EventPage,
     EventType,
     GoalContract,
     NovalError,
