@@ -7,7 +7,7 @@
 [![CI](https://github.com/kestiny18/Noval/actions/workflows/ci.yml/badge.svg)](https://github.com/kestiny18/Noval/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
-[![Release](https://img.shields.io/badge/release-v0.10.0-brightgreen.svg)](https://github.com/kestiny18/Noval/releases/tag/v0.10.0)
+[![Release](https://img.shields.io/badge/release-v0.11.0-brightgreen.svg)](https://github.com/kestiny18/Noval/releases/tag/v0.11.0)
 
 <p align="center">
   <strong>强模型需要薄 Harness。</strong><br>
@@ -34,7 +34,7 @@ Noval 起源于一次最朴素的 tool-calling 实验：由人亲自扮演工具
 
 如果你正在构建自己的 Code Agent 或领域 Agent，希望保留完全可读、可替换、可测试的执行内核，而不是把产品交给一个巨型黑盒，Noval 就是为你准备的。它仍处于 `0.x`，不提供拖拽式工作流或“一键自治团队”；它提供的是一块可以长期演进的地基。
 
-> **当前状态**：`v0.10.0` 是当前已发布稳定版本。在 Provider-neutral 内核之上，它提供可嵌入的 Headless/Application API、多 Session 隔离、实时事件、writer lease 和安全请求重建。
+> **当前状态**：`v0.11.0` 是当前已发布稳定版本。它正式确立原则约束、强模型、薄 Harness 的运行契约，并新增由项目控制的 `.llmignore` 文件发现过滤；已有的 Headless/Application API、多 Session 隔离和安全执行边界保持不变。
 
 ## 核心设计
 
@@ -388,6 +388,7 @@ v0.9 不读取或迁移旧 schema v1 Session：会话列表会标记为不兼容
 | `v0.8.1` | Hooks 发布加固：所有候选结束均进入 Stop，严格校验 timeout 有限值 | `v0.8.1` |
 | `v0.9.0` | Provider 真中立：canonical messages、Session v2、OpenAI-compatible 与 Anthropic adapters | `v0.9.0` |
 | `v0.10.0` | 可嵌入内核：多 Session Application API、并发/权限/取消、writer lease、实时事件与请求重建 | `v0.10.0` |
+| `v0.11.0` | 原则约束 Agent：强模型、薄 Harness 运行契约，英文优先公共界面与 `.llmignore` 文件发现策略 | `v0.11.0` |
 
 详细变化见 [CHANGELOG.md](CHANGELOG.md)。
 
@@ -410,7 +411,7 @@ python -m evals.context.run
 
 ## 当前状态与方向
 
-Noval 当前已发布到 `0.10.x`。核心能力包括工具注册表、统一 executor、会话持久化、上下文 checkpoint、Skills/MCP MVP、任务完成 judge、项目级 Hooks、运行日志、Token 用量统计，以及可嵌入的多 Session Application API。
+Noval 当前已发布到 `0.11.x`。核心能力包括工具注册表、统一 executor、会话持久化、上下文 checkpoint、Skills/MCP MVP、任务完成 judge、项目级 Hooks、运行日志、Token 用量统计，以及可嵌入的多 Session Application API。
 
 接下来的重点不是堆更多工具或强制 Agent 角色，而是建立目标/范围/验收契约、结构化行动与验证证据、effect-aware 权限，以及原则驱动行为 Eval，并逐步收紧 v1.0 公共契约。当前设计权衡见 [DESIGN.md](DESIGN.md)，根本原则见 [PHILOSOPHY.zh-CN.md](PHILOSOPHY.zh-CN.md)。
 
