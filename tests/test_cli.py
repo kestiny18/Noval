@@ -2,9 +2,11 @@ import ast
 from pathlib import Path
 
 from noval.api import (
+    EventType,
     PermissionDecision,
     PermissionRequest,
     PermissionStateView,
+    RuntimeEvent,
     SessionInfo,
     SessionPersistence,
     StopReason,
@@ -12,7 +14,7 @@ from noval.api import (
     TurnResult,
     TurnStatus,
 )
-from noval.cli import _cli_permission_handler, run_cli
+from noval.cli import _CliStreamRenderer, _cli_permission_handler, run_cli
 from noval.config import Config
 from noval.messages import assistant_message
 from noval.permissions import PermissionMode
@@ -164,6 +166,62 @@ def test_cli_permission_handler_returns_three_state_decision(monkeypatch):
 
     monkeypatch.setattr("builtins.input", lambda prompt: "")
     assert _cli_permission_handler(request) is PermissionDecision.DENY
+
+
+def test_cli_stream_renderer_prints_deltas_once_and_handles_abort(capsys):
+    renderer = _CliStreamRenderer()
+
+    renderer.handle(RuntimeEvent(
+        event_id="event-1",
+        session_id="session-1",
+        turn_id="turn-1",
+        sequence=1,
+        timestamp="2026-07-21T01:02:03Z",
+        type=EventType.MODEL_OUTPUT_DELTA.value,
+        payload={"request_id": "request-1", "text": "Hel"},
+    ))
+    renderer.handle(RuntimeEvent(
+        event_id="event-2",
+        session_id="session-1",
+        turn_id="turn-1",
+        sequence=2,
+        timestamp="2026-07-21T01:02:04Z",
+        type=EventType.MODEL_OUTPUT_DELTA.value,
+        payload={"request_id": "request-1", "text": "lo"},
+    ))
+    renderer.handle(RuntimeEvent(
+        event_id="event-3",
+        session_id="session-1",
+        turn_id="turn-1",
+        sequence=3,
+        timestamp="2026-07-21T01:02:05Z",
+        type=EventType.MODEL_COMPLETED.value,
+    ))
+
+    assert capsys.readouterr().out == "Noval > Hello\n"
+    assert renderer.displayed("turn-1", "Hello") is True
+    assert renderer.displayed("turn-1", "different") is False
+
+    renderer.handle(RuntimeEvent(
+        event_id="event-4",
+        session_id="session-1",
+        turn_id="turn-2",
+        sequence=4,
+        timestamp="2026-07-21T01:02:06Z",
+        type=EventType.MODEL_OUTPUT_DELTA.value,
+        payload={"request_id": "request-2", "text": "partial"},
+    ))
+    renderer.handle(RuntimeEvent(
+        event_id="event-5",
+        session_id="session-1",
+        turn_id="turn-2",
+        sequence=5,
+        timestamp="2026-07-21T01:02:07Z",
+        type=EventType.MODEL_OUTPUT_ABORTED.value,
+    ))
+
+    assert capsys.readouterr().out == "Noval > partial\n"
+    assert renderer.displayed("turn-2", "partial") is False
 
 
 def test_cli_host_does_not_construct_agent_directly():
