@@ -258,6 +258,63 @@ def _openai_messages(messages: Sequence[ConversationMessage]) -> List[Dict[str, 
     return wire
 
 
+def _openai_response(
+    response: Any,
+    *,
+    default_model: str,
+    duration_ms: float,
+) -> LLMResponse:
+    model = _value(response, "model")
+    identity = ProviderIdentity(
+        OPENAI_ADAPTER,
+        model if isinstance(model, str) and model else default_model,
+        OPENAI_ADAPTER,
+    )
+    try:
+        choices = _value(response, "choices") or []
+        message = _value(choices[0], "message")
+        calls = tuple(
+            ToolCallBlock(
+                str(_value(call, "id") or ""),
+                str(_value(_value(call, "function"), "name") or ""),
+                str(_value(_value(call, "function"), "arguments") or ""),
+            )
+            for call in (_value(message, "tool_calls") or [])
+        )
+        reasoning = _value(message, "reasoning_content")
+        if reasoning is not None and not isinstance(reasoning, str):
+            raise ValueError("reasoning_content must be a string")
+        replay = None
+        if calls and reasoning is not None:
+            replay = AdapterReplayState(
+                OPENAI_ADAPTER,
+                ADAPTER_SCHEMA_VERSION,
+                {"reasoning_content": reasoning},
+            )
+        canonical = assistant_message(
+            _value(message, "content"),
+            tool_calls=calls,
+            replay_state=replay,
+            provenance=identity.provenance(),
+        )
+    except (AttributeError, IndexError, TypeError, ValueError) as error:
+        raise ProviderError(
+            ProviderErrorKind.PROTOCOL,
+            "openai-compatible provider returned an invalid response",
+            retryable=False,
+            identity=identity,
+        ) from error
+    return LLMResponse(
+        message=canonical,
+        usage=_normalize_openai_usage(_value(response, "usage")),
+        provider=identity,
+        meta={
+            "thinking_enabled": reasoning is not None,
+            "duration_ms": duration_ms,
+        },
+    )
+
+
 class OpenAICompatibleClient:
     def __init__(
         self,
@@ -315,49 +372,128 @@ class OpenAICompatibleClient:
         except Exception as error:
             raise _normalized_error(error, self.identity) from error
         duration_ms = round((time.perf_counter() - started) * 1000, 1)
-        model = _value(response, "model")
-        identity = ProviderIdentity(
-            OPENAI_ADAPTER,
-            model if isinstance(model, str) and model else self.model,
-            OPENAI_ADAPTER,
+        return _openai_response(
+            response,
+            default_model=self.model,
+            duration_ms=duration_ms,
         )
+
+    def stream_complete(
+        self,
+        messages: Sequence[ConversationMessage],
+        tools: Sequence[ToolDefinition],
+        on_event: LLMStreamObserver,
+    ) -> LLMResponse:
+        provider_tools = _openai_tools(tools)
+        kwargs: Dict[str, Any] = {
+            "model": self.model,
+            "messages": _openai_messages(messages),
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        if provider_tools:
+            kwargs.update(tools=provider_tools, tool_choice="auto")
+        started = time.perf_counter()
         try:
-            message = response.choices[0].message
-            calls = tuple(
-                ToolCallBlock(call.id, call.function.name, call.function.arguments)
-                for call in (_value(message, "tool_calls") or [])
-            )
-            reasoning = _value(message, "reasoning_content")
-            if reasoning is not None and not isinstance(reasoning, str):
-                raise ValueError("reasoning_content must be a string")
-            replay = None
-            if calls and reasoning is not None:
-                replay = AdapterReplayState(
-                    OPENAI_ADAPTER,
-                    ADAPTER_SCHEMA_VERSION,
-                    {"reasoning_content": reasoning},
-                )
-            canonical = assistant_message(
-                _value(message, "content"),
-                tool_calls=calls,
-                replay_state=replay,
-                provenance=identity.provenance(),
-            )
-        except (AttributeError, IndexError, TypeError, ValueError) as error:
+            stream = self._client.chat.completions.create(**kwargs)
+        except Exception as error:
+            raise _normalized_error(error, self.identity) from error
+
+        text_parts: List[str] = []
+        reasoning_parts: List[str] = []
+        call_parts: Dict[int, Dict[str, Any]] = {}
+        usage = None
+        model = self.model
+        try:
+            for chunk in stream:
+                chunk_model = _value(chunk, "model")
+                if isinstance(chunk_model, str) and chunk_model:
+                    model = chunk_model
+                chunk_usage = _value(chunk, "usage")
+                if chunk_usage is not None:
+                    usage = chunk_usage
+                choices = _value(chunk, "choices") or []
+                if not choices:
+                    continue
+                delta = _value(choices[0], "delta")
+                content = _value(delta, "content")
+                if content is not None:
+                    if not isinstance(content, str):
+                        raise ValueError("stream content delta must be a string")
+                    if content:
+                        text_parts.append(content)
+                        on_event(LLMStreamEvent(content))
+                reasoning = _value(delta, "reasoning_content")
+                if reasoning is not None:
+                    if not isinstance(reasoning, str):
+                        raise ValueError(
+                            "stream reasoning delta must be a string"
+                        )
+                    reasoning_parts.append(reasoning)
+                for position, fragment in enumerate(
+                    _value(delta, "tool_calls") or []
+                ):
+                    index = _value(fragment, "index")
+                    if not isinstance(index, int) or isinstance(index, bool):
+                        index = position
+                    part = call_parts.setdefault(
+                        index,
+                        {"id": "", "name": "", "arguments": []},
+                    )
+                    call_id = _value(fragment, "id")
+                    if isinstance(call_id, str):
+                        part["id"] += call_id
+                    function = _value(fragment, "function")
+                    name = _value(function, "name")
+                    if isinstance(name, str):
+                        part["name"] += name
+                    arguments = _value(function, "arguments")
+                    if isinstance(arguments, str):
+                        part["arguments"].append(arguments)
+        except (TypeError, ValueError) as error:
             raise ProviderError(
                 ProviderErrorKind.PROTOCOL,
-                "openai-compatible provider returned an invalid response",
+                "openai-compatible provider returned an invalid stream",
                 retryable=False,
-                identity=identity,
+                identity=self.identity,
             ) from error
-        return LLMResponse(
-            message=canonical,
-            usage=_normalize_openai_usage(_value(response, "usage")),
-            provider=identity,
-            meta={
-                "thinking_enabled": reasoning is not None,
-                "duration_ms": duration_ms,
-            },
+        except Exception as error:
+            raise _normalized_error(error, self.identity) from error
+        finally:
+            close = getattr(stream, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
+
+        tool_calls = [
+            {
+                "id": part["id"],
+                "function": {
+                    "name": part["name"],
+                    "arguments": "".join(part["arguments"]),
+                },
+            }
+            for _, part in sorted(call_parts.items())
+        ]
+        response = {
+            "model": model,
+            "choices": [{
+                "message": {
+                    "content": "".join(text_parts) if text_parts else None,
+                    "reasoning_content": (
+                        "".join(reasoning_parts) if reasoning_parts else None
+                    ),
+                    "tool_calls": tool_calls,
+                },
+            }],
+            "usage": usage,
+        }
+        return _openai_response(
+            response,
+            default_model=self.model,
+            duration_ms=round((time.perf_counter() - started) * 1000, 1),
         )
 
 
