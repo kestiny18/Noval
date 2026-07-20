@@ -6,6 +6,7 @@ single tool call, including errors, truncation, approval, and logging.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -14,9 +15,10 @@ import sys
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 from uuid import uuid4
 
+from .api import ActionReceipt, ReceiptKind, ReceiptOutcome
 from .client import LLMClient, LLMResponse, TokenUsage, ToolDefinition
 from .config import Config
 from .confinement import ConfinementPolicy, PathAccess
@@ -41,7 +43,7 @@ from .session import (
 from .shell import ShellBackend, resolve_shell_backend, to_bash_path
 from .skills import SkillRegistry, SkillSnapshotDiff, skill_index_context
 from .task import CompletionVerifier, SemanticJudge, TaskController, TaskEventStore
-from .tools import Context, Tool, all_tools
+from .tools import Context, Risk, Tool, ToolResult, all_tools
 from .usage import JsonlUsageStore, UsageBreakdown, UsageSummary
 
 log = logging.getLogger("noval.agent")
@@ -219,6 +221,7 @@ class AgentTurnOutcome:
     stop_reason: str
     metrics: TurnMetrics
     usage: Optional[TokenUsage] = None
+    receipts: Tuple[ActionReceipt, ...] = ()
 
     @property
     def text(self) -> str:
@@ -335,6 +338,7 @@ class Agent:
         for error in self.hook_registry.errors:
             log.warning("hook config: %s", error)
         self._ephemeral_turn_context: Optional[str] = None
+        self._current_turn_receipts: List[ActionReceipt] = []
         # Inject workdir and the cross-tool read tracker into tools that need them.
         self.context = Context(
             workdir=self.workdir,
@@ -390,6 +394,7 @@ class Agent:
             stop_reason=stop_reason,
             metrics=metrics,
             usage=metrics.usage,
+            receipts=tuple(self._current_turn_receipts),
         )
 
     def send(self, user_input: str) -> str:
@@ -399,6 +404,7 @@ class Agent:
     def run_turn(self, user_input: str) -> AgentTurnOutcome:
         """Run one user turn and return its structured internal outcome."""
         self.last_turn_metrics = TurnMetrics()
+        self._current_turn_receipts = []
         self._ephemeral_turn_context = self._refresh_dynamic_runtime_context_for_turn()
         # Add a fresh timestamp to each user turn so the system cache prefix
         # remains stable while long-running sessions retain an accurate "now".
@@ -481,6 +487,9 @@ class Agent:
                         before_execute=before_execute,
                         tools=self.tools,
                     )
+                    receipt = _action_receipt(call.id, call.name, call.arguments, result)
+                    self._current_turn_receipts.append(receipt)
+                    self.task_controller.record_receipt(receipt)
                     feedback_parts = []
                     if pre_batches and not pre_batches[0].blocked:
                         pre_feedback = pre_batches[0].feedback()
@@ -511,6 +520,7 @@ class Agent:
                         is_error=result.is_error,
                         truncated=result.truncated,
                         duration_ms=result.meta.get("duration_ms"),
+                        receipt=receipt.to_dict(),
                     )
                     self._raise_if_cancelled()
         except (KeyboardInterrupt, ProcessCancelled):
@@ -799,6 +809,45 @@ def _cli_approver(tool: Tool, args: Dict[str, Any]) -> str:
     if ans in ("a", "always"):
         return "always"
     return "yes" if ans in ("y", "yes") else "no"
+
+
+def _action_receipt(
+    call_id: str,
+    tool_name: str,
+    arguments: str,
+    result: ToolResult,
+) -> ActionReceipt:
+    risk = str(result.meta.get("effective_risk") or "unknown")
+    if result.meta.get("executed") is not True:
+        outcome = ReceiptOutcome.NOT_EXECUTED
+    elif result.is_error:
+        outcome = ReceiptOutcome.FAILED
+    else:
+        outcome = ReceiptOutcome.SUCCEEDED
+    digest = hashlib.sha256(result.content.encode("utf-8")).hexdigest()
+    return ActionReceipt(
+        receipt_id="receipt-" + uuid4().hex,
+        call_id=call_id,
+        tool_name=tool_name,
+        target=f"tool:{tool_name}",
+        kind=(
+            ReceiptKind.OBSERVATION
+            if risk == Risk.READ.value else ReceiptKind.ACTION
+        ),
+        risk=risk,
+        outcome=outcome,
+        executed=result.meta.get("executed") is True,
+        started_at=str(result.meta["started_at"]),
+        completed_at=str(result.meta["completed_at"]),
+        argument_keys=tuple(_tool_arg_keys(arguments)),
+        duration_ms=(
+            float(result.meta["duration_ms"])
+            if isinstance(result.meta.get("duration_ms"), (int, float)) else None
+        ),
+        truncated=result.truncated,
+        redacted=result.meta.get("redacted") is True,
+        result_digest="sha256:" + digest,
+    )
 
 
 def _tool_arg_keys(arguments: str) -> List[str]:

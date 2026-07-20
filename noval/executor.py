@@ -13,6 +13,7 @@ import inspect
 import json
 import logging
 import time
+from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Optional, Sequence
 
 from .config import Config
@@ -69,10 +70,12 @@ def execute_tool_call(
 ) -> ToolResult:
     """Execute one tool call and always return a ToolResult."""
     started = time.perf_counter()
+    started_at = datetime.now(timezone.utc)
     t = {
         "approval_end": None,
         "exec_start": None,
         "executed": False,
+        "effective_risk": "unknown",
     }  # Execution timing begins after approval so user wait time remains separate.
 
     def finish(content: str, *, is_error: bool = False, truncated: bool = False, **meta: Any) -> ToolResult:
@@ -82,8 +85,14 @@ def execute_tool_call(
             meta["redacted"] = True
         now = time.perf_counter()
         ref = t["exec_start"] or t["approval_end"] or started
-        meta.update(tool=name, duration_ms=round((now - ref) * 1000, 1))
+        meta.update(
+            tool=name,
+            duration_ms=round((now - ref) * 1000, 1),
+            started_at=started_at.isoformat(timespec="milliseconds"),
+            completed_at=datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+        )
         meta.setdefault("executed", t["executed"])
+        meta.setdefault("effective_risk", t["effective_risk"])
         if t["approval_end"] is not None:  # Record approval wait separately.
             wait = round((t["approval_end"] - started) * 1000, 1)
             if wait >= 1.0:
@@ -98,6 +107,7 @@ def execute_tool_call(
     if tool is None:
         available = ", ".join(t.name for t in catalog) or "(none)"
         return finish(f"Error: unknown tool '{name}'. Available tools: {available}", is_error=True)
+    t["effective_risk"] = tool.risk.value
 
     # 2. Parse JSON arguments.
     try:
@@ -114,6 +124,7 @@ def execute_tool_call(
 
     # 4. Apply centralized approval using the invocation's effective risk.
     effective_risk = tool.risk_assessor(args) if tool.risk_assessor else tool.risk
+    t["effective_risk"] = effective_risk.value
     permissions = context.permissions if context is not None else PermissionController()
     if permissions.requires_approval(tool.name, effective_risk.value):
         decision = _normalize_decision(approver(tool, args) if approver else "no")

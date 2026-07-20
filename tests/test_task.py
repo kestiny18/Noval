@@ -27,7 +27,7 @@ from noval.task import (
     TaskState,
     TaskStatus,
 )
-from noval.tools import Risk, tool
+from noval.tools import Risk, all_tools, tool
 
 
 def cfg():
@@ -461,6 +461,91 @@ def test_agent_judges_final_reply_after_tool_loop(tmp_path):
     assert packet["context_user_inputs"] == []
     assert packet["recent_user_inputs"] == ["Only identify the cause"]
     assert packet["assistant_final_reply"] == "The cache was not refreshed."
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "risk", "tool_body", "approver", "expected_outcome", "executed"),
+    [
+        (
+            "_receipt_success",
+            Risk.READ,
+            lambda: "password=FAKE_RECEIPT_SECRET",
+            None,
+            ReceiptOutcome.SUCCEEDED,
+            True,
+        ),
+        (
+            "_receipt_failure",
+            Risk.READ,
+            lambda: (_ for _ in ()).throw(RuntimeError("failed")),
+            None,
+            ReceiptOutcome.FAILED,
+            True,
+        ),
+        (
+            "_receipt_denied",
+            Risk.DANGEROUS,
+            lambda: "must not execute",
+            lambda _tool, _arguments: False,
+            ReceiptOutcome.NOT_EXECUTED,
+            False,
+        ),
+    ],
+)
+def test_agent_records_safe_receipt_for_every_tool_attempt(
+    tmp_path,
+    tool_name,
+    risk,
+    tool_body,
+    approver,
+    expected_outcome,
+    executed,
+):
+    @tool(name=tool_name, risk=risk)
+    def receipt_tool(unused: str) -> str:
+        """exercise receipt recording"""
+        del unused
+        return tool_body()
+    receipt_tool_definition = next(
+        item for item in all_tools() if item.name == tool_name
+    )
+
+    events = []
+    controller = TaskController()
+    agent = Agent(
+        MockClient([
+            mock_tool_call("provider call/1", tool_name, '{"unused": "secret-value"}'),
+            mock_text("Finished."),
+        ]),
+        cfg(),
+        tools=[receipt_tool_definition],
+        workdir=str(tmp_path),
+        task_controller=controller,
+        approver=approver,
+        observer=lambda event_type, payload: events.append((event_type, payload)),
+    )
+
+    outcome = agent.run_turn("Use the test tool.")
+
+    assert len(outcome.receipts) == 1
+    receipt = outcome.receipts[0]
+    assert receipt.call_id == "provider call/1"
+    assert receipt.tool_name == tool_name
+    assert receipt.target == f"tool:{tool_name}"
+    assert receipt.risk == risk.value
+    assert receipt.kind is (
+        ReceiptKind.OBSERVATION if risk is Risk.READ else ReceiptKind.ACTION
+    )
+    assert receipt.outcome is expected_outcome
+    assert receipt.executed is executed
+    assert receipt.argument_keys == ("unused",)
+    assert receipt.result_digest.startswith("sha256:")
+    serialized = json.dumps(receipt.to_dict(), ensure_ascii=False)
+    assert "secret-value" not in serialized
+    assert "FAKE_RECEIPT_SECRET" not in serialized
+    assert controller.state.receipts == [receipt]
+    completed = [payload for event, payload in events if event == "tool.completed"]
+    assert completed[0]["receipt"] == receipt.to_dict()
 
 
 def test_agent_skips_completion_judge_for_direct_reply(tmp_path):

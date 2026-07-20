@@ -383,7 +383,7 @@ class ActionReceipt:
     def __post_init__(self) -> None:
         _identifier(self.receipt_id, "receipt_id")
         _bounded_string(self.call_id, "call_id", maximum=256)
-        _identifier(self.tool_name, "tool_name")
+        _bounded_string(self.tool_name, "tool_name", maximum=128)
         _bounded_string(self.target, "target", maximum=256)
         if not isinstance(self.kind, ReceiptKind):
             raise ApiFormatError("kind must be ReceiptKind")
@@ -432,7 +432,9 @@ class ActionReceipt:
             call_id=_bounded_string(
                 obj.get("call_id"), "call_id", maximum=256
             ) or "",
-            tool_name=_identifier(obj.get("tool_name"), "tool_name"),
+            tool_name=_bounded_string(
+                obj.get("tool_name"), "tool_name", maximum=128
+            ) or "",
             target=_bounded_string(obj.get("target"), "target", maximum=256) or "",
             kind=_enum(ReceiptKind, obj.get("kind"), "kind"),
             risk=_identifier(obj.get("risk"), "risk", source=True),
