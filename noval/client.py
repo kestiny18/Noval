@@ -6,7 +6,7 @@ import json
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional, Protocol, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Protocol, Sequence, Tuple
 
 from .messages import (
     AdapterReplayState,
@@ -97,11 +97,40 @@ class LLMResponse:
     meta: Dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class LLMStreamEvent:
+    """One provider-neutral visible output observation."""
+
+    text: str
+    type: str = "text.delta"
+
+    def __post_init__(self) -> None:
+        if self.type != "text.delta":
+            raise ValueError("unsupported LLM stream event type")
+        if not isinstance(self.text, str) or not self.text:
+            raise ValueError("text delta must be a non-empty string")
+
+
+LLMStreamObserver = Callable[[LLMStreamEvent], None]
+
+
 class LLMClient(Protocol):
     def complete(
         self,
         messages: Sequence[ConversationMessage],
         tools: Sequence[ToolDefinition],
+    ) -> LLMResponse:
+        ...
+
+
+class StreamingLLMClient(Protocol):
+    """Optional capability; final response semantics match ``complete``."""
+
+    def stream_complete(
+        self,
+        messages: Sequence[ConversationMessage],
+        tools: Sequence[ToolDefinition],
+        on_event: LLMStreamObserver,
     ) -> LLMResponse:
         ...
 

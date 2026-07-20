@@ -49,4 +49,5 @@ from .application import (  # noqa: F401
     NovalRuntime,
     PermissionHandler,
 )
+from .client import LLMStreamEvent, StreamingLLMClient  # noqa: F401
 from .permissions import PermissionMode  # noqa: F401

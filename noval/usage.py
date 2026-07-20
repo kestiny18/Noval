@@ -11,7 +11,13 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Protocol, Sequence
 from uuid import uuid4
 
-from .client import LLMClient, LLMResponse, TokenUsage, ToolDefinition
+from .client import (
+    LLMClient,
+    LLMResponse,
+    LLMStreamObserver,
+    TokenUsage,
+    ToolDefinition,
+)
 from .messages import ConversationMessage
 
 log = logging.getLogger("noval.usage")
@@ -178,6 +184,22 @@ class MeteredLLMClient:
         tools: Sequence[ToolDefinition],
     ) -> LLMResponse:
         response = self.inner.complete(messages, tools)
+        return self._record(response)
+
+    def stream_complete(
+        self,
+        messages: Sequence[ConversationMessage],
+        tools: Sequence[ToolDefinition],
+        on_event: LLMStreamObserver,
+    ) -> LLMResponse:
+        streamer = getattr(self.inner, "stream_complete", None)
+        if callable(streamer):
+            response = streamer(messages, tools, on_event)
+        else:
+            response = self.inner.complete(messages, tools)
+        return self._record(response)
+
+    def _record(self, response: LLMResponse) -> LLMResponse:
         if response.usage is None:
             return response
         response_model = response.provider.model or self.model

@@ -14,7 +14,8 @@ from noval.agent import (
     load_project_memory, run_cli, TurnMetrics,
 )
 from noval.client import (
-    LLMResponse, MockClient, ProviderIdentity, TokenUsage, mock_text, mock_tool_call,
+    LLMResponse, LLMStreamEvent, MockClient, ProviderIdentity, TokenUsage,
+    mock_text, mock_tool_call,
 )
 from noval.config import Config
 from noval.permissions import PermissionController, PermissionMode
@@ -124,6 +125,65 @@ def test_agent_observer_is_ordered_and_failure_is_isolated(tmp_path):
     completed = next(payload for event, payload in events if event == "tool.completed")
     assert completed["tool_name"] == "read_file"
     assert completed["content"].endswith("hello")
+
+
+def test_agent_emits_visible_stream_deltas_and_keeps_final_response_canonical():
+    events = []
+
+    class StreamingClient:
+        def complete(self, messages, tools):
+            raise AssertionError("streaming capability should be selected")
+
+        def stream_complete(self, messages, tools, on_event):
+            on_event(LLMStreamEvent("Hel"))
+            on_event(LLMStreamEvent("lo"))
+            return mock_text("Hello")
+
+    outcome = Agent(
+        StreamingClient(),
+        cfg(),
+        observer=lambda event, payload: events.append((event, payload)),
+    ).run_turn("hi")
+
+    assert outcome.text == "Hello"
+    assert [event for event, _ in events] == [
+        "model.started",
+        "model.output.delta",
+        "model.output.delta",
+        "model.completed",
+    ]
+    assert [
+        payload["text"] for event, payload in events
+        if event == "model.output.delta"
+    ] == ["Hel", "lo"]
+
+
+def test_failed_stream_marks_partial_output_aborted_without_persisting_it():
+    events = []
+
+    class FailingStreamingClient:
+        def complete(self, messages, tools):
+            raise AssertionError("streaming capability should be selected")
+
+        def stream_complete(self, messages, tools, on_event):
+            on_event(LLMStreamEvent("partial private draft"))
+            raise RuntimeError("stream failed")
+
+    agent = Agent(
+        FailingStreamingClient(),
+        cfg(),
+        observer=lambda event, payload: events.append((event, payload)),
+    )
+
+    with pytest.raises(RuntimeError, match="stream failed"):
+        agent.run_turn("hi")
+
+    assert [event for event, _ in events] == [
+        "model.started",
+        "model.output.delta",
+        "model.output.aborted",
+    ]
+    assert all("partial private draft" not in message.text for message in agent.messages)
 
 
 def test_provider_receives_schema_only_tool_definitions(tmp_path):

@@ -25,7 +25,13 @@ from .api import (
     ReceiptKind,
     ReceiptOutcome,
 )
-from .client import LLMClient, LLMResponse, TokenUsage, ToolDefinition
+from .client import (
+    LLMClient,
+    LLMResponse,
+    LLMStreamEvent,
+    TokenUsage,
+    ToolDefinition,
+)
 from .config import Config
 from .confinement import ConfinementPolicy, PathAccess
 from .context import ContextManager
@@ -670,22 +676,57 @@ class Agent:
             message_count=len(request_messages),
             tool_count=len(tools),
         )
+        streamed_output = False
+
+        def observe_stream(event: LLMStreamEvent) -> None:
+            nonlocal streamed_output
+            self._raise_if_cancelled()
+            if event.type != "text.delta" or not event.text:
+                return
+            streamed_output = True
+            self._emit(
+                "model.output.delta",
+                request_id=request_id,
+                text=event.text,
+            )
         try:
             provider_tools = _provider_tools(tools)
+            stream_with_request = getattr(
+                self.client, "stream_complete_with_request", None
+            )
+            stream_complete = getattr(self.client, "stream_complete", None)
             complete_with_request = getattr(
                 self.client, "complete_with_request", None
             )
-            if complete_with_request is not None:
-                response = complete_with_request(
+            if callable(stream_with_request):
+                response = stream_with_request(
                     request_messages,
                     provider_tools,
+                    observe_stream,
                     request_id=request_id,
+                )
+            elif callable(stream_complete):
+                response = stream_complete(
+                    request_messages,
+                    provider_tools,
+                    observe_stream,
+                )
+                response.meta = dict(response.meta)
+                response.meta.setdefault("request_id", request_id)
+            elif callable(complete_with_request):
+                response = complete_with_request(
+                    request_messages, provider_tools, request_id=request_id
                 )
             else:
                 response = self.client.complete(request_messages, provider_tools)
                 response.meta = dict(response.meta)
                 response.meta.setdefault("request_id", request_id)
         except Exception:
+            if streamed_output:
+                self._emit(
+                    "model.output.aborted",
+                    request_id=request_id,
+                )
             self._raise_if_cancelled()
             raise
         self._raise_if_cancelled()
@@ -695,6 +736,10 @@ class Agent:
             provider=response.provider.provider,
             model=response.provider.model,
             has_tool_calls=bool(response.message.tool_calls),
+            reasoning_tokens=(
+                response.usage.reasoning_tokens
+                if response.usage is not None else None
+            ),
         )
         if self.context_manager is not None:
             self.context_manager.observe(request_messages, tools, response.usage)
