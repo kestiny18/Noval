@@ -43,6 +43,7 @@ flowchart LR
     Executor --> Discovery["project discovery filter"]
     Sessions --> State["canonical Session + checkpoints"]
     Sessions --> Evidence["goal + receipts + verification + task ledger"]
+    Sessions --> Observation["safe transcript + live event window"]
 ```
 
 ## Non-negotiable seams
@@ -70,6 +71,20 @@ error normalization, truncation, redaction, and trace metadata.
 The append-only canonical Session is the source of truth. Checkpoints, task
 events, usage events, and request journals are derived or side-channel state and
 must be rebuildable, ignorable, or safely degradable.
+
+### Host observation seam
+
+The Application API projects canonical history into a paged transcript that
+omits system instructions, Provider replay state, provenance, and tool argument
+values. Each open Session also retains a bounded, memory-only event window for
+short reconnects. Event gaps fall back to transcript state; events never become
+a second durable log.
+
+Visible assistant text may stream through an optional Provider capability, but
+the final canonical `LLMResponse` remains the only input to the Agent loop and
+Session. `model.started` and terminal lifecycle events provide ephemeral
+activity state. Opaque reasoning content remains inside its owning adapter and
+is never exposed as a transcript or event stream.
 
 ### Process seam
 
@@ -145,6 +160,8 @@ preserved.
 ## State, recovery, and freshness
 
 - Session schema v2 stores canonical non-system messages in append-only JSONL.
+- Safe transcript pages are projections of canonical messages, while live event
+  replay is bounded to one open Session and is never restored.
 - Task sidecar schema v2 stores recoverable goal/evidence snapshots and accepts
   legacy task schema-v1 snapshots without fabricating structured evidence.
 - Stable system, environment, project, Skill, MCP, and Hook context is rebuilt
@@ -204,7 +221,8 @@ The current kernel includes the registry/executor core, canonical Provider adapt
 permissions, path confinement, subprocess isolation, Sessions/checkpoints,
 Skills and stdio MCP discovery, project Hooks, usage and request provenance,
 safe action receipts, criterion-level verification, evidence-aware completion,
-and a multi-Session Application API.
+and a multi-Session Application API with safe transcripts, optional visible
+text streaming, Session rename metadata, and bounded live event replay.
 
 Before adding workflow roles or multi-agent orchestration, the next core design
 questions are:

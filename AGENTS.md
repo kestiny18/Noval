@@ -138,6 +138,9 @@ told what to correct.
   `ConversationMessage` and typed text/tool-call/tool-result blocks.
 - `LLMResponse` contains one canonical assistant message, `TokenUsage`,
   `ProviderIdentity`, and safe framework metadata.
+- `complete()` remains the required Provider capability. Optional streaming
+  emits visible text deltas only and must reconstruct the same final
+  `LLMResponse`; opaque reasoning and tool-argument fragments stay adapter-owned.
 - Provider tool definitions contain only name, description, and JSON schema.
 - DeepSeek `reasoning_content` and Anthropic thinking/redacted-thinking are
   adapter-owned opaque replay state. Core code does not inspect, display,
@@ -157,7 +160,9 @@ told what to correct.
   core does not queue.
 - Session creation and execution never call `os.chdir()` or mutate process
   environment.
-- Events are live-only. Persistent Sessions hold a cross-process writer lease.
+- Events are live-process only. Each open Session retains a bounded in-memory
+  replay window; events are never restored or persisted. Persistent Sessions
+  hold a cross-process writer lease.
 - Every Provider request has a request id and a safe reconstruction journal
   that excludes credentials and opaque thinking.
 

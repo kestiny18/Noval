@@ -48,7 +48,7 @@ Read the full [Noval Philosophy](PHILOSOPHY.md).
 | Extensibility | On-demand Skills and stdio MCP tools without bypassing execution policy |
 | Project validation | Pre/Post/Stop Hooks that can block action or reject a candidate ending |
 | Completion evidence | Optional goal contracts, safe action receipts, criterion verification, and freshness-aware reports |
-| Embedding | JSON-safe multi-Session Application API independent of the CLI |
+| Embedding | JSON-safe multi-Session API with safe transcripts, live text, rename, and bounded event replay |
 
 ## Architecture
 
@@ -155,6 +155,21 @@ One Runtime can own multiple isolated Sessions. A Session permits one active
 turn; concurrent calls fail immediately with `session_busy` so the host remains
 responsible for queueing policy.
 
+Desktop and other host adapters can use the same consumer-safe surface:
+
+- `session.transcript()` pages durable history without system instructions,
+  opaque Provider replay state, or tool argument values;
+- `session.rename()` updates bounded display metadata without rewriting
+  append-only history;
+- `model.output.delta` streams visible assistant text when the selected client
+  supports it; `model.started`/`model.completed` provide ephemeral activity;
+- `session.replay_events()` repairs short live-process delivery gaps from a
+  bounded memory window and reports when the host must rebuild from transcript.
+
+Raw chain-of-thought is never a public stream. Provider thinking state remains
+opaque and adapter-owned. Events are not persisted, and Session deletion is not
+part of this contract.
+
 See the complete offline example in
 [`examples/headless-api`](examples/headless-api/README.md).
 
@@ -206,8 +221,9 @@ report = session.record_verification(VerificationResult(
 Every tool attempt also returns a bounded `ActionReceipt`, but execution alone
 never proves acceptance. A criterion may instead name `hook:<hook-id>` to use a
 configured Stop Hook as deterministic verification. See
-[Application API](docs/application-api.md), [Hooks](docs/hooks.md), and
-[ADR-0005](docs/adr/0005-goal-evidence-completion-contract.md).
+[Application API](docs/application-api.md), [Hooks](docs/hooks.md),
+[ADR-0005](docs/adr/0005-goal-evidence-completion-contract.md), and
+[ADR-0006](docs/adr/0006-desktop-consumer-observation-boundary.md).
 
 ## Tools, Skills, MCP, and Hooks
 

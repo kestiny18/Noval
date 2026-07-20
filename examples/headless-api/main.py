@@ -77,11 +77,18 @@ def main() -> None:
                     executor.submit(beta.run_turn, TurnRequest("hello beta")),
                 ]
                 results = [future.result() for future in futures]
+            alpha.rename("Alpha demo")
+            consumer_state = {
+                "session": alpha.info.to_dict(),
+                "transcript": alpha.transcript(limit=100).to_dict(),
+                "event_replay": alpha.replay_events(limit=100).to_dict(),
+            }
 
         print(json.dumps(
             {
                 "results": [result.to_dict() for result in results],
                 "events": [event.to_dict() for event in events],
+                "consumer_state": consumer_state,
             },
             ensure_ascii=False,
             indent=2,

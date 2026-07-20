@@ -174,13 +174,22 @@ with NovalRuntime.from_settings() as runtime:
 
 `SessionPersistence.DEFAULT` 继承全局设置，`PERSISTENT` 使用 schema v2 JSONL，`EPHEMERAL` 只驻留内存。持久 Session 打开期间持有跨进程 writer lease；第二个写者收到可重试的 `session_locked`，关闭后 lease 立即释放。
 
-危险工具通过独立 `PermissionHandler` 返回 `ALLOW_ONCE`、`ALLOW_SESSION` 或 `DENY`。ASK 模式没有 handler 或 handler 异常时 fail-closed。`RuntimeEvent` 是 JSON-safe、Session 内单调排序的实时通知；它不持久化，也不是另一份真相源。事件 sink 异常不会中断回合。
+危险工具通过独立 `PermissionHandler` 返回 `ALLOW_ONCE`、`ALLOW_SESSION` 或 `DENY`。ASK 模式没有 handler 或 handler 异常时 fail-closed。`RuntimeEvent` 是 JSON-safe、Session 内单调排序的实时通知；每个打开的 Session 保留一个有界的内存重放窗口，但事件不持久化，也不是另一份真相源。事件 sink 异常不会中断回合。
 
 `cancel_active_turn()` 是协作式取消：它会阻止下一个模型/工具步骤，并终止该 Session 当前持有的子进程；不能强杀 Python 线程，也不能保证立即中断已阻塞的 Provider SDK，请求 timeout 仍是硬上限。`close()` 遇到 active turn 会返回 `session_busy` / `runtime_busy`，宿主应先取消、等待 terminal result，再关闭。
 
 每次模型调用都会生成 request id。宿主可从 `model.started` 事件取得 id，再调用 `session.inspect_request(request_id)` 重建 canonical messages、tool schema、checkpoint 来源和 adapter 自己渲染的安全请求形态。结果不包含 API key、authorization header、SDK raw response 或 opaque thinking/reasoning state。
 
 完整的离线双 Session 示例见 [`examples/headless-api`](examples/headless-api/README.md)。公共 DTO 都支持显式 `to_dict()` / `from_dict()`；wire key 为 snake_case，当前 schema version 为 1。
+
+Desktop 等宿主可以直接使用同一组消费者安全接口：
+
+- `session.transcript()` 分页读取持久历史，但不暴露 system instructions、Provider opaque replay state 或工具参数值；
+- `session.rename()` 修改有界显示标题，不改写 append-only Session；
+- 支持流式能力的 Provider client 会发出 `model.output.delta` 可见文本，`model.started` / `model.completed` 可用于实时活动状态；
+- `session.replay_events()` 从有界内存窗口修复 live process 内的短暂投递中断，并明确报告宿主何时必须回到 transcript 重建。
+
+Noval 不公开 raw chain-of-thought。Provider thinking state 始终由所属 adapter 以 opaque state 管理；事件不会持久化，本契约也不包含 Session 删除。详细边界见 [ADR-0006](docs/adr/0006-desktop-consumer-observation-boundary.md)。
 
 ### 证据感知完成
 

@@ -1,6 +1,6 @@
-# Application API: goal, evidence, and completion
+# Application API
 
-[简体中文](application-api.zh-CN.md) · [ADR-0005](adr/0005-goal-evidence-completion-contract.md)
+[简体中文](application-api.zh-CN.md) · [ADR-0005](adr/0005-goal-evidence-completion-contract.md) · [ADR-0006](adr/0006-desktop-consumer-observation-boundary.md)
 
 Noval's Application API keeps operational termination separate from task
 completion:
@@ -13,6 +13,50 @@ completion:
 This distinction is intentional. A model can finish speaking while required
 evidence is still missing, and a Provider can fail after a goal was already
 verified.
+
+## Desktop-consumer observation
+
+The same headless API provides the primitives needed by a desktop or terminal
+host without exposing Agent internals:
+
+```python
+from queue import SimpleQueue
+from noval import NovalRuntime, SessionOptions, TurnRequest
+
+events = SimpleQueue()
+with NovalRuntime.from_settings(event_sink=events.put) as runtime:
+    with runtime.create_session(SessionOptions(workdir="project")) as session:
+        history = session.transcript(limit=100)
+        session.rename("Architecture review")
+
+        # Run on the host's worker thread. The event sink must stay fast.
+        result = session.run_turn(TurnRequest("Review this project."))
+
+        replay = session.replay_events(after_sequence=0, limit=100)
+        if replay.gap_detected:
+            history = session.transcript(limit=100)
+```
+
+`transcript()` returns stable one-based sequence numbers and cursor pagination.
+It omits system messages, Provider replay state, provenance, and tool argument
+values. Tool calls expose only argument keys; stored tool results have already
+crossed the executor's normalization, truncation, and redaction boundary.
+
+`rename()` is idle-only and stores a title in mutable Session metadata. It never
+rewrites canonical JSONL. `replay_events()` reads a per-open-Session memory
+window. `gap_detected=True` means older events were evicted, so durable UI state
+must be rebuilt from the transcript before consuming later events.
+
+Clients may optionally stream visible assistant text. Hosts observe
+`model.started`, zero or more `model.output.delta` events, then
+`model.completed`; a failed partial stream emits `model.output.aborted` and is
+not written to canonical history. A legacy client that implements only
+`complete()` remains compatible and simply emits no deltas.
+
+Provider thinking/reasoning blocks are opaque replay state. They are not
+displayed, logged, judged, included in transcript pages, or emitted as events.
+Reasoning token counts may appear in completed metrics. Events are
+live-process-only and are not restored after close or process restart.
 
 ## Define an explicit goal
 
