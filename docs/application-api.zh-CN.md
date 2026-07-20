@@ -1,6 +1,6 @@
-# Application API：目标、证据与完成
+# Application API
 
-> [English](application-api.md) | 简体中文 · [ADR-0005](adr/0005-goal-evidence-completion-contract.md)
+> [English](application-api.md) | 简体中文 · [ADR-0005](adr/0005-goal-evidence-completion-contract.md) · [ADR-0006](adr/0006-desktop-consumer-observation-boundary.md)
 
 Noval 的 Application API 把“循环为何停止”和“任务是否完成”分开：
 
@@ -9,6 +9,17 @@ Noval 的 Application API 把“循环为何停止”和“任务是否完成”
 - `TurnResult.completion` 在存在显式目标时给出逐项验收证据。
 
 模型可以结束回复，但必要证据仍然缺失；Provider 也可能在目标已验证后发生故障。因此这两个维度不能混为一谈。
+
+## Desktop 消费者观察接口
+
+同一套 headless API 已提供 Desktop 或终端宿主所需的基础能力，而无需访问 Agent 内部对象：
+
+- `session.transcript()` 使用从 1 开始的稳定序号和游标分页读取历史；它不暴露 system message、Provider replay state、provenance 或工具参数值，工具调用只提供参数名；
+- `session.rename()` 只能在 Session 空闲时修改有界标题，并写入可变 metadata sidecar，不会改写 canonical JSONL；
+- 支持流式能力的 client 会依次发出 `model.started`、零个或多个 `model.output.delta`，最后发出 `model.completed`；失败的部分流会发出 `model.output.aborted`，但不会写入 canonical Session；
+- `session.replay_events()` 可从每个打开 Session 的有界内存窗口补读事件；`gap_detected=True` 表示旧事件已淘汰，宿主应先从 transcript 重建持久 UI 状态。
+
+只实现 `complete()` 的旧 client 继续兼容，只是不会产生文本 delta。Provider thinking/reasoning block 属于 adapter 私有的 opaque replay state，不会被显示、记录到日志、交给 Judge、放入 transcript 或作为事件发出；完成后的 metrics 可以包含 reasoning token 数量。事件仅存在于当前 live process，Session 关闭或进程重启后不会恢复。
 
 ## 定义显式目标
 

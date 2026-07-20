@@ -5,6 +5,28 @@ so public contracts may continue to evolve.
 
 ## [Unreleased]
 
+### Added
+
+- Consumer-safe paged Session transcripts for persistent and ephemeral
+  Sessions, excluding system instructions, Provider replay state, provenance,
+  and tool argument values.
+- Idle-only Session rename metadata with persistent sidecar recovery and
+  `session.renamed` events.
+- A bounded per-open-Session in-memory event replay window with cursor paging,
+  explicit gap detection, and transcript fallback semantics.
+- Optional Provider-neutral visible text streaming with OpenAI-compatible and
+  Anthropic adapter implementations plus `model.output.delta` and
+  `model.output.aborted` events.
+
+### Changed
+
+- The CLI now renders visible model output incrementally and avoids printing
+  the same final response twice.
+- Public `TurnResult` serialization no longer exposes Provider-private replay
+  state or tool argument values.
+- Clarified that raw chain-of-thought remains opaque adapter state; lifecycle
+  events and final reasoning-token metrics are the public activity surface.
+
 ## [0.12.0] - 2026-07-20
 
 ### Added

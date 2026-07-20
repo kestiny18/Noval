@@ -18,6 +18,7 @@ The example demonstrates:
 - two ephemeral Sessions with different workdirs;
 - parallel turns across Sessions;
 - JSON-safe `TurnResult` and live `RuntimeEvent` values;
+- safe transcript paging, Session rename, and bounded live event replay;
 - no Provider credentials or network calls.
 
 Production hosts normally use `NovalRuntime.from_settings()` and choose
