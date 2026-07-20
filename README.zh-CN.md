@@ -29,7 +29,7 @@ Noval 起源于一次最朴素的 tool-calling 实验：由人亲自扮演工具
 | 循环直接绑定某家模型 SDK | `LLMClient` 隔离 Provider，核心不依赖厂商 SDK |
 | 每个工具各写一套 schema、异常、确认和日志 | `@tool` 只写领域逻辑，横切关注点统一进入 executor |
 | 用提示词要求模型“小心一点” | 权限门、path-jail、子进程 runtime 与硬沙箱在模型之外执行 |
-| 模型输出最终回复就算完成 | 项目 Hooks 可以否决结束；语义 Judge 只记录可见回复 verdict，不冒充外部事实证明 |
+| 模型输出最终回复就算完成 | 显式目标用验收条件、行动收据、验证证据和新鲜度派生完成报告；语义 Judge 不能替代证据 |
 | 崩溃后丢失现场，或用摘要覆盖原始历史 | append-only Session 是真相源，checkpoint 可回退、可重建 |
 
 如果你正在构建自己的 Code Agent 或领域 Agent，希望保留完全可读、可替换、可测试的执行内核，而不是把产品交给一个巨型黑盒，Noval 就是为你准备的。它仍处于 `0.x`，不提供拖拽式工作流或“一键自治团队”；它提供的是一块可以长期演进的地基。
@@ -45,6 +45,7 @@ Noval 起源于一次最朴素的 tool-calling 实验：由人亲自扮演工具
 - **上下文按生命周期归位**：稳定规则、环境探测、项目记忆和当前时间分层注入，避免污染缓存前缀。
 - **会话可恢复**：非 system 消息以 append-only JSONL 保存；恢复时按当前环境重建 system，并修复悬空 tool call。
 - **内核可嵌入**：`NovalRuntime` 可在一个进程内托管多个隔离 Session；CLI 只是第一个宿主适配器，未来 Desktop/Web 不需要重写 Agent 内核。
+- **完成状态可验证**：宿主可选用 `GoalContract` 描述目标与验收条件；工具调用生成安全收据，可信宿主或明确映射的 Stop Hook 提供验证证据。
 
 ```mermaid
 flowchart LR
@@ -181,6 +182,52 @@ with NovalRuntime.from_settings() as runtime:
 
 完整的离线双 Session 示例见 [`examples/headless-api`](examples/headless-api/README.md)。公共 DTO 都支持显式 `to_dict()` / `from_dict()`；wire key 为 snake_case，当前 schema version 为 1。
 
+### 证据感知完成
+
+需要可验证 terminal contract 的宿主，可以给回合附加显式目标。它是可选能力，普通问答和未提供目标的旧调用保持原有轻量行为。
+
+```python
+from datetime import datetime, timezone
+from noval import (
+    AcceptanceCriterion,
+    EvidenceOutcome,
+    GoalContract,
+    TurnRequest,
+    TurnStatus,
+    VerificationResult,
+)
+
+goal = GoalContract(
+    goal_id="release-0.12.0",
+    objective="Publish v0.12.0 after the required checks pass.",
+    scope=("current repository",),
+    authority=("deliver through a pull request",),
+    acceptance_criteria=(
+        AcceptanceCriterion(
+            "ci",
+            "Required CI passes.",
+            verification_source="host:github-checks",
+            max_age_seconds=3600,
+        ),
+    ),
+)
+
+# Inside an open AgentSession:
+result = session.run_turn(TurnRequest("Prepare the release.", goal=goal))
+# 缺少证据时，result.status == TurnStatus.UNCERTAIN
+
+report = session.record_verification(VerificationResult(
+    verification_id="github-checks-42",
+    goal_id=goal.goal_id,
+    criterion_id="ci",
+    source="host:github-checks",
+    outcome=EvidenceOutcome.PASSED,
+    observed_at=datetime.now(timezone.utc).isoformat(),
+))
+```
+
+每次工具尝试都会产生有界的 `ActionReceipt`，但“执行过”本身不证明验收通过。验收条件也可以声明 `hook:<hook-id>`，把配置的 Stop Hook 作为确定性验证来源。详见 [Application API](docs/application-api.zh-CN.md)、[Hooks](docs/hooks.zh-CN.md) 和 [ADR-0005](docs/adr/0005-goal-evidence-completion-contract.md)。
+
 ## 内置工具
 
 | 工具 | 风险 | 说明 |
@@ -261,6 +308,8 @@ Ubuntu 24.04+ 若启用了 AppArmor 的 unprivileged user namespace 限制，需
 CommandHook 不默认经过 shell，始终以显式 `command + args` 在 workdir 中通过 `ProcessRuntime` 执行。默认 `exit-code` 协议把退出码 0 视为 `allow`、非 0 视为 `deny` 并把截断、脱敏后的诊断交给模型；`protocol: "json"` 可显式返回 `allow`、`deny(reason)` 或 `context(text)`。Pre Hook 首个 deny 会阻止目标工具；Post Hook 全部运行并把失败附到对应 tool result；每个候选最终回复都会进入 Stop，`afterTools` 用于只匹配执行过指定工具的回合，任一 deny/context 都会隐藏该版最终回复并要求模型继续修复。相同 Stop 失败后若模型没有执行新的工具操作，框架会停止重复验证。
 
 项目 Hook 命令按 DANGEROUS 操作确认，授权绑定 Hook id 与配置内容 hash；配置变化后旧授权不会沿用。配置只在用户回合边界刷新，Hook 命令本身不会递归触发 Hooks。Hooks 是验证扩展，不是权限、path-jail 或硬沙箱的替代品。
+
+只有 Stop Hook 可以进入显式完成契约，而且验收条件必须明确声明 `verification_source="hook:<hook-id>"`。此时 allow / deny / context 分别映射为 passed / failed / unknown。Pre/Post Hook 继续只承担策略和诊断职责，不能满足验收条件。
 
 ## Skills
 
@@ -397,6 +446,7 @@ v0.9 不读取或迁移旧 schema v1 Session：会话列表会标记为不兼容
 ```bash
 pip install -e ".[dev]"
 python -m pytest -q
+python -m evals.task.run
 ```
 
 CI 覆盖 Python 3.10-3.13，并在 Windows 上额外验证当前主版本；专用 Linux job 会安装 Bubblewrap 并执行真实逃逸测试。
@@ -411,9 +461,9 @@ python -m evals.context.run
 
 ## 当前状态与方向
 
-Noval 当前已发布到 `0.11.x`。核心能力包括工具注册表、统一 executor、会话持久化、上下文 checkpoint、Skills/MCP MVP、任务完成 judge、项目级 Hooks、运行日志、Token 用量统计，以及可嵌入的多 Session Application API。
+Noval 当前稳定版本为 `0.11.x`。当前开发线已经加入 ADR-0005 的目标、行动收据、验证证据、新鲜度与完成报告契约；原有工具注册表、统一 executor、会话恢复、Skills/MCP、Hooks、运行日志、Token 用量统计和多 Session Application API 保持不变。
 
-接下来的重点不是堆更多工具或强制 Agent 角色，而是建立目标/范围/验收契约、结构化行动与验证证据、effect-aware 权限，以及原则驱动行为 Eval，并逐步收紧 v1.0 公共契约。当前设计权衡见 [DESIGN.md](DESIGN.md)，根本原则见 [PHILOSOPHY.zh-CN.md](PHILOSOPHY.zh-CN.md)。
+接下来的重点不是堆更多工具或强制 Agent 角色，而是 effect-aware 权限、更广泛的确定性验证适配、原则驱动行为 Eval，以及逐步收紧 v1.0 公共契约。当前设计权衡见 [DESIGN.md](DESIGN.md)，根本原则见 [PHILOSOPHY.zh-CN.md](PHILOSOPHY.zh-CN.md)。
 
 ## 参与项目
 

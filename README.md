@@ -47,6 +47,7 @@ Read the full [Noval Philosophy](PHILOSOPHY.md).
 | Recovery | Append-only canonical Sessions and rebuildable context checkpoints |
 | Extensibility | On-demand Skills and stdio MCP tools without bypassing execution policy |
 | Project validation | Pre/Post/Stop Hooks that can block action or reject a candidate ending |
+| Completion evidence | Optional goal contracts, safe action receipts, criterion verification, and freshness-aware reports |
 | Embedding | JSON-safe multi-Session Application API independent of the CLI |
 
 ## Architecture
@@ -62,6 +63,7 @@ flowchart LR
     Executor --> Policy["permissions + Hooks"]
     Executor --> Isolation["path jail + ProcessRuntime"]
     Sessions --> State["Session + checkpoints + provenance"]
+    Sessions --> Evidence["goal + receipts + verification"]
 ```
 
 Noval keeps five public seams explicit:
@@ -156,6 +158,57 @@ responsible for queueing policy.
 See the complete offline example in
 [`examples/headless-api`](examples/headless-api/README.md).
 
+### Evidence-aware completion
+
+Hosts that need a verifiable terminal contract can attach an explicit goal.
+This is opt-in; direct conversational turns remain unchanged.
+
+```python
+from datetime import datetime, timezone
+from noval import (
+    AcceptanceCriterion,
+    EvidenceOutcome,
+    GoalContract,
+    TurnRequest,
+    TurnStatus,
+    VerificationResult,
+)
+
+goal = GoalContract(
+    goal_id="release-0.12.0",
+    objective="Publish v0.12.0 after the required checks pass.",
+    scope=("current repository",),
+    authority=("deliver through a pull request",),
+    acceptance_criteria=(
+        AcceptanceCriterion(
+            "ci",
+            "Required CI passes.",
+            verification_source="host:github-checks",
+            max_age_seconds=3600,
+        ),
+    ),
+)
+
+# Inside an open AgentSession:
+result = session.run_turn(TurnRequest("Prepare the release.", goal=goal))
+# Missing evidence is explicit: result.status == TurnStatus.UNCERTAIN
+
+report = session.record_verification(VerificationResult(
+    verification_id="github-checks-42",
+    goal_id=goal.goal_id,
+    criterion_id="ci",
+    source="host:github-checks",
+    outcome=EvidenceOutcome.PASSED,
+    observed_at=datetime.now(timezone.utc).isoformat(),
+))
+```
+
+Every tool attempt also returns a bounded `ActionReceipt`, but execution alone
+never proves acceptance. A criterion may instead name `hook:<hook-id>` to use a
+configured Stop Hook as deterministic verification. See
+[Application API](docs/application-api.md), [Hooks](docs/hooks.md), and
+[ADR-0005](docs/adr/0005-goal-evidence-completion-contract.md).
+
 ## Tools, Skills, MCP, and Hooks
 
 Built-in tools cover confined file reading/search, safe write/edit state
@@ -204,7 +257,8 @@ Noval reuses established extension formats instead of inventing a private
 ecosystem:
 
 - Skills use `SKILL.md` packages and load full instructions/resources on demand.
-- MCP uses common `mcpServers` configuration; v0.10 supports stdio servers.
+- MCP uses common `mcpServers` configuration and currently supports stdio
+  servers.
 - Project Hooks live in `<workdir>/.noval/hooks.json` and may validate before a
   tool, after a tool, or before accepting a candidate stop.
 
@@ -231,13 +285,15 @@ other adapters.
 ## Validation, with an honest boundary
 
 Project Stop Hooks can deterministically reject a candidate ending and return
-diagnostics to the model. The independent semantic completion judge records a
-structured verdict based on recent user inputs and the final visible reply.
+diagnostics to the model. When an explicit acceptance criterion names
+`hook:<hook-id>`, the Stop Hook outcome also becomes criterion-bound
+verification. Pre/Post Hooks retain their policy and diagnostic roles.
 
-The semantic judge does **not** prove that hidden tool operations or external
-state are correct. A general goal/evidence contract is planned work. Noval
-therefore distinguishes configured project validation from semantic completion
-assessment instead of marketing both as the same guarantee.
+The independent semantic completion judge records a structured assessment from
+recent user inputs and the final visible reply. It does **not** prove hidden
+tool execution or external state, and it cannot upgrade missing, stale,
+unknown, or failed contracted evidence. Noval exposes both results rather than
+marketing semantic confidence as verification.
 
 ## Development
 
@@ -259,9 +315,10 @@ strong-model, thin-harness contract and adds project-controlled discovery throug
 it is not a hosted product, a drag-and-drop workflow builder, or an autonomous
 multi-agent team.
 
-The next architectural work is evidence-aware completion, effect-aware
-authority, behavior Eval, and v1.0 contract stabilization—not adding mandatory
-agent roles to the core.
+The current development line adds the ADR-0005 goal/evidence/completion
+contract. The next architectural work is effect-aware authority, broader
+deterministic verification adapters, behavior Eval, and v1.0 contract
+stabilization—not mandatory agent roles in the core.
 
 ## Contributing and security
 

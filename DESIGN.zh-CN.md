@@ -1,6 +1,6 @@
 # Noval 设计记录（历史中文版本）
 
-> 当前规范设计以英文 [DESIGN.md](DESIGN.md) 和 [ADR 索引](docs/adr/README.md) 为准。本文件保留 v0.1-v0.10 的中文决策推理，不再作为未来架构的唯一规范源。
+> 当前规范设计以英文 [DESIGN.md](DESIGN.md) 和 [ADR 索引](docs/adr/README.md) 为准。本文件保留 v0.1-v0.10 的中文决策推理，不再作为未来架构的唯一规范源。v0.12 的目标、证据与完成契约见 [ADR-0005](docs/adr/0005-goal-evidence-completion-contract.md)。
 
 本文件记录 Noval 内核的**思考过程与关键决策的「为什么」**。AGENTS.md 放结论性约束，本文件放推理和权衡，供日后回溯。
 

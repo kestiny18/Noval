@@ -109,8 +109,9 @@ told what to correct.
 - Inject only a lightweight Skill index. Load full instructions/resources or
   run scripts through `load_skill`, `read_skill_resource`, and
   `run_skill_script`.
-- Noval is an MCP host/client, not an MCP server. v0.10 supports stdio servers
-  from user and project `.noval/mcp.json` using the common `mcpServers` shape.
+- Noval is an MCP host/client, not an MCP server. It currently supports stdio
+  servers from user and project `.noval/mcp.json` using the common
+  `mcpServers` shape.
 - Inject only a lightweight MCP index. Discover and call tools on demand.
 - MCP processes receive a safe base environment plus explicitly configured
   variables, never the complete parent environment.
@@ -176,8 +177,19 @@ told what to correct.
   verdict from recent user inputs and the final visible reply.
 - The semantic judge is not proof of hidden tool execution or external state.
 - Deterministic project validation belongs in Hooks.
-- Do not claim a general evidence-aware completion gate until a new ADR and
-  implementation establish one.
+- An explicit `GoalContract` records objective, scope, authority notes, and
+  acceptance criteria. It is observed host data, not a plan or permission grant.
+- Tool calls produce safe `ActionReceipt` values. Receipts never satisfy an
+  acceptance criterion by themselves.
+- Trusted hosts and explicitly mapped `hook:<id>` Stop Hooks produce
+  criterion-bound `VerificationResult` values. Pre/Post Hooks are not completion
+  evidence.
+- For explicit goals, failed evidence means incomplete; missing, stale, or
+  unknown evidence means uncertain; only current passing evidence for every
+  criterion means complete. The semantic judge cannot upgrade that result.
+- Goal/evidence state is recoverable task-sidecar data, not canonical Session
+  truth. Do not persist argument values, raw tool output, credentials, message
+  bodies, or opaque thinking in receipts or verification metadata.
 - The loop always has `max_steps` and stops honestly at the limit.
 
 ## Configuration

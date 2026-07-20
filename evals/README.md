@@ -9,7 +9,7 @@ branch.
 ```text
 evals/
   context/           # checkpoint structure, semantics, continuation, recovery
-  task/              # semantic completion-ledger contract replay
+  task/              # semantic ledger + explicit goal/evidence contract replay
   private/           # ignored, sanitized evidence workspace
     manifest.jsonl
     evidence/
