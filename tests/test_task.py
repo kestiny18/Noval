@@ -1,6 +1,17 @@
 import json
+from datetime import datetime, timezone
+
+import pytest
 
 from noval.agent import Agent
+from noval.api import (
+    AcceptanceCriterion,
+    CompletionStatus,
+    CriterionStatus,
+    EvidenceOutcome,
+    GoalContract,
+    VerificationResult,
+)
 from noval.client import MockClient, mock_text, mock_tool_call
 from noval.config import Config
 from noval.messages import MessageRole
@@ -23,6 +34,41 @@ def cfg():
         api_key_env="K",
         max_steps=5,
         max_tool_output_chars=8000,
+    )
+
+
+def structured_goal(*, max_age_seconds=None, source="host:test-suite"):
+    return GoalContract(
+        goal_id="goal-1",
+        objective="Deliver the verified change.",
+        scope=("current repository",),
+        authority=("modify files requested by the user",),
+        acceptance_criteria=(
+            AcceptanceCriterion(
+                criterion_id="tests",
+                description="The required test suite passes.",
+                verification_source=source,
+                max_age_seconds=max_age_seconds,
+            ),
+        ),
+    )
+
+
+def verification(
+    *,
+    outcome=EvidenceOutcome.PASSED,
+    observed_at="2026-07-20T12:00:00+00:00",
+    source="host:test-suite",
+    goal_id="goal-1",
+    criterion_id="tests",
+):
+    return VerificationResult(
+        verification_id="verification-1",
+        goal_id=goal_id,
+        criterion_id=criterion_id,
+        source=source,
+        outcome=outcome,
+        observed_at=observed_at,
     )
 
 
@@ -53,6 +99,142 @@ def test_controller_keeps_last_three_unique_user_inputs():
         controller.observe_user_input(text)
 
     assert controller.state.recent_user_inputs == ["Goal A", "Goal C", "Goal D"]
+
+
+def test_explicit_goal_is_uncertain_until_every_criterion_has_evidence():
+    now = datetime(2026, 7, 20, 12, 0, tzinfo=timezone.utc)
+    controller = TaskController(now=lambda: now)
+
+    report = controller.activate_goal(structured_goal())
+
+    assert report.status is CompletionStatus.UNCERTAIN
+    assert report.criteria[0].status is CriterionStatus.MISSING
+    assert controller.state.status is TaskStatus.UNCERTAIN
+
+
+def test_compatible_goal_can_repeat_but_same_id_cannot_be_redefined():
+    controller = TaskController()
+    goal = structured_goal()
+
+    controller.activate_goal(goal)
+    assert controller.activate_goal(goal).goal_id == goal.goal_id
+
+    changed = GoalContract(
+        goal_id=goal.goal_id,
+        objective="A different objective.",
+        acceptance_criteria=goal.acceptance_criteria,
+    )
+    with pytest.raises(ValueError, match="redefine"):
+        controller.activate_goal(changed)
+
+
+def test_matching_current_verification_completes_explicit_goal():
+    now = datetime(2026, 7, 20, 12, 0, 1, tzinfo=timezone.utc)
+    controller = TaskController(now=lambda: now)
+    controller.activate_goal(structured_goal(max_age_seconds=60))
+
+    report = controller.record_verification(verification())
+
+    assert report.status is CompletionStatus.COMPLETED
+    assert report.criteria[0].status is CriterionStatus.PASSED
+    assert report.criteria[0].age_seconds == 1.0
+    assert controller.state.status is TaskStatus.COMPLETED
+
+
+@pytest.mark.parametrize(
+    ("outcome", "expected_criterion", "expected_completion"),
+    [
+        (EvidenceOutcome.FAILED, CriterionStatus.FAILED, CompletionStatus.INCOMPLETE),
+        (EvidenceOutcome.UNKNOWN, CriterionStatus.UNKNOWN, CompletionStatus.UNCERTAIN),
+    ],
+)
+def test_failed_and_unknown_verification_do_not_complete_goal(
+    outcome, expected_criterion, expected_completion
+):
+    now = datetime(2026, 7, 20, 12, 0, 1, tzinfo=timezone.utc)
+    controller = TaskController(now=lambda: now)
+    controller.activate_goal(structured_goal())
+
+    report = controller.record_verification(verification(outcome=outcome))
+
+    assert report.status is expected_completion
+    assert report.criteria[0].status is expected_criterion
+
+
+def test_stale_verification_is_uncertain():
+    now = datetime(2026, 7, 20, 12, 2, tzinfo=timezone.utc)
+    controller = TaskController(now=lambda: now)
+    controller.activate_goal(structured_goal(max_age_seconds=60))
+
+    report = controller.record_verification(verification())
+
+    assert report.status is CompletionStatus.UNCERTAIN
+    assert report.criteria[0].status is CriterionStatus.STALE
+    assert report.criteria[0].age_seconds == 120.0
+
+
+@pytest.mark.parametrize(
+    ("result", "message"),
+    [
+        (verification(goal_id="another-goal"), "active goal"),
+        (verification(criterion_id="unknown"), "criterion"),
+        (verification(source="host:other"), "source"),
+        (
+            verification(observed_at="2026-07-20T12:10:00+00:00"),
+            "future",
+        ),
+    ],
+)
+def test_verification_must_match_goal_criterion_source_and_time(result, message):
+    now = datetime(2026, 7, 20, 12, 0, tzinfo=timezone.utc)
+    controller = TaskController(now=lambda: now)
+    controller.activate_goal(structured_goal())
+
+    with pytest.raises(ValueError, match=message):
+        controller.record_verification(result)
+
+
+def test_semantic_judge_cannot_upgrade_missing_contracted_evidence():
+    now = datetime(2026, 7, 20, 12, 0, tzinfo=timezone.utc)
+    judge = SemanticJudge(
+        MockClient([
+            mock_text(json.dumps({
+                "status": "completed",
+                "confidence": 0.99,
+                "reason": "The reply confidently says it is done.",
+                "missing": [],
+            })),
+        ]),
+        model="judge-model",
+    )
+    controller = TaskController(
+        completion_verifier=CompletionVerifier(judge),
+        now=lambda: now,
+    )
+    controller.activate_goal(structured_goal())
+    controller.observe_user_input("Do the work.")
+
+    verdict = controller.verify_completion("Everything is complete.")
+    report = controller.completion_report()
+
+    assert verdict.status is TaskStatus.COMPLETED
+    assert report is not None
+    assert report.status is CompletionStatus.UNCERTAIN
+    assert report.semantic is not None
+    assert report.semantic.status is CompletionStatus.COMPLETED
+    assert controller.state.status is TaskStatus.UNCERTAIN
+
+
+def test_goal_context_is_observed_data_and_not_a_permission_grant():
+    controller = TaskController()
+    controller.activate_goal(structured_goal())
+
+    context = controller.goal_context()
+
+    assert context is not None
+    assert '"goal_id":"goal-1"' in context
+    assert '"status":"uncertain"' in context
+    assert "does not grant permission" in context
 
 
 def test_completion_verifier_uses_judge_without_deterministic_completion_rules():
