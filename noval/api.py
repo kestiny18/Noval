@@ -11,7 +11,7 @@ from enum import Enum
 from typing import Any, Dict, Mapping, Optional, Tuple
 
 from .client import TokenUsage
-from .messages import ConversationMessage
+from .messages import ConversationMessage, ToolCallBlock
 from .permissions import PermissionMode
 from .process import NetworkAccess, SandboxMode
 
@@ -895,6 +895,180 @@ class SessionInfo:
 
 
 @dataclass(frozen=True)
+class TranscriptToolCall:
+    call_id: str
+    name: str
+    argument_keys: Tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        _string(self.call_id, "transcript tool call id")
+        _string(self.name, "transcript tool name")
+        _string_tuple(self.argument_keys, "transcript argument_keys")
+
+    def to_dict(self) -> Dict[str, JSONValue]:
+        return {
+            "call_id": self.call_id,
+            "name": self.name,
+            "argument_keys": list(self.argument_keys),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "TranscriptToolCall":
+        obj = _object(data, "transcript_tool_call")
+        keys = obj.get("argument_keys", [])
+        if not isinstance(keys, list):
+            raise ApiFormatError("transcript argument_keys must be an array")
+        return cls(
+            call_id=_string(obj.get("call_id"), "transcript tool call id") or "",
+            name=_string(obj.get("name"), "transcript tool name") or "",
+            argument_keys=tuple(
+                _string(value, "transcript argument key") or "" for value in keys
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class TranscriptToolResult:
+    call_id: str
+    content: str
+    is_error: bool = False
+
+    def __post_init__(self) -> None:
+        _string(self.call_id, "transcript tool result call id")
+        if not isinstance(self.content, str):
+            raise ApiFormatError("transcript tool result content must be a string")
+        _boolean(self.is_error, "transcript tool result is_error")
+
+    def to_dict(self) -> Dict[str, JSONValue]:
+        return {
+            "call_id": self.call_id,
+            "content": self.content,
+            "is_error": self.is_error,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "TranscriptToolResult":
+        obj = _object(data, "transcript_tool_result")
+        content = obj.get("content")
+        if not isinstance(content, str):
+            raise ApiFormatError("transcript tool result content must be a string")
+        return cls(
+            call_id=_string(
+                obj.get("call_id"), "transcript tool result call id"
+            ) or "",
+            content=content,
+            is_error=_boolean(
+                obj.get("is_error", False), "transcript tool result is_error"
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class TranscriptEntry:
+    sequence: int
+    role: str
+    text: str = ""
+    timestamp: Optional[str] = None
+    tool_calls: Tuple[TranscriptToolCall, ...] = ()
+    tool_results: Tuple[TranscriptToolResult, ...] = ()
+
+    def __post_init__(self) -> None:
+        _integer(self.sequence, "transcript sequence", minimum=1)
+        if self.role not in {"user", "assistant", "tool"}:
+            raise ApiFormatError("transcript role has an unsupported value")
+        if not isinstance(self.text, str):
+            raise ApiFormatError("transcript text must be a string")
+        if self.timestamp is not None:
+            _timestamp(self.timestamp, "transcript timestamp")
+        if not isinstance(self.tool_calls, tuple):
+            raise ApiFormatError("transcript tool_calls must be an immutable tuple")
+        if not isinstance(self.tool_results, tuple):
+            raise ApiFormatError("transcript tool_results must be an immutable tuple")
+        if not all(isinstance(item, TranscriptToolCall) for item in self.tool_calls):
+            raise ApiFormatError("transcript tool_calls items are invalid")
+        if not all(
+            isinstance(item, TranscriptToolResult) for item in self.tool_results
+        ):
+            raise ApiFormatError("transcript tool_results items are invalid")
+
+    def to_dict(self) -> Dict[str, JSONValue]:
+        return {
+            "sequence": self.sequence,
+            "timestamp": self.timestamp,
+            "role": self.role,
+            "text": self.text,
+            "tool_calls": [item.to_dict() for item in self.tool_calls],
+            "tool_results": [item.to_dict() for item in self.tool_results],
+        }
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "TranscriptEntry":
+        obj = _object(data, "transcript_entry")
+        calls = obj.get("tool_calls", [])
+        results = obj.get("tool_results", [])
+        if not isinstance(calls, list):
+            raise ApiFormatError("transcript tool_calls must be an array")
+        if not isinstance(results, list):
+            raise ApiFormatError("transcript tool_results must be an array")
+        text = obj.get("text", "")
+        if not isinstance(text, str):
+            raise ApiFormatError("transcript text must be a string")
+        return cls(
+            sequence=_integer(
+                obj.get("sequence"), "transcript sequence", minimum=1
+            ),
+            timestamp=(
+                _timestamp(obj.get("timestamp"), "transcript timestamp")
+                if obj.get("timestamp") is not None else None
+            ),
+            role=_string(obj.get("role"), "transcript role") or "",
+            text=text,
+            tool_calls=tuple(TranscriptToolCall.from_dict(item) for item in calls),
+            tool_results=tuple(
+                TranscriptToolResult.from_dict(item) for item in results
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class TranscriptPage:
+    entries: Tuple[TranscriptEntry, ...] = ()
+    next_sequence: int = 0
+    has_more: bool = False
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.entries, tuple):
+            raise ApiFormatError("transcript entries must be an immutable tuple")
+        if not all(isinstance(item, TranscriptEntry) for item in self.entries):
+            raise ApiFormatError("transcript entries items are invalid")
+        _integer(self.next_sequence, "transcript next_sequence")
+        _boolean(self.has_more, "transcript has_more")
+
+    def to_dict(self) -> Dict[str, JSONValue]:
+        return {
+            "schema_version": API_SCHEMA_VERSION,
+            "entries": [entry.to_dict() for entry in self.entries],
+            "next_sequence": self.next_sequence,
+            "has_more": self.has_more,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "TranscriptPage":
+        obj = _object(data, "transcript_page")
+        _schema(obj, "transcript_page")
+        entries = obj.get("entries", [])
+        if not isinstance(entries, list):
+            raise ApiFormatError("transcript entries must be an array")
+        return cls(
+            entries=tuple(TranscriptEntry.from_dict(item) for item in entries),
+            next_sequence=_integer(
+                obj.get("next_sequence", 0), "transcript next_sequence"
+            ),
+            has_more=_boolean(obj.get("has_more", False), "transcript has_more"),
+        )
+
+
+@dataclass(frozen=True)
 class TurnRequest:
     text: str
     client_request_id: Optional[str] = None
@@ -1122,6 +1296,29 @@ def _usage_from_dict(data: Any) -> Optional[TokenUsage]:
     )
 
 
+def _public_message_dict(message: ConversationMessage) -> Dict[str, JSONValue]:
+    data = message.semantic_dict()
+    blocks = data.get("blocks", [])
+    for index, source in enumerate(message.blocks):
+        if not isinstance(source, ToolCallBlock):
+            continue
+        try:
+            arguments = json.loads(source.arguments)
+        except json.JSONDecodeError:
+            argument_keys = []
+        else:
+            argument_keys = (
+                sorted(str(key) for key in arguments)
+                if isinstance(arguments, dict) else []
+            )
+        blocks[index]["arguments"] = json.dumps(
+            {"argument_keys": argument_keys},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+    return data
+
+
 @dataclass(frozen=True)
 class TurnResult:
     session_id: str
@@ -1170,7 +1367,10 @@ class TurnResult:
             "turn_id": self.turn_id,
             "client_request_id": self.client_request_id,
             "status": self.status.value,
-            "message": self.message.to_dict() if self.message is not None else None,
+            "message": (
+                _public_message_dict(self.message)
+                if self.message is not None else None
+            ),
             "stop_reason": self.stop_reason.value,
             "usage": _usage_to_dict(self.usage),
             "metrics": self.metrics.to_dict(),
