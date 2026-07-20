@@ -577,7 +577,14 @@ def test_explicit_goal_exposes_uncertain_status_then_accepts_host_verification(
         refreshed = session.completion_report()
         assert refreshed is not None
         assert refreshed.status is report.status
-        assert refreshed.criteria == report.criteria
+        assert replace(
+            refreshed.criteria[0],
+            age_seconds=report.criteria[0].age_seconds,
+        ) == report.criteria[0]
+        assert (
+            refreshed.criteria[0].age_seconds
+            >= report.criteria[0].age_seconds
+        )
 
     verification_event = next(
         event for event in events
