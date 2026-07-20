@@ -18,7 +18,13 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 from uuid import uuid4
 
-from .api import ActionReceipt, ReceiptKind, ReceiptOutcome
+from .api import (
+    ActionReceipt,
+    CompletionReport,
+    GoalContract,
+    ReceiptKind,
+    ReceiptOutcome,
+)
 from .client import LLMClient, LLMResponse, TokenUsage, ToolDefinition
 from .config import Config
 from .confinement import ConfinementPolicy, PathAccess
@@ -222,6 +228,7 @@ class AgentTurnOutcome:
     metrics: TurnMetrics
     usage: Optional[TokenUsage] = None
     receipts: Tuple[ActionReceipt, ...] = ()
+    completion: Optional[CompletionReport] = None
 
     @property
     def text(self) -> str:
@@ -395,17 +402,37 @@ class Agent:
             metrics=metrics,
             usage=metrics.usage,
             receipts=tuple(self._current_turn_receipts),
+            completion=self.task_controller.completion_report(),
         )
 
     def send(self, user_input: str) -> str:
         """Compatibility wrapper returning only the final assistant text."""
         return self.run_turn(user_input).text
 
-    def run_turn(self, user_input: str) -> AgentTurnOutcome:
+    def current_turn_receipts(self) -> Tuple[ActionReceipt, ...]:
+        return tuple(self._current_turn_receipts)
+
+    def completion_report(self) -> Optional[CompletionReport]:
+        return self.task_controller.completion_report()
+
+    def run_turn(
+        self,
+        user_input: str,
+        goal: Optional[GoalContract] = None,
+    ) -> AgentTurnOutcome:
         """Run one user turn and return its structured internal outcome."""
         self.last_turn_metrics = TurnMetrics()
         self._current_turn_receipts = []
-        self._ephemeral_turn_context = self._refresh_dynamic_runtime_context_for_turn()
+        if goal is not None:
+            self.task_controller.activate_goal(goal)
+        context_parts = [
+            self._refresh_dynamic_runtime_context_for_turn(),
+            self.task_controller.goal_context(),
+        ]
+        active_context = [part for part in context_parts if part]
+        self._ephemeral_turn_context = (
+            "\n\n".join(active_context) if active_context else None
+        )
         # Add a fresh timestamp to each user turn so the system cache prefix
         # remains stable while long-running sessions retain an accurate "now".
         stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S (%A)")

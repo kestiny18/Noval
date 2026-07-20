@@ -14,6 +14,8 @@ from uuid import uuid4
 
 from .agent import Agent, AgentTurnOutcome, detect_environment, load_project_memory
 from .api import (
+    CompletionReport,
+    CompletionStatus,
     ErrorInfo,
     EventType,
     NovalError,
@@ -31,6 +33,7 @@ from .api import (
     TurnRequest,
     TurnResult,
     TurnStatus,
+    VerificationResult,
 )
 from .client import (
     ANTHROPIC_ADAPTER,
@@ -62,7 +65,13 @@ from .session import (
     list_sessions,
 )
 from .shell import resolve_shell_backend
-from .task import CompletionVerifier, SemanticJudge, TaskController, TaskEventStore
+from .task import (
+    CompletionVerifier,
+    SemanticJudge,
+    TaskContractError,
+    TaskController,
+    TaskEventStore,
+)
 from .tools import Tool, all_tools
 from .usage import JsonlUsageStore, MeteredLLMClient
 
@@ -150,11 +159,20 @@ def _public_stop_reason(value: str) -> StopReason:
     return StopReason.ERROR
 
 
-def _public_status(reason: StopReason) -> TurnStatus:
-    if reason is StopReason.COMPLETED:
-        return TurnStatus.COMPLETED
+def _public_status(
+    reason: StopReason,
+    completion: Optional[CompletionReport] = None,
+) -> TurnStatus:
     if reason is StopReason.ERROR:
         return TurnStatus.FAILED
+    if completion is not None:
+        return {
+            CompletionStatus.COMPLETED: TurnStatus.COMPLETED,
+            CompletionStatus.INCOMPLETE: TurnStatus.INCOMPLETE,
+            CompletionStatus.UNCERTAIN: TurnStatus.UNCERTAIN,
+        }[completion.status]
+    if reason is StopReason.COMPLETED:
+        return TurnStatus.COMPLETED
     return TurnStatus.STOPPED
 
 
@@ -250,6 +268,55 @@ class AgentSession:
             self._permissions.reset()
             return self._permission_state_locked()
 
+    def completion_report(self) -> Optional[CompletionReport]:
+        with self._state_lock:
+            self._require_idle_locked()
+            return self._agent.completion_report()
+
+    def record_verification(
+        self,
+        verification: VerificationResult,
+    ) -> CompletionReport:
+        if not isinstance(verification, VerificationResult):
+            raise TypeError("verification must be VerificationResult")
+        event = None
+        with self._state_lock:
+            self._require_idle_locked()
+            try:
+                report = self._agent.task_controller.record_verification(
+                    verification
+                )
+            except TaskContractError as error:
+                raise NovalError(
+                    "verification_rejected",
+                    str(error),
+                    session_id=self._base_info.session_id,
+                    details={
+                        "goal_id": verification.goal_id,
+                        "criterion_id": verification.criterion_id,
+                        "verification_id": verification.verification_id,
+                    },
+                ) from error
+            if self._event_sink is not None:
+                event = self._new_event_locked(
+                    EventType.VERIFICATION_RECORDED.value,
+                    payload={
+                        "verification": {
+                            "verification_id": verification.verification_id,
+                            "goal_id": verification.goal_id,
+                            "criterion_id": verification.criterion_id,
+                            "source": verification.source,
+                            "outcome": verification.outcome.value,
+                            "observed_at": verification.observed_at,
+                            "receipt_ids": list(verification.receipt_ids),
+                        },
+                        "completion": report.to_dict(),
+                    },
+                )
+        if event is not None:
+            self._dispatch_event(event)
+        return report
+
     def _require_idle_locked(self) -> None:
         if self._closed:
             raise NovalError(
@@ -277,6 +344,7 @@ class AgentSession:
             turn_id=turn_id,
         )
         log_scope_entered = False
+        agent_turn_started = False
         try:
             self._process_runtime.begin_turn()
             log_scope.__enter__()
@@ -284,9 +352,13 @@ class AgentSession:
             self._emit(
                 EventType.TURN_STARTED.value,
                 turn_id=turn_id,
-                payload={"client_request_id": request.client_request_id},
+                payload={
+                    "client_request_id": request.client_request_id,
+                    "goal_id": request.goal.goal_id if request.goal else None,
+                },
             )
-            outcome = self._agent.run_turn(request.text)
+            agent_turn_started = True
+            outcome = self._agent.run_turn(request.text, request.goal)
             result = self._result_from_outcome(
                 request, turn_id, outcome, started
             )
@@ -296,8 +368,27 @@ class AgentSession:
                 payload={
                     "status": result.status.value,
                     "stop_reason": result.stop_reason.value,
+                    "receipts": [
+                        receipt.to_dict() for receipt in result.receipts
+                    ],
+                    "completion": (
+                        result.completion.to_dict()
+                        if result.completion is not None else None
+                    ),
                 },
             )
+            return result
+        except TaskContractError as error:
+            result = self._failure_result(
+                request,
+                turn_id,
+                started,
+                code="goal_contract_error",
+                safe_message=str(error),
+                retryable=False,
+                include_agent_state=agent_turn_started,
+            )
+            self._emit_terminal_failure(result)
             return result
         except ProviderError as error:
             result = self._failure_result(
@@ -312,6 +403,7 @@ class AgentSession:
                     "model": error.identity.model,
                     "adapter": error.identity.adapter,
                 },
+                include_agent_state=agent_turn_started,
             )
             self._emit_terminal_failure(result)
             return result
@@ -328,6 +420,7 @@ class AgentSession:
                 code="internal_error",
                 safe_message="The turn failed because of an internal error.",
                 retryable=False,
+                include_agent_state=agent_turn_started,
             )
             self._emit_terminal_failure(result)
             return result
@@ -433,11 +526,13 @@ class AgentSession:
             session_id=self._base_info.session_id,
             turn_id=turn_id,
             client_request_id=request.client_request_id,
-            status=_public_status(reason),
+            status=_public_status(reason, outcome.completion),
             message=outcome.message,
             stop_reason=reason,
             usage=outcome.usage,
             metrics=metrics,
+            receipts=outcome.receipts,
+            completion=outcome.completion,
         )
 
     def _failure_result(
@@ -450,6 +545,7 @@ class AgentSession:
         safe_message: str,
         retryable: bool,
         details: Optional[Dict[str, object]] = None,
+        include_agent_state: bool = False,
     ) -> TurnResult:
         error = ErrorInfo(
             code=code,
@@ -469,6 +565,14 @@ class AgentSession:
                 duration_ms=round((time.perf_counter() - started) * 1000, 1)
             ),
             error=error,
+            receipts=(
+                self._agent.current_turn_receipts()
+                if include_agent_state else ()
+            ),
+            completion=(
+                self._agent.completion_report()
+                if include_agent_state else None
+            ),
         )
 
     def _emit_terminal_failure(self, result: TurnResult) -> None:
@@ -479,6 +583,13 @@ class AgentSession:
                 "status": result.status.value,
                 "stop_reason": result.stop_reason.value,
                 "error": result.error.to_dict() if result.error else None,
+                "receipts": [
+                    receipt.to_dict() for receipt in result.receipts
+                ],
+                "completion": (
+                    result.completion.to_dict()
+                    if result.completion is not None else None
+                ),
             },
         )
 
@@ -498,21 +609,41 @@ class AgentSession:
         if sink is None:
             return
         with self._state_lock:
-            self._event_sequence += 1
-            sequence = self._event_sequence
-        event = RuntimeEvent(
+            event = self._new_event_locked(
+                event_type,
+                payload=payload,
+                turn_id=turn_id,
+            )
+        self._dispatch_event(event)
+
+    def _new_event_locked(
+        self,
+        event_type: str,
+        *,
+        payload: Optional[Dict[str, object]] = None,
+        turn_id: Optional[str] = None,
+    ) -> RuntimeEvent:
+        self._event_sequence += 1
+        return RuntimeEvent(
             event_id="event-" + uuid4().hex,
             session_id=self._base_info.session_id,
             turn_id=turn_id,
-            sequence=sequence,
+            sequence=self._event_sequence,
             timestamp=_utc_now(),
             type=event_type,
             payload=dict(payload or {}),
         )
+
+    def _dispatch_event(self, event: RuntimeEvent) -> None:
+        sink = self._event_sink
+        if sink is None:
+            return
         try:
             sink(event)
         except Exception:
-            log.warning("runtime event sink failed type=%s", event_type, exc_info=True)
+            log.warning(
+                "runtime event sink failed type=%s", event.type, exc_info=True
+            )
 
     def close(self) -> None:
         with self._state_lock:

@@ -3,6 +3,7 @@ import os
 import threading
 import time
 from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -40,7 +41,15 @@ from noval.api import (
     TurnStatus,
     VerificationResult,
 )
-from noval.client import MockClient, TokenUsage, mock_text, mock_tool_call
+from noval.client import (
+    MockClient,
+    ProviderError,
+    ProviderErrorKind,
+    ProviderIdentity,
+    TokenUsage,
+    mock_text,
+    mock_tool_call,
+)
 from noval.config import Config
 from noval.messages import assistant_message
 from noval.permissions import PermissionMode
@@ -117,8 +126,33 @@ class BlockingClientFactory:
         return MockClient([])
 
 
+class QueueClientFactory:
+    def __init__(self, agent_responses, judge_responses=()):
+        self.agent = MockClient(list(agent_responses))
+        self.judge = MockClient(list(judge_responses))
+
+    def __call__(self, spec):
+        return self.agent if spec.purpose == "agent" else self.judge
+
+
 def json_round_trip(value):
     return json.loads(json.dumps(value, ensure_ascii=False))
+
+
+def application_goal(*, objective="Deliver the verified result."):
+    return GoalContract(
+        goal_id="application-goal",
+        objective=objective,
+        scope=("current workspace",),
+        authority=("use only the authority granted by the host",),
+        acceptance_criteria=(
+            AcceptanceCriterion(
+                criterion_id="verified",
+                description="The result is independently verified.",
+                verification_source="host:validator",
+            ),
+        ),
+    )
 
 
 def block_process_turn_start(session, monkeypatch):
@@ -476,6 +510,240 @@ def test_runtime_creates_ephemeral_session_without_changing_process_state(tmp_pa
     assert dict(os.environ) == before_env
 
 
+def test_explicit_goal_exposes_uncertain_status_then_accepts_host_verification(
+    tmp_path,
+):
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    events = []
+    factory = QueueClientFactory([mock_text("The requested work is done.")])
+
+    with NovalRuntime(
+        application_config(tmp_path),
+        client_factory=factory,
+        event_sink=events.append,
+    ) as runtime:
+        session = runtime.create_session(SessionOptions(
+            workdir=str(workdir),
+            persistence=SessionPersistence.EPHEMERAL,
+        ))
+        result = session.run_turn(TurnRequest("do the work", goal=application_goal()))
+
+        assert result.status is TurnStatus.UNCERTAIN
+        assert result.stop_reason is StopReason.COMPLETED
+        assert result.completion is not None
+        assert result.completion.status is CompletionStatus.UNCERTAIN
+        assert result.completion.criteria[0].status is CriterionStatus.MISSING
+        observed_request = "\n".join(
+            message.text for message in factory.agent.seen_messages[0]
+        )
+        assert '<goal_contract source="host">' in observed_request
+        assert "does not grant permission" in observed_request
+
+        observed_at = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+        report = session.record_verification(VerificationResult(
+            verification_id="host-verification-1",
+            goal_id="application-goal",
+            criterion_id="verified",
+            source="host:validator",
+            outcome=EvidenceOutcome.PASSED,
+            observed_at=observed_at,
+            summary="token=must-not-enter-event-output",
+        ))
+
+        assert report.status is CompletionStatus.COMPLETED
+        refreshed = session.completion_report()
+        assert refreshed is not None
+        assert refreshed.status is report.status
+        assert refreshed.criteria == report.criteria
+
+    verification_event = next(
+        event for event in events
+        if event.type == EventType.VERIFICATION_RECORDED.value
+    )
+    encoded_event = json.dumps(verification_event.to_dict(), ensure_ascii=False)
+    assert "must-not-enter-event-output" not in encoded_event
+    turn_event = next(
+        event for event in events if event.type == EventType.TURN_COMPLETED.value
+    )
+    assert turn_event.payload["status"] == "uncertain"
+    assert turn_event.payload["completion"]["status"] == "uncertain"
+
+
+def test_goal_contract_redefinition_returns_safe_failed_turn(tmp_path):
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    factory = QueueClientFactory([mock_text("first reply")])
+
+    with NovalRuntime(
+        application_config(tmp_path), client_factory=factory
+    ) as runtime:
+        session = runtime.create_session(SessionOptions(
+            workdir=str(workdir),
+            persistence=SessionPersistence.EPHEMERAL,
+        ))
+        first = session.run_turn(TurnRequest("first", goal=application_goal()))
+        changed = application_goal(objective="Silently changed objective.")
+        second = session.run_turn(TurnRequest("second", goal=changed))
+
+    assert first.status is TurnStatus.UNCERTAIN
+    assert second.status is TurnStatus.FAILED
+    assert second.stop_reason is StopReason.ERROR
+    assert second.error is not None
+    assert second.error.code == "goal_contract_error"
+    assert "redefine" in second.error.safe_message
+    assert len(factory.agent.seen_messages) == 1
+
+
+def test_semantic_judge_cannot_upgrade_application_completion_status(tmp_path):
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    read_tool = Tool(
+        name="inspect_test",
+        description="Inspect test state.",
+        parameters={"type": "object", "properties": {}},
+        func=lambda: "observed",
+        risk=Risk.READ,
+    )
+    factory = QueueClientFactory(
+        [
+            mock_tool_call("call-1", "inspect_test", "{}"),
+            mock_text("Everything is complete."),
+        ],
+        [mock_text(json.dumps({
+            "status": "completed",
+            "confidence": 0.99,
+            "reason": "The visible reply claims completion.",
+            "missing": [],
+        }))],
+    )
+
+    with NovalRuntime(
+        application_config(tmp_path),
+        client_factory=factory,
+        tools=[read_tool],
+    ) as runtime:
+        session = runtime.create_session(SessionOptions(
+            workdir=str(workdir),
+            persistence=SessionPersistence.EPHEMERAL,
+        ))
+        result = session.run_turn(TurnRequest("inspect", goal=application_goal()))
+
+    assert result.status is TurnStatus.UNCERTAIN
+    assert result.completion is not None
+    assert result.completion.status is CompletionStatus.UNCERTAIN
+    assert result.completion.semantic is not None
+    assert result.completion.semantic.status is CompletionStatus.COMPLETED
+    assert len(result.receipts) == 1
+
+
+def test_operational_failure_remains_failed_even_when_goal_was_complete(tmp_path):
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    identity = ProviderIdentity("mock", "agent", "mock")
+
+    class FailSecondClient:
+        def __init__(self):
+            self.calls = 0
+
+        def complete(self, messages, tools):
+            self.calls += 1
+            if self.calls == 1:
+                return mock_text("first turn")
+            raise ProviderError(
+                ProviderErrorKind.TIMEOUT,
+                "provider timed out",
+                retryable=True,
+                identity=identity,
+            )
+
+    client = FailSecondClient()
+
+    def factory(spec):
+        return client if spec.purpose == "agent" else MockClient([])
+
+    with NovalRuntime(
+        application_config(tmp_path), client_factory=factory
+    ) as runtime:
+        session = runtime.create_session(SessionOptions(
+            workdir=str(workdir),
+            persistence=SessionPersistence.EPHEMERAL,
+        ))
+        session.run_turn(TurnRequest("first", goal=application_goal()))
+        session.record_verification(VerificationResult(
+            verification_id="complete-before-failure",
+            goal_id="application-goal",
+            criterion_id="verified",
+            source="host:validator",
+            outcome=EvidenceOutcome.PASSED,
+            observed_at=datetime.now(timezone.utc).isoformat(
+                timespec="milliseconds"
+            ),
+        ))
+
+        failed = session.run_turn(TurnRequest("second"))
+
+    assert failed.status is TurnStatus.FAILED
+    assert failed.stop_reason is StopReason.ERROR
+    assert failed.error is not None
+    assert failed.error.code == "provider_timeout"
+    assert failed.completion is not None
+    assert failed.completion.status is CompletionStatus.COMPLETED
+
+
+def test_persistent_session_recovers_goal_and_external_verification(tmp_path):
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    config = application_config(tmp_path)
+
+    with NovalRuntime(
+        config,
+        client_factory=QueueClientFactory([mock_text("draft")]),
+    ) as runtime:
+        session = runtime.create_session(SessionOptions(
+            workdir=str(workdir),
+            persistence=SessionPersistence.PERSISTENT,
+        ))
+        session_id = session.info.session_id
+        result = session.run_turn(TurnRequest("work", goal=application_goal()))
+        assert result.status is TurnStatus.UNCERTAIN
+
+    with NovalRuntime(
+        config,
+        client_factory=QueueClientFactory([mock_text("unused")]),
+    ) as runtime:
+        resumed = runtime.resume_session(session_id, SessionOptions(
+            workdir=str(workdir),
+            persistence=SessionPersistence.PERSISTENT,
+        ))
+        restored = resumed.completion_report()
+        assert restored is not None
+        assert restored.status is CompletionStatus.UNCERTAIN
+        completed = resumed.record_verification(VerificationResult(
+            verification_id="host-verification-resume",
+            goal_id="application-goal",
+            criterion_id="verified",
+            source="host:validator",
+            outcome=EvidenceOutcome.PASSED,
+            observed_at=datetime.now(timezone.utc).isoformat(
+                timespec="milliseconds"
+            ),
+        ))
+        assert completed.status is CompletionStatus.COMPLETED
+
+    with NovalRuntime(
+        config,
+        client_factory=QueueClientFactory([mock_text("unused")]),
+    ) as runtime:
+        resumed_again = runtime.resume_session(session_id, SessionOptions(
+            workdir=str(workdir),
+            persistence=SessionPersistence.PERSISTENT,
+        ))
+        final = resumed_again.completion_report()
+        assert final is not None
+        assert final.status is CompletionStatus.COMPLETED
+
+
 def test_persistent_session_can_be_listed_closed_and_resumed(tmp_path):
     workdir = tmp_path / "project"
     workdir.mkdir()
@@ -641,6 +909,18 @@ def test_permission_changes_cannot_overtake_turn_admission(
         with pytest.raises(NovalError) as busy:
             session.set_permission_mode(PermissionMode.FULL_ACCESS)
         assert busy.value.code == "session_busy"
+        with pytest.raises(NovalError) as verification_busy:
+            session.record_verification(VerificationResult(
+                verification_id="busy-verification",
+                goal_id="application-goal",
+                criterion_id="verified",
+                source="host:validator",
+                outcome=EvidenceOutcome.PASSED,
+                observed_at=datetime.now(timezone.utc).isoformat(
+                    timespec="milliseconds"
+                ),
+            ))
+        assert verification_busy.value.code == "session_busy"
         assert session.permission_state().mode is PermissionMode.ASK
     finally:
         proceed.set()
@@ -783,6 +1063,13 @@ def test_permission_handler_is_serializable_ordered_and_fail_closed(tmp_path):
         result = session.run_turn(TurnRequest("use the tool"))
 
         assert result.status is TurnStatus.COMPLETED
+        assert len(result.receipts) == 1
+        assert result.receipts[0].tool_name == "dangerous_test"
+        assert result.receipts[0].outcome is ReceiptOutcome.SUCCEEDED
+        assert result.receipts[0].executed is True
+        assert "very-secret" not in json.dumps(
+            result.receipts[0].to_dict(), ensure_ascii=False
+        )
         assert session.permission_state().approved_tools == ("dangerous_test",)
 
     assert executed == ["very-secret"]
@@ -790,6 +1077,10 @@ def test_permission_handler_is_serializable_ordered_and_fail_closed(tmp_path):
     event_types = [event.type for event in events]
     assert EventType.PERMISSION_REQUESTED.value in event_types
     assert EventType.PERMISSION_RESOLVED.value in event_types
+    completed_event = next(
+        event for event in events if event.type == EventType.TURN_COMPLETED.value
+    )
+    assert completed_event.payload["receipts"][0]["tool_name"] == "dangerous_test"
     assert [event.sequence for event in events] == list(range(1, len(events) + 1))
     assert event_types[-1] == EventType.SESSION_CLOSED.value
 

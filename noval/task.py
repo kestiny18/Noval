@@ -44,6 +44,10 @@ MAX_TASK_VERIFICATIONS = 128
 MAX_FUTURE_EVIDENCE_SKEW = timedelta(minutes=5)
 
 
+class TaskContractError(ValueError):
+    """A host-supplied goal or verification violates the active contract."""
+
+
 class TaskStatus(str, Enum):
     ACTIVE = "active"
     VERIFYING = "verifying"
@@ -330,7 +334,7 @@ class TaskController:
         current = self.state.active_goal
         if current is not None and current.goal_id == goal.goal_id:
             if current != goal:
-                raise ValueError(
+                raise TaskContractError(
                     f"goal {goal.goal_id!r} cannot redefine its active contract"
                 )
             report = self.completion_report()
@@ -370,9 +374,9 @@ class TaskController:
             raise TypeError("verification must be VerificationResult")
         goal = self.state.active_goal
         if goal is None:
-            raise ValueError("verification requires an active goal")
+            raise TaskContractError("verification requires an active goal")
         if verification.goal_id != goal.goal_id:
-            raise ValueError(
+            raise TaskContractError(
                 f"verification does not match active goal {goal.goal_id!r}"
             )
         criterion = next(
@@ -383,24 +387,26 @@ class TaskController:
             None,
         )
         if criterion is None:
-            raise ValueError(
+            raise TaskContractError(
                 f"verification references unknown criterion {verification.criterion_id!r}"
             )
         if (
             criterion.verification_source is not None
             and verification.source != criterion.verification_source
         ):
-            raise ValueError(
+            raise TaskContractError(
                 f"verification source must be {criterion.verification_source!r}"
             )
         observed = _parse_timestamp(verification.observed_at)
         now = self._current_time()
         if observed > now + MAX_FUTURE_EVIDENCE_SKEW:
-            raise ValueError("verification observed_at is too far in the future")
+            raise TaskContractError(
+                "verification observed_at is too far in the future"
+            )
         known_receipts = {receipt.receipt_id for receipt in self.state.receipts}
         unknown_receipts = sorted(set(verification.receipt_ids) - known_receipts)
         if unknown_receipts:
-            raise ValueError(
+            raise TaskContractError(
                 "verification references unknown receipt ids: "
                 + ", ".join(unknown_receipts)
             )
@@ -419,7 +425,7 @@ class TaskController:
             if existing.verification_id != safe.verification_id:
                 continue
             if existing != safe:
-                raise ValueError(
+                raise TaskContractError(
                     f"verification {safe.verification_id!r} cannot be redefined"
                 )
             report = self.completion_report()

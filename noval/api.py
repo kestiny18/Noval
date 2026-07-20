@@ -65,6 +65,7 @@ class EventType(str, Enum):
     TOOL_COMPLETED = "tool.completed"
     VALIDATION_STARTED = "validation.started"
     VALIDATION_COMPLETED = "validation.completed"
+    VERIFICATION_RECORDED = "verification.recorded"
     TURN_COMPLETED = "turn.completed"
     TURN_FAILED = "turn.failed"
 
