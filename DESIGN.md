@@ -42,7 +42,7 @@ flowchart LR
     Executor --> Boundary["path jail + ProcessRuntime"]
     Executor --> Discovery["project discovery filter"]
     Sessions --> State["canonical Session + checkpoints"]
-    Sessions --> Evidence["events + request provenance + task ledger"]
+    Sessions --> Evidence["goal + receipts + verification + task ledger"]
 ```
 
 ## Non-negotiable seams
@@ -111,7 +111,7 @@ acceptance checks belong in Hooks.
 
 ## Authority and effects
 
-v0.10 tools declare `READ`, `WRITE`, or `DANGEROUS` risk, with optional
+Tools declare `READ`, `WRITE`, or `DANGEROUS` risk, with optional
 parameter-sensitive assessment. A Session-scoped `PermissionController` makes
 the approval decision. `FULL_ACCESS` skips the approval prompt but does not
 disable the path jail, sandbox, timeouts, redaction, project Hooks, or user scope.
@@ -122,21 +122,31 @@ cost, but it must not turn the executor into an intent classifier.
 
 ## Validation and completion
 
-Noval has two distinct mechanisms:
+ADR-0005 establishes an optional goal, evidence, and completion contract:
 
-1. Project Hooks can deterministically block an action, attach diagnostics, or
-   reject a candidate stop and send the model back to repair.
-2. The semantic completion judge records a structured verdict from recent user
-   inputs and the final visible reply.
+1. `GoalContract` records the host-supplied objective, scope, authority notes,
+   and named acceptance criteria. It is not a plan or permission grant.
+2. Every tool call produces a bounded `ActionReceipt` containing safe execution
+   facts, never argument values or raw output. A receipt is provenance, not
+   proof that a criterion passed.
+3. `VerificationResult` binds a trusted host or configured `hook:<id>` source
+   to one criterion and an observation time.
+4. `CompletionReport` evaluates the latest matching evidence. Any failure is
+   incomplete; missing, stale, or unknown evidence is uncertain; only all
+   current passes are complete.
 
-The semantic judge does not observe hidden tool evidence and its verdict does
-not prove that external state is correct. v0.10 therefore treats it as a task
-ledger, not a universal completion gate. A future goal/evidence contract must be
-defined by ADR before changing this boundary.
+Only Stop Hooks become completion evidence, and only when a criterion names the
+Hook source. Pre/Post Hooks retain their policy and diagnostic roles. The
+semantic judge remains a separately labeled assessment of recent user inputs
+and the final visible reply. For an explicit goal it cannot upgrade or override
+contracted evidence; without an explicit goal, the legacy semantic ledger is
+preserved.
 
 ## State, recovery, and freshness
 
 - Session schema v2 stores canonical non-system messages in append-only JSONL.
+- Task sidecar schema v2 stores recoverable goal/evidence snapshots and accepts
+  legacy task schema-v1 snapshots without fabricating structured evidence.
 - Stable system, environment, project, Skill, MCP, and Hook context is rebuilt
   according to its own lifecycle.
 - Active context uses recoverable checkpoints without rewriting raw history.
@@ -190,19 +200,20 @@ defined by ADR before changing this boundary.
 
 ## Current scope and next architectural work
 
-v0.10 includes the registry/executor core, canonical Provider adapters,
+The current kernel includes the registry/executor core, canonical Provider adapters,
 permissions, path confinement, subprocess isolation, Sessions/checkpoints,
 Skills and stdio MCP discovery, project Hooks, usage and request provenance,
+safe action receipts, criterion-level verification, evidence-aware completion,
 and a multi-Session Application API.
 
 Before adding workflow roles or multi-agent orchestration, the next core design
 questions are:
 
-1. a domain-neutral goal, scope, and acceptance contract;
-2. structured observations, action receipts, and verification evidence;
-3. effect-aware authorization without executor-side intent guessing;
-4. behavior Eval for minimal method selection, evidence discipline, and
+1. effect-aware authorization without executor-side intent guessing;
+2. broader deterministic verification adapters without turning the kernel into
+   a workflow engine;
+3. behavior Eval for minimal method selection, evidence discipline, and
    autonomy calibration;
-5. public-contract stabilization for v1.0.
+4. public-contract stabilization for v1.0.
 
 See the [ADR index](docs/adr/README.md) and GitHub Roadmap for tracked decisions.

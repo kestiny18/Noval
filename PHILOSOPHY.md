@@ -89,10 +89,17 @@ completion relates three things:
 2. the actions and observations that actually occurred;
 3. evidence that the acceptance conditions now hold.
 
-Noval v0.10 already provides project Hooks that can reject a candidate ending
-and a semantic completion ledger that records an independent verdict. It does
-not yet provide a general goal-and-evidence contract. Until that exists, the
-semantic judge must not be presented as proof that external state is correct.
+Noval supports this relationship without turning it into a workflow. A host may
+provide an explicit goal, accepted scope, authority notes, and named acceptance
+criteria. The runtime records safe action receipts, accepts criterion-bound
+verification, applies freshness rules, and derives a completion report.
+
+Receipts prove that an invocation was attempted or executed; they do not prove
+that an acceptance condition passed. Configured Stop Hooks or trusted hosts
+provide verification. The semantic judge remains a separate assessment of the
+final visible reply and cannot upgrade missing, stale, unknown, or failed
+contracted evidence. When no explicit goal is supplied, the lightweight legacy
+semantic ledger remains available.
 
 ## Thin does not mean weak
 

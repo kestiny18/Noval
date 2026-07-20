@@ -12,10 +12,14 @@ from evals.task.run import (
 def test_bundled_task_eval_assets_are_valid():
     cases = load_cases(DEFAULT_CASES_PATH)
 
-    assert len(cases) == 7
-    assert len({case.case_id for case in cases}) == 7
+    assert len(cases) == 12
+    assert len({case.case_id for case in cases}) == 12
     assert any(case.expected.get("status") == "completed" for case in cases)
     assert any(case.expected.get("status") == "uncertain" for case in cases)
+    assert any(
+        case.expected.get("criterion_statuses") == {"tests": "stale"}
+        for case in cases
+    )
 
 
 def test_default_task_eval_runs_offline(capsys):
@@ -23,7 +27,7 @@ def test_default_task_eval_runs_offline(capsys):
 
     out = capsys.readouterr().out
     assert "# Task Eval Report" in out
-    assert "Passed: 7" in out
+    assert "Passed: 12" in out
     assert "Failed: 0" in out
 
 
@@ -74,3 +78,17 @@ def test_task_eval_tracks_recent_user_inputs():
 
     assert result["passed"] is True
     assert result["state"]["recent_user_inputs"] == ["Goal A", "Goal C", "Goal D"]
+
+
+def test_task_eval_keeps_semantic_and_contracted_completion_separate():
+    case = next(
+        item for item in load_cases(DEFAULT_CASES_PATH)
+        if item.case_id == "contract_missing_evidence_cannot_be_upgraded"
+    )
+
+    result = evaluate_case(case)
+
+    assert result["passed"] is True
+    assert result["state"]["status"] == "uncertain"
+    assert result["completion"]["status"] == "uncertain"
+    assert result["completion"]["semantic"]["status"] == "completed"

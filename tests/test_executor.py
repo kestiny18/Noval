@@ -23,6 +23,9 @@ def cfg(**over):
 def test_unknown_tool_lists_available():
     r = execute_tool_call("nope", "{}", cfg())
     assert r.is_error and "Available tools" in r.content
+    assert r.meta["effective_risk"] == "unknown"
+    assert r.meta["started_at"].endswith("+00:00")
+    assert r.meta["completed_at"].endswith("+00:00")
 
 
 def test_invalid_json_is_error(tmp_path):
@@ -182,6 +185,8 @@ def test_confirmation_gate():
     assert execute_tool_call("_danger", "{}", cfg()).is_error                 # No approver means denied.
     r = execute_tool_call("_danger", "{}", cfg(), approver=lambda t, a: True)  # Allowed.
     assert not r.is_error and r.content == "did it"
+    assert r.meta["effective_risk"] == "dangerous"
+    assert r.meta["executed"] is True
 
 
 def test_dynamic_risk_allows_readonly_bash_without_prompt(tmp_path):

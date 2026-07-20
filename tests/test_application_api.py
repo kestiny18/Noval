@@ -3,15 +3,24 @@ import os
 import threading
 import time
 from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
 from noval.application import ClientSpec, NovalRuntime
 from noval.api import (
+    AcceptanceCriterion,
+    ActionReceipt,
     ApiFormatError,
+    CompletionReport,
+    CompletionStatus,
+    CriterionReport,
+    CriterionStatus,
     ErrorInfo,
+    EvidenceOutcome,
     EventType,
+    GoalContract,
     NovalError,
     PermissionDecision,
     PermissionRequest,
@@ -19,6 +28,9 @@ from noval.api import (
     RequestInspection,
     RuntimeEvent,
     RuntimeOptions,
+    ReceiptKind,
+    ReceiptOutcome,
+    SemanticAssessment,
     SessionInfo,
     SessionOptions,
     SessionPersistence,
@@ -27,8 +39,17 @@ from noval.api import (
     TurnRequest,
     TurnResult,
     TurnStatus,
+    VerificationResult,
 )
-from noval.client import MockClient, TokenUsage, mock_text, mock_tool_call
+from noval.client import (
+    MockClient,
+    ProviderError,
+    ProviderErrorKind,
+    ProviderIdentity,
+    TokenUsage,
+    mock_text,
+    mock_tool_call,
+)
 from noval.config import Config
 from noval.messages import assistant_message
 from noval.permissions import PermissionMode
@@ -105,8 +126,33 @@ class BlockingClientFactory:
         return MockClient([])
 
 
+class QueueClientFactory:
+    def __init__(self, agent_responses, judge_responses=()):
+        self.agent = MockClient(list(agent_responses))
+        self.judge = MockClient(list(judge_responses))
+
+    def __call__(self, spec):
+        return self.agent if spec.purpose == "agent" else self.judge
+
+
 def json_round_trip(value):
     return json.loads(json.dumps(value, ensure_ascii=False))
+
+
+def application_goal(*, objective="Deliver the verified result."):
+    return GoalContract(
+        goal_id="application-goal",
+        objective=objective,
+        scope=("current workspace",),
+        authority=("use only the authority granted by the host",),
+        acceptance_criteria=(
+            AcceptanceCriterion(
+                criterion_id="verified",
+                description="The result is independently verified.",
+                verification_source="host:validator",
+            ),
+        ),
+    )
 
 
 def block_process_turn_start(session, monkeypatch):
@@ -174,6 +220,188 @@ def test_session_info_and_permission_contracts_are_json_safe():
     assert PermissionStateView.from_dict(json_round_trip(state.to_dict())) == state
     assert PermissionRequest.from_dict(json_round_trip(request.to_dict())) == request
     assert PermissionDecision.ALLOW_ONCE.value == "allow_once"
+
+
+def test_goal_evidence_and_completion_contracts_round_trip():
+    goal = GoalContract(
+        goal_id="release-0.12.0",
+        objective="Publish v0.12.0 only after all required checks pass.",
+        scope=("goal evidence contract", "release metadata"),
+        authority=("may modify this repository", "must use a pull request"),
+        acceptance_criteria=(
+            AcceptanceCriterion(
+                criterion_id="tests",
+                description="The full test suite passes.",
+                verification_source="hook:test-suite",
+                max_age_seconds=3600,
+            ),
+        ),
+    )
+    receipt = ActionReceipt(
+        receipt_id="receipt-1",
+        call_id="call-1",
+        tool_name="run_bash",
+        target="tool:run_bash",
+        kind=ReceiptKind.ACTION,
+        risk="dangerous",
+        outcome=ReceiptOutcome.SUCCEEDED,
+        executed=True,
+        started_at="2026-07-20T12:00:00+00:00",
+        completed_at="2026-07-20T12:00:01+00:00",
+        argument_keys=("command",),
+        duration_ms=1000.0,
+        truncated=False,
+        redacted=True,
+        result_digest="sha256:abc123",
+    )
+    verification = VerificationResult(
+        verification_id="verification-1",
+        goal_id=goal.goal_id,
+        criterion_id="tests",
+        source="hook:test-suite",
+        outcome=EvidenceOutcome.PASSED,
+        observed_at="2026-07-20T12:00:01+00:00",
+        subject="repository test suite",
+        summary="All tests passed.",
+        receipt_ids=(receipt.receipt_id,),
+    )
+    semantic = SemanticAssessment(
+        status=CompletionStatus.COMPLETED,
+        confidence=0.91,
+        reason="The visible reply reports the required checks.",
+        missing=(),
+        source="semantic_judge:test-model",
+    )
+    report = CompletionReport(
+        goal_id=goal.goal_id,
+        status=CompletionStatus.COMPLETED,
+        evaluated_at="2026-07-20T12:00:02+00:00",
+        criteria=(
+            CriterionReport(
+                criterion_id="tests",
+                status=CriterionStatus.PASSED,
+                verification_id=verification.verification_id,
+                source=verification.source,
+                observed_at=verification.observed_at,
+                age_seconds=1.0,
+                receipt_ids=verification.receipt_ids,
+            ),
+        ),
+        semantic=semantic,
+    )
+
+    assert GoalContract.from_dict(json_round_trip(goal.to_dict())) == goal
+    assert ActionReceipt.from_dict(json_round_trip(receipt.to_dict())) == receipt
+    assert VerificationResult.from_dict(
+        json_round_trip(verification.to_dict())
+    ) == verification
+    assert CompletionReport.from_dict(json_round_trip(report.to_dict())) == report
+
+
+def test_semantic_assessment_allows_an_empty_reason_but_rejects_nonfinite_confidence():
+    assessment = SemanticAssessment(
+        status=CompletionStatus.UNCERTAIN,
+        confidence=0.0,
+        reason="",
+        missing=(),
+        source="judge:test-model",
+    )
+
+    assert SemanticAssessment.from_dict(
+        json_round_trip(assessment.to_dict())
+    ) == assessment
+    with pytest.raises(ApiFormatError, match="finite"):
+        SemanticAssessment(
+            status=CompletionStatus.UNCERTAIN,
+            confidence=float("nan"),
+            reason="",
+            missing=(),
+            source="judge:test-model",
+        )
+
+
+def test_goal_contract_rejects_unsafe_shapes_and_requires_criteria():
+    with pytest.raises(ApiFormatError, match="acceptance_criteria"):
+        GoalContract(goal_id="g1", objective="Do the work.")
+    with pytest.raises(ApiFormatError, match="unknown field"):
+        GoalContract.from_dict({
+            "goal_id": "g1",
+            "objective": "Do the work.",
+            "acceptance_criteria": [
+                {"criterion_id": "done", "description": "It is done."}
+            ],
+            "surprise": True,
+        })
+    with pytest.raises(ApiFormatError, match="unique"):
+        GoalContract(
+            goal_id="g1",
+            objective="Do the work.",
+            acceptance_criteria=(
+                AcceptanceCriterion("done", "First definition."),
+                AcceptanceCriterion("done", "Second definition."),
+            ),
+        )
+    with pytest.raises(ApiFormatError, match="identifier"):
+        VerificationResult(
+            verification_id="contains spaces",
+            goal_id="g1",
+            criterion_id="done",
+            source="host:test",
+            outcome=EvidenceOutcome.PASSED,
+            observed_at="2026-07-20T12:00:00+00:00",
+        )
+
+
+def test_turn_contract_adds_optional_goal_receipts_and_completion_compatibly():
+    goal = GoalContract(
+        goal_id="g1",
+        objective="Verify the result.",
+        acceptance_criteria=(
+            AcceptanceCriterion("done", "The result is verified."),
+        ),
+    )
+    request = TurnRequest("do it", client_request_id="c1", goal=goal)
+    encoded_request = json_round_trip(request.to_dict())
+
+    assert TurnRequest.from_dict(encoded_request) == request
+    assert TurnRequest.from_dict({"text": "legacy"}).goal is None
+
+    receipt = ActionReceipt(
+        receipt_id="r1",
+        call_id="call1",
+        tool_name="read_file",
+        target="tool:read_file",
+        kind=ReceiptKind.OBSERVATION,
+        risk="read",
+        outcome=ReceiptOutcome.SUCCEEDED,
+        executed=True,
+        started_at="2026-07-20T12:00:00+00:00",
+        completed_at="2026-07-20T12:00:00+00:00",
+    )
+    completion = CompletionReport(
+        goal_id="g1",
+        status=CompletionStatus.UNCERTAIN,
+        evaluated_at="2026-07-20T12:00:01+00:00",
+        criteria=(CriterionReport("done", CriterionStatus.MISSING),),
+    )
+    result = TurnResult(
+        session_id="s1",
+        turn_id="t1",
+        status=TurnStatus.UNCERTAIN,
+        stop_reason=StopReason.COMPLETED,
+        receipts=(receipt,),
+        completion=completion,
+    )
+
+    assert TurnResult.from_dict(json_round_trip(result.to_dict())) == result
+    legacy = TurnResult.from_dict({
+        "session_id": "s1",
+        "turn_id": "t1",
+        "status": "completed",
+        "stop_reason": "completed",
+    })
+    assert legacy.receipts == ()
+    assert legacy.completion is None
 
 
 def test_turn_result_round_trip_preserves_canonical_message_usage_and_error():
@@ -302,6 +530,247 @@ def test_runtime_creates_ephemeral_session_without_changing_process_state(tmp_pa
     assert not config.sessions_dir().exists()
     assert Path.cwd() == before_cwd
     assert dict(os.environ) == before_env
+
+
+def test_explicit_goal_exposes_uncertain_status_then_accepts_host_verification(
+    tmp_path,
+):
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    events = []
+    factory = QueueClientFactory([mock_text("The requested work is done.")])
+
+    with NovalRuntime(
+        application_config(tmp_path),
+        client_factory=factory,
+        event_sink=events.append,
+    ) as runtime:
+        session = runtime.create_session(SessionOptions(
+            workdir=str(workdir),
+            persistence=SessionPersistence.EPHEMERAL,
+        ))
+        result = session.run_turn(TurnRequest("do the work", goal=application_goal()))
+
+        assert result.status is TurnStatus.UNCERTAIN
+        assert result.stop_reason is StopReason.COMPLETED
+        assert result.completion is not None
+        assert result.completion.status is CompletionStatus.UNCERTAIN
+        assert result.completion.criteria[0].status is CriterionStatus.MISSING
+        observed_request = "\n".join(
+            message.text for message in factory.agent.seen_messages[0]
+        )
+        assert '<goal_contract source="host">' in observed_request
+        assert "does not grant permission" in observed_request
+
+        observed_at = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+        report = session.record_verification(VerificationResult(
+            verification_id="host-verification-1",
+            goal_id="application-goal",
+            criterion_id="verified",
+            source="host:validator",
+            outcome=EvidenceOutcome.PASSED,
+            observed_at=observed_at,
+            summary="token=must-not-enter-event-output",
+        ))
+
+        assert report.status is CompletionStatus.COMPLETED
+        refreshed = session.completion_report()
+        assert refreshed is not None
+        assert refreshed.status is report.status
+        assert replace(
+            refreshed.criteria[0],
+            age_seconds=report.criteria[0].age_seconds,
+        ) == report.criteria[0]
+        assert (
+            refreshed.criteria[0].age_seconds
+            >= report.criteria[0].age_seconds
+        )
+
+    verification_event = next(
+        event for event in events
+        if event.type == EventType.VERIFICATION_RECORDED.value
+    )
+    encoded_event = json.dumps(verification_event.to_dict(), ensure_ascii=False)
+    assert "must-not-enter-event-output" not in encoded_event
+    turn_event = next(
+        event for event in events if event.type == EventType.TURN_COMPLETED.value
+    )
+    assert turn_event.payload["status"] == "uncertain"
+    assert turn_event.payload["completion"]["status"] == "uncertain"
+
+
+def test_goal_contract_redefinition_returns_safe_failed_turn(tmp_path):
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    factory = QueueClientFactory([mock_text("first reply")])
+
+    with NovalRuntime(
+        application_config(tmp_path), client_factory=factory
+    ) as runtime:
+        session = runtime.create_session(SessionOptions(
+            workdir=str(workdir),
+            persistence=SessionPersistence.EPHEMERAL,
+        ))
+        first = session.run_turn(TurnRequest("first", goal=application_goal()))
+        changed = application_goal(objective="Silently changed objective.")
+        second = session.run_turn(TurnRequest("second", goal=changed))
+
+    assert first.status is TurnStatus.UNCERTAIN
+    assert second.status is TurnStatus.FAILED
+    assert second.stop_reason is StopReason.ERROR
+    assert second.error is not None
+    assert second.error.code == "goal_contract_error"
+    assert "redefine" in second.error.safe_message
+    assert len(factory.agent.seen_messages) == 1
+
+
+def test_semantic_judge_cannot_upgrade_application_completion_status(tmp_path):
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    read_tool = Tool(
+        name="inspect_test",
+        description="Inspect test state.",
+        parameters={"type": "object", "properties": {}},
+        func=lambda: "observed",
+        risk=Risk.READ,
+    )
+    factory = QueueClientFactory(
+        [
+            mock_tool_call("call-1", "inspect_test", "{}"),
+            mock_text("Everything is complete."),
+        ],
+        [mock_text(json.dumps({
+            "status": "completed",
+            "confidence": 0.99,
+            "reason": "The visible reply claims completion.",
+            "missing": [],
+        }))],
+    )
+
+    with NovalRuntime(
+        application_config(tmp_path),
+        client_factory=factory,
+        tools=[read_tool],
+    ) as runtime:
+        session = runtime.create_session(SessionOptions(
+            workdir=str(workdir),
+            persistence=SessionPersistence.EPHEMERAL,
+        ))
+        result = session.run_turn(TurnRequest("inspect", goal=application_goal()))
+
+    assert result.status is TurnStatus.UNCERTAIN
+    assert result.completion is not None
+    assert result.completion.status is CompletionStatus.UNCERTAIN
+    assert result.completion.semantic is not None
+    assert result.completion.semantic.status is CompletionStatus.COMPLETED
+    assert len(result.receipts) == 1
+
+
+def test_operational_failure_remains_failed_even_when_goal_was_complete(tmp_path):
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    identity = ProviderIdentity("mock", "agent", "mock")
+
+    class FailSecondClient:
+        def __init__(self):
+            self.calls = 0
+
+        def complete(self, messages, tools):
+            self.calls += 1
+            if self.calls == 1:
+                return mock_text("first turn")
+            raise ProviderError(
+                ProviderErrorKind.TIMEOUT,
+                "provider timed out",
+                retryable=True,
+                identity=identity,
+            )
+
+    client = FailSecondClient()
+
+    def factory(spec):
+        return client if spec.purpose == "agent" else MockClient([])
+
+    with NovalRuntime(
+        application_config(tmp_path), client_factory=factory
+    ) as runtime:
+        session = runtime.create_session(SessionOptions(
+            workdir=str(workdir),
+            persistence=SessionPersistence.EPHEMERAL,
+        ))
+        session.run_turn(TurnRequest("first", goal=application_goal()))
+        session.record_verification(VerificationResult(
+            verification_id="complete-before-failure",
+            goal_id="application-goal",
+            criterion_id="verified",
+            source="host:validator",
+            outcome=EvidenceOutcome.PASSED,
+            observed_at=datetime.now(timezone.utc).isoformat(
+                timespec="milliseconds"
+            ),
+        ))
+
+        failed = session.run_turn(TurnRequest("second"))
+
+    assert failed.status is TurnStatus.FAILED
+    assert failed.stop_reason is StopReason.ERROR
+    assert failed.error is not None
+    assert failed.error.code == "provider_timeout"
+    assert failed.completion is not None
+    assert failed.completion.status is CompletionStatus.COMPLETED
+
+
+def test_persistent_session_recovers_goal_and_external_verification(tmp_path):
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    config = application_config(tmp_path)
+
+    with NovalRuntime(
+        config,
+        client_factory=QueueClientFactory([mock_text("draft")]),
+    ) as runtime:
+        session = runtime.create_session(SessionOptions(
+            workdir=str(workdir),
+            persistence=SessionPersistence.PERSISTENT,
+        ))
+        session_id = session.info.session_id
+        result = session.run_turn(TurnRequest("work", goal=application_goal()))
+        assert result.status is TurnStatus.UNCERTAIN
+
+    with NovalRuntime(
+        config,
+        client_factory=QueueClientFactory([mock_text("unused")]),
+    ) as runtime:
+        resumed = runtime.resume_session(session_id, SessionOptions(
+            workdir=str(workdir),
+            persistence=SessionPersistence.PERSISTENT,
+        ))
+        restored = resumed.completion_report()
+        assert restored is not None
+        assert restored.status is CompletionStatus.UNCERTAIN
+        completed = resumed.record_verification(VerificationResult(
+            verification_id="host-verification-resume",
+            goal_id="application-goal",
+            criterion_id="verified",
+            source="host:validator",
+            outcome=EvidenceOutcome.PASSED,
+            observed_at=datetime.now(timezone.utc).isoformat(
+                timespec="milliseconds"
+            ),
+        ))
+        assert completed.status is CompletionStatus.COMPLETED
+
+    with NovalRuntime(
+        config,
+        client_factory=QueueClientFactory([mock_text("unused")]),
+    ) as runtime:
+        resumed_again = runtime.resume_session(session_id, SessionOptions(
+            workdir=str(workdir),
+            persistence=SessionPersistence.PERSISTENT,
+        ))
+        final = resumed_again.completion_report()
+        assert final is not None
+        assert final.status is CompletionStatus.COMPLETED
 
 
 def test_persistent_session_can_be_listed_closed_and_resumed(tmp_path):
@@ -469,6 +938,18 @@ def test_permission_changes_cannot_overtake_turn_admission(
         with pytest.raises(NovalError) as busy:
             session.set_permission_mode(PermissionMode.FULL_ACCESS)
         assert busy.value.code == "session_busy"
+        with pytest.raises(NovalError) as verification_busy:
+            session.record_verification(VerificationResult(
+                verification_id="busy-verification",
+                goal_id="application-goal",
+                criterion_id="verified",
+                source="host:validator",
+                outcome=EvidenceOutcome.PASSED,
+                observed_at=datetime.now(timezone.utc).isoformat(
+                    timespec="milliseconds"
+                ),
+            ))
+        assert verification_busy.value.code == "session_busy"
         assert session.permission_state().mode is PermissionMode.ASK
     finally:
         proceed.set()
@@ -611,6 +1092,13 @@ def test_permission_handler_is_serializable_ordered_and_fail_closed(tmp_path):
         result = session.run_turn(TurnRequest("use the tool"))
 
         assert result.status is TurnStatus.COMPLETED
+        assert len(result.receipts) == 1
+        assert result.receipts[0].tool_name == "dangerous_test"
+        assert result.receipts[0].outcome is ReceiptOutcome.SUCCEEDED
+        assert result.receipts[0].executed is True
+        assert "very-secret" not in json.dumps(
+            result.receipts[0].to_dict(), ensure_ascii=False
+        )
         assert session.permission_state().approved_tools == ("dangerous_test",)
 
     assert executed == ["very-secret"]
@@ -618,6 +1106,10 @@ def test_permission_handler_is_serializable_ordered_and_fail_closed(tmp_path):
     event_types = [event.type for event in events]
     assert EventType.PERMISSION_REQUESTED.value in event_types
     assert EventType.PERMISSION_RESOLVED.value in event_types
+    completed_event = next(
+        event for event in events if event.type == EventType.TURN_COMPLETED.value
+    )
+    assert completed_event.payload["receipts"][0]["tool_name"] == "dangerous_test"
     assert [event.sequence for event in events] == list(range(1, len(events) + 1))
     assert event_types[-1] == EventType.SESSION_CLOSED.value
 

@@ -5,6 +5,35 @@ so public contracts may continue to evolve.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-07-20
+
+### Added
+
+- Optional JSON-safe `GoalContract` values with explicit objective, scope,
+  authority notes, named acceptance criteria, source binding, and evidence
+  freshness requirements.
+- Safe `ActionReceipt` records for every tool attempt, exposing execution risk,
+  outcome, timestamps, argument keys, and a digest of already-redacted output
+  without retaining argument values or raw tool content.
+- Criterion-bound `VerificationResult` and `CompletionReport` contracts,
+  idle-only host verification APIs, evidence-aware public terminal status, and
+  live verification/completion event payloads.
+- Explicit `hook:<id>` Stop Hook verification mapping and offline goal/evidence
+  Eval cases for missing, passing, failed, unknown, and stale evidence.
+- ADR-0005 plus English-first Application API and Hook evidence documentation
+  with first-class Simplified Chinese entry points.
+
+### Changed
+
+- Advanced the recoverable task sidecar to schema v2 while retaining read
+  compatibility with schema-v1 semantic snapshots and leaving canonical
+  Session schema v2 unchanged.
+- Kept the semantic completion judge as a separately labeled visible-reply
+  assessment. For explicit goals it can no longer upgrade or override missing,
+  stale, unknown, or failed contracted evidence.
+- Extended Application API schema v1 additively: existing goal-less requests
+  remain valid and retain their lightweight behavior.
+
 ## [0.11.0] - 2026-07-20
 
 ### Changed
@@ -322,7 +351,8 @@ so public contracts may continue to evolve.
 - 带 `max_steps` 的 Agent 循环与 CLI。
 - `MockClient` 和离线测试。
 
-[Unreleased]: https://github.com/kestiny18/Noval/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/kestiny18/Noval/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/kestiny18/Noval/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/kestiny18/Noval/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/kestiny18/Noval/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/kestiny18/Noval/compare/v0.8.1...v0.9.0

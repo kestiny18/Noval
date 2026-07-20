@@ -1,6 +1,20 @@
 import json
+from datetime import datetime, timezone
+
+import pytest
 
 from noval.agent import Agent
+from noval.api import (
+    AcceptanceCriterion,
+    ActionReceipt,
+    CompletionStatus,
+    CriterionStatus,
+    EvidenceOutcome,
+    GoalContract,
+    ReceiptKind,
+    ReceiptOutcome,
+    VerificationResult,
+)
 from noval.client import MockClient, mock_text, mock_tool_call
 from noval.config import Config
 from noval.messages import MessageRole
@@ -13,7 +27,7 @@ from noval.task import (
     TaskState,
     TaskStatus,
 )
-from noval.tools import Risk, tool
+from noval.tools import Risk, all_tools, tool
 
 
 def cfg():
@@ -23,6 +37,41 @@ def cfg():
         api_key_env="K",
         max_steps=5,
         max_tool_output_chars=8000,
+    )
+
+
+def structured_goal(*, max_age_seconds=None, source="host:test-suite"):
+    return GoalContract(
+        goal_id="goal-1",
+        objective="Deliver the verified change.",
+        scope=("current repository",),
+        authority=("modify files requested by the user",),
+        acceptance_criteria=(
+            AcceptanceCriterion(
+                criterion_id="tests",
+                description="The required test suite passes.",
+                verification_source=source,
+                max_age_seconds=max_age_seconds,
+            ),
+        ),
+    )
+
+
+def verification(
+    *,
+    outcome=EvidenceOutcome.PASSED,
+    observed_at="2026-07-20T12:00:00+00:00",
+    source="host:test-suite",
+    goal_id="goal-1",
+    criterion_id="tests",
+):
+    return VerificationResult(
+        verification_id="verification-1",
+        goal_id=goal_id,
+        criterion_id=criterion_id,
+        source=source,
+        outcome=outcome,
+        observed_at=observed_at,
     )
 
 
@@ -46,6 +95,117 @@ def test_task_event_store_replays_latest_snapshot(tmp_path):
     assert loaded.last_verdict.status is TaskStatus.COMPLETED
 
 
+def test_task_event_store_v2_recovers_goal_evidence_and_skips_corrupt_tail(tmp_path):
+    path = tmp_path / "task.jsonl"
+    now = datetime(2026, 7, 20, 12, 0, 1, tzinfo=timezone.utc)
+    controller = TaskController(event_store=TaskEventStore(path), now=lambda: now)
+    controller.activate_goal(structured_goal(max_age_seconds=60))
+    controller.record_verification(verification())
+    with path.open("a", encoding="utf-8") as file:
+        file.write('{"schema_version":2,"state":')
+
+    records = path.read_text(encoding="utf-8").splitlines()
+    loaded = TaskEventStore(path).load_latest()
+    resumed = TaskController(state=loaded, now=lambda: now)
+    report = resumed.completion_report()
+
+    assert all(json.loads(line)["schema_version"] == 2 for line in records[:-1])
+    assert loaded.active_goal == structured_goal(max_age_seconds=60)
+    assert loaded.verifications == [verification()]
+    assert report is not None
+    assert report.status is CompletionStatus.COMPLETED
+
+
+def test_task_event_store_migrates_schema_v1_semantic_snapshot(tmp_path):
+    path = tmp_path / "task.jsonl"
+    legacy = {
+        "schema_version": 1,
+        "timestamp": "2026-07-19T12:00:00+00:00",
+        "type": "state_snapshot",
+        "reason": "completion_verdict",
+        "state": {
+            "status": "completed",
+            "recent_user_inputs": ["Explain the result"],
+            "last_verdict": {
+                "status": "completed",
+                "confidence": 0.8,
+                "reason": "The visible reply answered the question.",
+                "missing": [],
+                "source": "judge:legacy",
+            },
+        },
+        "payload": {},
+    }
+    path.write_text(json.dumps(legacy) + "\n", encoding="utf-8")
+
+    loaded = TaskEventStore(path).load_latest()
+
+    assert loaded.status is TaskStatus.COMPLETED
+    assert loaded.recent_user_inputs == ["Explain the result"]
+    assert loaded.last_verdict is not None
+    assert loaded.last_verdict.source == "judge:legacy"
+    assert loaded.active_goal is None
+    assert loaded.receipts == []
+    assert loaded.verifications == []
+
+
+def test_task_state_keeps_bounded_receipt_and_verification_history():
+    now = datetime(2026, 7, 20, 12, 0, tzinfo=timezone.utc)
+    controller = TaskController(now=lambda: now)
+    controller.activate_goal(structured_goal(source=None))
+
+    for index in range(140):
+        receipt = ActionReceipt(
+            receipt_id=f"receipt-{index}",
+            call_id=f"call-{index}",
+            tool_name="read_file",
+            target="tool:read_file",
+            kind=ReceiptKind.OBSERVATION,
+            risk="read",
+            outcome=ReceiptOutcome.SUCCEEDED,
+            executed=True,
+            started_at="2026-07-20T12:00:00+00:00",
+            completed_at="2026-07-20T12:00:00+00:00",
+        )
+        controller.record_receipt(receipt)
+        controller.record_verification(VerificationResult(
+            verification_id=f"verification-{index}",
+            goal_id="goal-1",
+            criterion_id="tests",
+            source="host:test-suite",
+            outcome=EvidenceOutcome.PASSED,
+            observed_at="2026-07-20T12:00:00+00:00",
+            receipt_ids=(receipt.receipt_id,),
+        ))
+
+    assert len(controller.state.receipts) == 128
+    assert len(controller.state.verifications) == 128
+    assert controller.state.receipts[0].receipt_id == "receipt-12"
+    assert controller.state.verifications[0].verification_id == "verification-12"
+
+
+def test_verification_free_text_is_redacted_before_task_persistence(tmp_path):
+    path = tmp_path / "task.jsonl"
+    now = datetime(2026, 7, 20, 12, 0, tzinfo=timezone.utc)
+    controller = TaskController(event_store=TaskEventStore(path), now=lambda: now)
+    controller.activate_goal(structured_goal())
+
+    controller.record_verification(VerificationResult(
+        verification_id="verification-secret",
+        goal_id="goal-1",
+        criterion_id="tests",
+        source="host:test-suite",
+        outcome=EvidenceOutcome.PASSED,
+        observed_at="2026-07-20T12:00:00+00:00",
+        subject="token=super-sensitive-value",
+        summary="api_key=super-sensitive-value",
+    ))
+
+    persisted = path.read_text(encoding="utf-8")
+    assert "super-sensitive-value" not in persisted
+    assert "<redacted>" in persisted
+
+
 def test_controller_keeps_last_three_unique_user_inputs():
     controller = TaskController()
 
@@ -53,6 +213,192 @@ def test_controller_keeps_last_three_unique_user_inputs():
         controller.observe_user_input(text)
 
     assert controller.state.recent_user_inputs == ["Goal A", "Goal C", "Goal D"]
+
+
+def test_explicit_goal_is_uncertain_until_every_criterion_has_evidence():
+    now = datetime(2026, 7, 20, 12, 0, tzinfo=timezone.utc)
+    controller = TaskController(now=lambda: now)
+
+    report = controller.activate_goal(structured_goal())
+
+    assert report.status is CompletionStatus.UNCERTAIN
+    assert report.criteria[0].status is CriterionStatus.MISSING
+    assert controller.state.status is TaskStatus.UNCERTAIN
+
+
+def test_compatible_goal_can_repeat_but_same_id_cannot_be_redefined():
+    controller = TaskController()
+    goal = structured_goal()
+
+    controller.activate_goal(goal)
+    assert controller.activate_goal(goal).goal_id == goal.goal_id
+
+    changed = GoalContract(
+        goal_id=goal.goal_id,
+        objective="A different objective.",
+        acceptance_criteria=goal.acceptance_criteria,
+    )
+    with pytest.raises(ValueError, match="redefine"):
+        controller.activate_goal(changed)
+
+
+def test_matching_current_verification_completes_explicit_goal():
+    now = datetime(2026, 7, 20, 12, 0, 1, tzinfo=timezone.utc)
+    controller = TaskController(now=lambda: now)
+    controller.activate_goal(structured_goal(max_age_seconds=60))
+
+    report = controller.record_verification(verification())
+
+    assert report.status is CompletionStatus.COMPLETED
+    assert report.criteria[0].status is CriterionStatus.PASSED
+    assert report.criteria[0].age_seconds == 1.0
+    assert controller.state.status is TaskStatus.COMPLETED
+
+
+@pytest.mark.parametrize(
+    ("outcome", "expected_criterion", "expected_completion"),
+    [
+        (EvidenceOutcome.FAILED, CriterionStatus.FAILED, CompletionStatus.INCOMPLETE),
+        (EvidenceOutcome.UNKNOWN, CriterionStatus.UNKNOWN, CompletionStatus.UNCERTAIN),
+    ],
+)
+def test_failed_and_unknown_verification_do_not_complete_goal(
+    outcome, expected_criterion, expected_completion
+):
+    now = datetime(2026, 7, 20, 12, 0, 1, tzinfo=timezone.utc)
+    controller = TaskController(now=lambda: now)
+    controller.activate_goal(structured_goal())
+
+    report = controller.record_verification(verification(outcome=outcome))
+
+    assert report.status is expected_completion
+    assert report.criteria[0].status is expected_criterion
+
+
+def test_stale_verification_is_uncertain():
+    now = datetime(2026, 7, 20, 12, 2, tzinfo=timezone.utc)
+    controller = TaskController(now=lambda: now)
+    controller.activate_goal(structured_goal(max_age_seconds=60))
+
+    report = controller.record_verification(verification())
+
+    assert report.status is CompletionStatus.UNCERTAIN
+    assert report.criteria[0].status is CriterionStatus.STALE
+    assert report.criteria[0].age_seconds == 120.0
+
+
+@pytest.mark.parametrize(
+    ("result", "message"),
+    [
+        (verification(goal_id="another-goal"), "active goal"),
+        (verification(criterion_id="unknown"), "criterion"),
+        (verification(source="host:other"), "source"),
+        (
+            verification(observed_at="2026-07-20T12:10:00+00:00"),
+            "future",
+        ),
+    ],
+)
+def test_verification_must_match_goal_criterion_source_and_time(result, message):
+    now = datetime(2026, 7, 20, 12, 0, tzinfo=timezone.utc)
+    controller = TaskController(now=lambda: now)
+    controller.activate_goal(structured_goal())
+
+    with pytest.raises(ValueError, match=message):
+        controller.record_verification(result)
+
+
+def test_semantic_judge_cannot_upgrade_missing_contracted_evidence():
+    now = datetime(2026, 7, 20, 12, 0, tzinfo=timezone.utc)
+    judge = SemanticJudge(
+        MockClient([
+            mock_text(json.dumps({
+                "status": "completed",
+                "confidence": 0.99,
+                "reason": "The reply confidently says it is done.",
+                "missing": [],
+            })),
+        ]),
+        model="judge-model",
+    )
+    controller = TaskController(
+        completion_verifier=CompletionVerifier(judge),
+        now=lambda: now,
+    )
+    controller.activate_goal(structured_goal())
+    controller.observe_user_input("Do the work.")
+
+    verdict = controller.verify_completion("Everything is complete.")
+    report = controller.completion_report()
+
+    assert verdict.status is TaskStatus.COMPLETED
+    assert report is not None
+    assert report.status is CompletionStatus.UNCERTAIN
+    assert report.semantic is not None
+    assert report.semantic.status is CompletionStatus.COMPLETED
+    assert controller.state.status is TaskStatus.UNCERTAIN
+
+
+def test_goal_context_is_observed_data_and_not_a_permission_grant():
+    controller = TaskController()
+    controller.activate_goal(structured_goal())
+
+    context = controller.goal_context()
+
+    assert context is not None
+    assert '"goal_id":"goal-1"' in context
+    assert '"status":"uncertain"' in context
+    assert "does not grant permission" in context
+
+
+@pytest.mark.parametrize(
+    ("hook_outcome", "expected_criterion", "expected_completion"),
+    [
+        ("allow", CriterionStatus.PASSED, CompletionStatus.COMPLETED),
+        ("deny", CriterionStatus.FAILED, CompletionStatus.INCOMPLETE),
+        ("context", CriterionStatus.UNKNOWN, CompletionStatus.UNCERTAIN),
+    ],
+)
+def test_stop_hook_outcomes_map_to_contracted_verification(
+    hook_outcome, expected_criterion, expected_completion
+):
+    now = datetime(2026, 7, 20, 12, 0, tzinfo=timezone.utc)
+    controller = TaskController(now=lambda: now)
+    controller.activate_goal(structured_goal(source="hook:test-suite"))
+
+    report = controller.record_stop_hook_result("test-suite", hook_outcome)
+
+    assert report is not None
+    assert report.status is expected_completion
+    assert report.criteria[0].status is expected_criterion
+    assert controller.state.verifications[-1].source == "hook:test-suite"
+
+
+def test_unmapped_stop_hook_does_not_create_completion_evidence():
+    controller = TaskController()
+    controller.activate_goal(structured_goal(source="hook:required"))
+
+    report = controller.record_stop_hook_result("another-hook", "allow")
+
+    assert report is not None
+    assert report.status is CompletionStatus.UNCERTAIN
+    assert report.criteria[0].status is CriterionStatus.MISSING
+    assert controller.state.verifications == []
+
+
+def test_stop_hook_evidence_omits_receipts_evicted_from_bounded_state():
+    controller = TaskController()
+    controller.activate_goal(structured_goal(source="hook:test-suite"))
+
+    report = controller.record_stop_hook_result(
+        "test-suite",
+        "allow",
+        receipt_ids=("receipt-already-evicted",),
+    )
+
+    assert report is not None
+    assert report.status is CompletionStatus.COMPLETED
+    assert controller.state.verifications[-1].receipt_ids == ()
 
 
 def test_completion_verifier_uses_judge_without_deterministic_completion_rules():
@@ -75,6 +421,29 @@ def test_completion_verifier_uses_judge_without_deterministic_completion_rules()
     assert verdict.source == "judge:judge-model"
     assert verdict.reason == "tests were not mentioned"
     assert verdict.missing == ["verification evidence"]
+
+
+def test_explicit_goal_tolerates_sparse_semantic_judge_output():
+    controller = TaskController(
+        completion_verifier=CompletionVerifier(SemanticJudge(
+            MockClient([mock_text(json.dumps({
+                "status": "completed",
+                "confidence": 0.8,
+            }))]),
+            model="provider/model name@v1",
+        ))
+    )
+    controller.activate_goal(structured_goal())
+    controller.observe_user_input("Prepare the release")
+
+    controller.verify_completion("The release is ready.")
+    report = controller.completion_report()
+
+    assert report is not None
+    assert report.status is CompletionStatus.UNCERTAIN
+    assert report.semantic is not None
+    assert report.semantic.reason == ""
+    assert report.semantic.source.startswith("judge:sha256-")
 
 
 def test_semantic_judge_uses_only_recent_inputs_and_final_reply():
@@ -165,6 +534,91 @@ def test_agent_judges_final_reply_after_tool_loop(tmp_path):
     assert packet["context_user_inputs"] == []
     assert packet["recent_user_inputs"] == ["Only identify the cause"]
     assert packet["assistant_final_reply"] == "The cache was not refreshed."
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "risk", "tool_body", "approver", "expected_outcome", "executed"),
+    [
+        (
+            "_receipt_success",
+            Risk.READ,
+            lambda: "password=FAKE_RECEIPT_SECRET",
+            None,
+            ReceiptOutcome.SUCCEEDED,
+            True,
+        ),
+        (
+            "_receipt_failure",
+            Risk.READ,
+            lambda: (_ for _ in ()).throw(RuntimeError("failed")),
+            None,
+            ReceiptOutcome.FAILED,
+            True,
+        ),
+        (
+            "_receipt_denied",
+            Risk.DANGEROUS,
+            lambda: "must not execute",
+            lambda _tool, _arguments: False,
+            ReceiptOutcome.NOT_EXECUTED,
+            False,
+        ),
+    ],
+)
+def test_agent_records_safe_receipt_for_every_tool_attempt(
+    tmp_path,
+    tool_name,
+    risk,
+    tool_body,
+    approver,
+    expected_outcome,
+    executed,
+):
+    @tool(name=tool_name, risk=risk)
+    def receipt_tool(unused: str) -> str:
+        """exercise receipt recording"""
+        del unused
+        return tool_body()
+    receipt_tool_definition = next(
+        item for item in all_tools() if item.name == tool_name
+    )
+
+    events = []
+    controller = TaskController()
+    agent = Agent(
+        MockClient([
+            mock_tool_call("provider call/1", tool_name, '{"unused": "secret-value"}'),
+            mock_text("Finished."),
+        ]),
+        cfg(),
+        tools=[receipt_tool_definition],
+        workdir=str(tmp_path),
+        task_controller=controller,
+        approver=approver,
+        observer=lambda event_type, payload: events.append((event_type, payload)),
+    )
+
+    outcome = agent.run_turn("Use the test tool.")
+
+    assert len(outcome.receipts) == 1
+    receipt = outcome.receipts[0]
+    assert receipt.call_id == "provider call/1"
+    assert receipt.tool_name == tool_name
+    assert receipt.target == f"tool:{tool_name}"
+    assert receipt.risk == risk.value
+    assert receipt.kind is (
+        ReceiptKind.OBSERVATION if risk is Risk.READ else ReceiptKind.ACTION
+    )
+    assert receipt.outcome is expected_outcome
+    assert receipt.executed is executed
+    assert receipt.argument_keys == ("unused",)
+    assert receipt.result_digest.startswith("sha256:")
+    serialized = json.dumps(receipt.to_dict(), ensure_ascii=False)
+    assert "secret-value" not in serialized
+    assert "FAKE_RECEIPT_SECRET" not in serialized
+    assert controller.state.receipts == [receipt]
+    completed = [payload for event, payload in events if event == "tool.completed"]
+    assert completed[0]["receipt"] == receipt.to_dict()
 
 
 def test_agent_skips_completion_judge_for_direct_reply(tmp_path):

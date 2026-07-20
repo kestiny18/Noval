@@ -9,6 +9,7 @@ a core seam, or a cross-cutting invariant.
 | [0002](0002-session-isolation-and-concurrency.md) | Accepted | Isolate mutable state per Session |
 | [0003](0003-json-contracts-and-live-events.md) | Accepted | Use JSON-safe contracts and live-only events |
 | [0004](0004-principle-guided-thin-harness.md) | Accepted | Adopt principle-guided, invariant-enforced autonomy |
+| [0005](0005-goal-evidence-completion-contract.md) | Accepted | Establish goal, evidence, and completion contracts |
 
 The earlier Chinese decision ledger is preserved in
 [DESIGN.zh-CN.md](../../DESIGN.zh-CN.md). New decisions should use an ADR rather
