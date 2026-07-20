@@ -48,6 +48,7 @@ from noval.api import (
     VerificationResult,
 )
 from noval.client import (
+    LLMStreamEvent,
     MockClient,
     ProviderError,
     ProviderErrorKind,
@@ -750,6 +751,68 @@ def test_event_replay_survives_sink_failure(tmp_path):
         EventType.SESSION_OPENED.value,
         EventType.SESSION_RENAMED.value,
     ]
+    session.close()
+    runtime.close()
+
+
+def test_application_events_expose_visible_streaming_but_not_private_reasoning(
+    tmp_path,
+):
+    events = []
+
+    class StreamingClient:
+        def complete(self, messages, tools):
+            raise AssertionError("streaming capability should be selected")
+
+        def stream_complete(self, messages, tools, on_event):
+            on_event(LLMStreamEvent("Hello"))
+            on_event(LLMStreamEvent(" desktop"))
+            response = mock_text(
+                "Hello desktop",
+                usage=TokenUsage(10, 2, 12, reasoning_tokens=3),
+            )
+            response.message = assistant_message(
+                "Hello desktop",
+                replay_state=AdapterReplayState(
+                    "anthropic-messages",
+                    1,
+                    {"blocks": [{"type": "thinking", "thinking": "private"}]},
+                ),
+                provenance=response.provider.provenance(),
+            )
+            return response
+
+    def factory(spec):
+        return StreamingClient() if spec.purpose == "agent" else MockClient([])
+
+    runtime = NovalRuntime(
+        application_config(tmp_path),
+        client_factory=factory,
+        event_sink=events.append,
+    )
+    session = runtime.create_session(SessionOptions(
+        workdir=str(tmp_path),
+        persistence=SessionPersistence.EPHEMERAL,
+    ))
+
+    result = session.run_turn(TurnRequest("hello"))
+
+    deltas = [
+        event.payload["text"] for event in events
+        if event.type == EventType.MODEL_OUTPUT_DELTA.value
+    ]
+    completed = next(
+        event for event in events
+        if event.type == EventType.MODEL_COMPLETED.value
+    )
+    assert deltas == ["Hello", " desktop"]
+    assert completed.payload["reasoning_tokens"] == 3
+    assert result.message is not None
+    assert result.message.text == "Hello desktop"
+    assert result.message.replay_state is None
+    encoded_events = json.dumps(session.replay_events().to_dict())
+    assert "private" not in encoded_events
+    assert "thinking" not in encoded_events
     session.close()
     runtime.close()
 

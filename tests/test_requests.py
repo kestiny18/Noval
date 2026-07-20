@@ -19,6 +19,7 @@ from noval.client import (
     MockClient,
     OpenAICompatibleClient,
     ProviderIdentity,
+    LLMStreamEvent,
     ToolDefinition,
     mock_text,
 )
@@ -118,6 +119,43 @@ def test_request_recording_client_records_semantic_input_and_request_id():
     assert "FAKE_ADAPTER_PRIVATE_KEY" not in encoded
     assert "<redacted>" in encoded
     assert RequestInspection.from_dict(inspection.to_dict()) == inspection
+
+
+def test_request_recording_preserves_optional_streaming_and_request_context():
+    journal = InMemoryRequestJournal()
+    observed = []
+
+    class StreamingClient:
+        def complete(self, messages, tools):
+            raise AssertionError("streaming capability should be selected")
+
+        def stream_complete(self, messages, tools, on_event):
+            observed.append(current_request_id())
+            on_event(LLMStreamEvent("live"))
+            return mock_text("live")
+
+    client = RequestRecordingClient(
+        StreamingClient(),
+        journal,
+        lambda: RequestContext("session-1", "turn-1"),
+        purpose="agent",
+        identity=ProviderIdentity("mock", "model", "mock"),
+    )
+    deltas = []
+
+    response = client.stream_complete_with_request(
+        [user_message("hello")],
+        [],
+        deltas.append,
+        request_id="request-stream",
+    )
+
+    assert response.message.text == "live"
+    assert response.meta["request_id"] == "request-stream"
+    assert deltas == [LLMStreamEvent("live")]
+    assert observed == ["request-stream"]
+    assert current_request_id() is None
+    assert journal.get("request-stream") is not None
 
 
 def test_model_request_logs_carry_request_id_without_payload(caplog):

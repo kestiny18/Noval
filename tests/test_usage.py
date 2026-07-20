@@ -2,7 +2,13 @@ import json
 from datetime import date, datetime, timezone
 
 from noval.agent import _format_usage_summary, _handle_usage_command
-from noval.client import MockClient, ProviderIdentity, TokenUsage, mock_text
+from noval.client import (
+    LLMStreamEvent,
+    MockClient,
+    ProviderIdentity,
+    TokenUsage,
+    mock_text,
+)
 from noval.usage import JsonlUsageStore, MeteredLLMClient
 
 
@@ -78,6 +84,28 @@ def test_metered_client_records_actual_response_model(tmp_path):
     assert client.complete([], []).message.text == "ok"
 
     assert set(store.summarize().by_model) == {"provider-model"}
+
+
+def test_metered_client_preserves_streaming_and_records_usage(tmp_path):
+    response = mock_text("live", usage=usage())
+
+    class StreamingClient:
+        def complete(self, messages, tools):
+            raise AssertionError("streaming capability should be selected")
+
+        def stream_complete(self, messages, tools, on_event):
+            on_event(LLMStreamEvent("live"))
+            return response
+
+    store = JsonlUsageStore(tmp_path, "session", now=lambda: NOW)
+    client = MeteredLLMClient(StreamingClient(), store, "configured-model")
+    deltas = []
+
+    result = client.stream_complete([], [], deltas.append)
+
+    assert result.message.text == "live"
+    assert deltas == [LLMStreamEvent("live")]
+    assert store.summarize().total.requests == 1
 
 
 def test_usage_records_and_summarizes_purpose(tmp_path):

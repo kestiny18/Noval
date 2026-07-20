@@ -16,7 +16,13 @@ from typing import Any, Callable, Dict, List, Optional, Protocol, Sequence, Set
 from uuid import uuid4
 
 from .api import RequestInspection
-from .client import LLMClient, LLMResponse, ProviderIdentity, ToolDefinition
+from .client import (
+    LLMClient,
+    LLMResponse,
+    LLMStreamObserver,
+    ProviderIdentity,
+    ToolDefinition,
+)
 from .messages import ConversationMessage
 from .redaction import redact_sensitive_data
 from .runtime_log import runtime_log_context
@@ -355,6 +361,51 @@ class RequestRecordingClient:
         *,
         request_id: str,
     ) -> LLMResponse:
+        return self._complete_with_request(
+            messages,
+            tools,
+            request_id=request_id,
+            on_event=None,
+        )
+
+    def stream_complete(
+        self,
+        messages: Sequence[ConversationMessage],
+        tools: Sequence[ToolDefinition],
+        on_event: LLMStreamObserver,
+    ) -> LLMResponse:
+        return self.stream_complete_with_request(
+            messages,
+            tools,
+            on_event,
+            request_id="request-" + uuid4().hex,
+        )
+
+    def stream_complete_with_request(
+        self,
+        messages: Sequence[ConversationMessage],
+        tools: Sequence[ToolDefinition],
+        on_event: LLMStreamObserver,
+        *,
+        request_id: str,
+    ) -> LLMResponse:
+        if not callable(on_event):
+            raise TypeError("on_event must be callable")
+        return self._complete_with_request(
+            messages,
+            tools,
+            request_id=request_id,
+            on_event=on_event,
+        )
+
+    def _complete_with_request(
+        self,
+        messages: Sequence[ConversationMessage],
+        tools: Sequence[ToolDefinition],
+        *,
+        request_id: str,
+        on_event: Optional[LLMStreamObserver],
+    ) -> LLMResponse:
         context = self.context_provider()
         step = self.sequence.next(context, self.purpose)
         adapter_request = self._render_adapter_request(messages, tools)
@@ -407,7 +458,11 @@ class RequestRecordingClient:
                     len(tools),
                 )
                 try:
-                    response = self.inner.complete(messages, tools)
+                    streamer = getattr(self.inner, "stream_complete", None)
+                    if on_event is not None and callable(streamer):
+                        response = streamer(messages, tools, on_event)
+                    else:
+                        response = self.inner.complete(messages, tools)
                 except Exception:
                     log.warning(
                         "model request failed purpose=%s step=%s dur=%.1fms",
