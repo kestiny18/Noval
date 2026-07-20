@@ -45,6 +45,29 @@ def test_create_is_lazy_and_writes_canonical_schema_v2(tmp_path):
     assert (path.parent / "project.json").exists()
 
 
+def test_record_page_is_bounded_and_uses_canonical_sequence_cursor(tmp_path):
+    base = tmp_path / "sessions"
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    store = JsonlSessionStore.create(base, workdir, "model")
+    for text in ("one", "two", "three"):
+        store.append(user_message(text))
+
+    first, first_more = store.load_record_page(-1, 2)
+    second, second_more = store.load_record_page(first[-1].seq, 2)
+
+    assert [(record.seq, record.message.text) for record in first] == [
+        (0, "one"),
+        (1, "two"),
+    ]
+    assert first_more is True
+    assert [(record.seq, record.message.text) for record in second] == [
+        (2, "three"),
+    ]
+    assert second_more is False
+    store.close()
+
+
 def test_context_path_is_outside_session_jsonl_scan(tmp_path):
     base = tmp_path / "sessions"
     workdir = tmp_path / "project"
