@@ -502,6 +502,7 @@ class TaskController:
             status = CompletionStatus.COMPLETED
         else:
             status = CompletionStatus.UNCERTAIN
+        self.state.status = _task_status(status)
         return CompletionReport(
             goal_id=goal.goal_id,
             status=status,

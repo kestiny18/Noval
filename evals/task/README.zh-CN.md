@@ -1,16 +1,13 @@
-# Task Eval
+# 目标、证据与完成契约 Eval
 
 > [English](README.md) | 简体中文
 
-这组 Eval 判断任务完成判定层的极简契约是否稳定。
+这组离线 Eval 同时约束两种完成模式，但不规定主模型应采用什么工作流程：
 
-它不评价主模型是否“该怎么做”，也不模拟工具边界。当前任务层只负责：
+- 未提供显式目标的旧调用，继续使用“最近用户输入 + 最终可见回复”的语义账本；
+- 提供显式目标时，必须由当前且与验收条件匹配的验证证据决定完成状态，语义判断单独记录。
 
-- 记录最近三个不重复的用户输入；
-- 在主模型给出最终可见回复后，把这些输入和最终回复交给 judge；
-- 持久化 judge 的结构化 verdict。
-
-运行：
+运行确定性合成回放：
 
 ```powershell
 py -m evals.task.run
@@ -24,11 +21,12 @@ py -m evals.task.run `
   --markdown-report .eval-results/task/report.md
 ```
 
-当前版本离线回放 synthetic judge verdict，覆盖：
+公开用例覆盖：
 
-- 最近三个不重复用户输入；
-- `completed` / `incomplete` / `waiting_user` / `blocked` / `uncertain`；
-- judge 输入只包含 recent user inputs 与 assistant final reply。
-- judge 只能评价最终可见回复中的证据，不得断言隐藏的工具操作实际执行或未执行。
+- 旧模式下的 `completed`、`incomplete`、`waiting_user`、`blocked` 和 `uncertain`；
+- semantic judge 不能用高置信度替代缺失证据；
+- 所有当前证据通过；
+- Stop Hook 失败或返回未知结果；
+- 确定性时钟推进后证据过期。
 
-真实模型 Eval 后续只需要替换 synthetic judge 为实际 `judge_model`，不应重新引入额外的任务解析、工具拦截或证据判定层。
+运行器只使用合成 judge verdict 和固定时钟，不需要网络、Provider 凭据或真实模型调用。

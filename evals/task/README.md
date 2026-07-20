@@ -1,18 +1,16 @@
-# Task completion-ledger Eval
+# Goal, evidence, and completion Eval
 
 [简体中文](README.zh-CN.md)
 
-This Eval keeps the semantic task ledger's deliberately small contract stable.
-It does not prescribe how the main model should work and does not simulate tool
-authority.
+This offline Eval keeps both completion modes stable without prescribing how
+the main model works:
 
-The task layer:
+- legacy turns retain the semantic ledger over recent user inputs and the final
+  visible reply;
+- explicit goals require current criterion-level verification and keep the
+  semantic assessment separate.
 
-- remembers the last three unique user inputs;
-- sends those inputs and the final visible reply to the judge;
-- persists a structured verdict.
-
-Run the offline synthetic replay:
+Run the deterministic synthetic replay:
 
 ```powershell
 py -m evals.task.run
@@ -26,9 +24,14 @@ py -m evals.task.run `
   --markdown-report .eval-results/task/report.md
 ```
 
-Cases cover `completed`, `incomplete`, `waiting_user`, `blocked`, and
-`uncertain`. The judge may assess only evidence visible in the final reply; it
-must not claim that hidden tool operations did or did not occur.
+The public cases cover:
 
-This is a semantic ledger, not proof of external-state completion. Evidence-aware
-completion requires a separate architecture contract.
+- legacy `completed`, `incomplete`, `waiting_user`, `blocked`, and `uncertain`
+  semantic verdicts;
+- missing evidence that semantic confidence cannot upgrade;
+- all-current passing evidence;
+- failed and unknown Stop Hook evidence; and
+- evidence that becomes stale as the deterministic clock advances.
+
+The runner uses synthetic judge verdicts and a fixed clock. It requires no
+network access, Provider credentials, or live model calls.
