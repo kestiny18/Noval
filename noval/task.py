@@ -33,7 +33,8 @@ from .redaction import redact_sensitive_text
 
 log = logging.getLogger("noval.task")
 
-TASK_EVENT_SCHEMA_VERSION = 1
+TASK_EVENT_SCHEMA_VERSION = 2
+SUPPORTED_TASK_EVENT_SCHEMAS = frozenset({1, TASK_EVENT_SCHEMA_VERSION})
 TASK_JUDGE_PROMPT_VERSION = "task-completion-judge-v4"
 MAX_RECENT_USER_INPUTS = 3
 MAX_USER_INPUT_CHARS = 1200
@@ -188,7 +189,7 @@ class TaskEventStore:
             for line_number, line in enumerate(file, 1):
                 try:
                     raw = json.loads(line)
-                    if raw.get("schema_version") != TASK_EVENT_SCHEMA_VERSION:
+                    if raw.get("schema_version") not in SUPPORTED_TASK_EVENT_SCHEMAS:
                         raise ValueError("unsupported task event schema")
                     state = raw.get("state")
                     if not isinstance(state, dict):

@@ -6,10 +6,13 @@ import pytest
 from noval.agent import Agent
 from noval.api import (
     AcceptanceCriterion,
+    ActionReceipt,
     CompletionStatus,
     CriterionStatus,
     EvidenceOutcome,
     GoalContract,
+    ReceiptKind,
+    ReceiptOutcome,
     VerificationResult,
 )
 from noval.client import MockClient, mock_text, mock_tool_call
@@ -90,6 +93,117 @@ def test_task_event_store_replays_latest_snapshot(tmp_path):
     assert loaded.recent_user_inputs == ["Investigate duplicate data"]
     assert loaded.last_verdict is not None
     assert loaded.last_verdict.status is TaskStatus.COMPLETED
+
+
+def test_task_event_store_v2_recovers_goal_evidence_and_skips_corrupt_tail(tmp_path):
+    path = tmp_path / "task.jsonl"
+    now = datetime(2026, 7, 20, 12, 0, 1, tzinfo=timezone.utc)
+    controller = TaskController(event_store=TaskEventStore(path), now=lambda: now)
+    controller.activate_goal(structured_goal(max_age_seconds=60))
+    controller.record_verification(verification())
+    with path.open("a", encoding="utf-8") as file:
+        file.write('{"schema_version":2,"state":')
+
+    records = path.read_text(encoding="utf-8").splitlines()
+    loaded = TaskEventStore(path).load_latest()
+    resumed = TaskController(state=loaded, now=lambda: now)
+    report = resumed.completion_report()
+
+    assert all(json.loads(line)["schema_version"] == 2 for line in records[:-1])
+    assert loaded.active_goal == structured_goal(max_age_seconds=60)
+    assert loaded.verifications == [verification()]
+    assert report is not None
+    assert report.status is CompletionStatus.COMPLETED
+
+
+def test_task_event_store_migrates_schema_v1_semantic_snapshot(tmp_path):
+    path = tmp_path / "task.jsonl"
+    legacy = {
+        "schema_version": 1,
+        "timestamp": "2026-07-19T12:00:00+00:00",
+        "type": "state_snapshot",
+        "reason": "completion_verdict",
+        "state": {
+            "status": "completed",
+            "recent_user_inputs": ["Explain the result"],
+            "last_verdict": {
+                "status": "completed",
+                "confidence": 0.8,
+                "reason": "The visible reply answered the question.",
+                "missing": [],
+                "source": "judge:legacy",
+            },
+        },
+        "payload": {},
+    }
+    path.write_text(json.dumps(legacy) + "\n", encoding="utf-8")
+
+    loaded = TaskEventStore(path).load_latest()
+
+    assert loaded.status is TaskStatus.COMPLETED
+    assert loaded.recent_user_inputs == ["Explain the result"]
+    assert loaded.last_verdict is not None
+    assert loaded.last_verdict.source == "judge:legacy"
+    assert loaded.active_goal is None
+    assert loaded.receipts == []
+    assert loaded.verifications == []
+
+
+def test_task_state_keeps_bounded_receipt_and_verification_history():
+    now = datetime(2026, 7, 20, 12, 0, tzinfo=timezone.utc)
+    controller = TaskController(now=lambda: now)
+    controller.activate_goal(structured_goal(source=None))
+
+    for index in range(140):
+        receipt = ActionReceipt(
+            receipt_id=f"receipt-{index}",
+            call_id=f"call-{index}",
+            tool_name="read_file",
+            target="tool:read_file",
+            kind=ReceiptKind.OBSERVATION,
+            risk="read",
+            outcome=ReceiptOutcome.SUCCEEDED,
+            executed=True,
+            started_at="2026-07-20T12:00:00+00:00",
+            completed_at="2026-07-20T12:00:00+00:00",
+        )
+        controller.record_receipt(receipt)
+        controller.record_verification(VerificationResult(
+            verification_id=f"verification-{index}",
+            goal_id="goal-1",
+            criterion_id="tests",
+            source="host:test-suite",
+            outcome=EvidenceOutcome.PASSED,
+            observed_at="2026-07-20T12:00:00+00:00",
+            receipt_ids=(receipt.receipt_id,),
+        ))
+
+    assert len(controller.state.receipts) == 128
+    assert len(controller.state.verifications) == 128
+    assert controller.state.receipts[0].receipt_id == "receipt-12"
+    assert controller.state.verifications[0].verification_id == "verification-12"
+
+
+def test_verification_free_text_is_redacted_before_task_persistence(tmp_path):
+    path = tmp_path / "task.jsonl"
+    now = datetime(2026, 7, 20, 12, 0, tzinfo=timezone.utc)
+    controller = TaskController(event_store=TaskEventStore(path), now=lambda: now)
+    controller.activate_goal(structured_goal())
+
+    controller.record_verification(VerificationResult(
+        verification_id="verification-secret",
+        goal_id="goal-1",
+        criterion_id="tests",
+        source="host:test-suite",
+        outcome=EvidenceOutcome.PASSED,
+        observed_at="2026-07-20T12:00:00+00:00",
+        subject="token=super-sensitive-value",
+        summary="api_key=super-sensitive-value",
+    ))
+
+    persisted = path.read_text(encoding="utf-8")
+    assert "super-sensitive-value" not in persisted
+    assert "<redacted>" in persisted
 
 
 def test_controller_keeps_last_three_unique_user_inputs():
