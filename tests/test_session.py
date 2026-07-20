@@ -166,6 +166,20 @@ def test_list_sessions_derives_title_and_sidecar_overrides(tmp_path):
     assert list_sessions(base, workdir)[0].title == "Custom title"
 
 
+def test_derived_session_titles_respect_the_public_display_bound(tmp_path):
+    base = tmp_path / "sessions"
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    store = JsonlSessionStore.create(base, workdir, "model")
+    store.append(user_message("x" * 100))
+    store.close()
+
+    title = list_sessions(base, workdir)[0].title
+
+    assert len(title) == 60
+    assert title.endswith("…")
+
+
 def test_sidecar_metadata_merges_and_keeps_lazy_creation(tmp_path):
     base = tmp_path / "sessions"
     workdir = tmp_path / "project"

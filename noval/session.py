@@ -185,7 +185,7 @@ def _derive_title(user_content: str) -> str:
     stripped = re.sub(r"^<context>.*?</context>\s*", "", user_content, flags=re.S).strip()
     first_line = stripped.splitlines()[0] if stripped else ""
     if len(first_line) > _TITLE_MAXLEN:
-        first_line = first_line[:_TITLE_MAXLEN] + "…"
+        first_line = first_line[:_TITLE_MAXLEN - 1] + "…"
     return first_line or "(untitled)"
 
 
