@@ -4,9 +4,17 @@ from . import builtins as _builtins  # noqa: F401
 
 from .api import (  # noqa: F401
     API_SCHEMA_VERSION,
+    AcceptanceCriterion,
+    ActionReceipt,
     ApiFormatError,
+    CompletionReport,
+    CompletionStatus,
+    CriterionReport,
+    CriterionStatus,
     ErrorInfo,
+    EvidenceOutcome,
     EventType,
+    GoalContract,
     NovalError,
     PermissionDecision,
     PermissionRequest,
@@ -14,6 +22,9 @@ from .api import (  # noqa: F401
     RequestInspection,
     RuntimeEvent,
     RuntimeOptions,
+    ReceiptKind,
+    ReceiptOutcome,
+    SemanticAssessment,
     SessionInfo,
     SessionOptions,
     SessionPersistence,
@@ -22,6 +33,7 @@ from .api import (  # noqa: F401
     TurnRequest,
     TurnResult,
     TurnStatus,
+    VerificationResult,
 )
 from .application import (  # noqa: F401
     AgentSession,

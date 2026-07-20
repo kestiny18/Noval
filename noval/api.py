@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, Mapping, Optional, Tuple
 
@@ -28,6 +30,10 @@ class SessionPersistence(str, Enum):
 
 class TurnStatus(str, Enum):
     COMPLETED = "completed"
+    INCOMPLETE = "incomplete"
+    WAITING_USER = "waiting_user"
+    BLOCKED = "blocked"
+    UNCERTAIN = "uncertain"
     STOPPED = "stopped"
     FAILED = "failed"
 
@@ -61,6 +67,46 @@ class EventType(str, Enum):
     VALIDATION_COMPLETED = "validation.completed"
     TURN_COMPLETED = "turn.completed"
     TURN_FAILED = "turn.failed"
+
+
+class CompletionStatus(str, Enum):
+    ACTIVE = "active"
+    COMPLETED = "completed"
+    INCOMPLETE = "incomplete"
+    WAITING_USER = "waiting_user"
+    BLOCKED = "blocked"
+    UNCERTAIN = "uncertain"
+
+
+class ReceiptKind(str, Enum):
+    OBSERVATION = "observation"
+    ACTION = "action"
+
+
+class ReceiptOutcome(str, Enum):
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    NOT_EXECUTED = "not_executed"
+
+
+class EvidenceOutcome(str, Enum):
+    PASSED = "passed"
+    FAILED = "failed"
+    UNKNOWN = "unknown"
+
+
+class CriterionStatus(str, Enum):
+    PASSED = "passed"
+    FAILED = "failed"
+    MISSING = "missing"
+    STALE = "stale"
+    UNKNOWN = "unknown"
+
+
+_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_SOURCE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
+_MAX_CONTRACT_TEXT = 4000
+_MAX_CONTRACT_ITEMS = 64
 
 
 def _object(data: Any, label: str) -> Mapping[str, Any]:
@@ -101,6 +147,55 @@ def _string(value: Any, label: str, *, optional: bool = False) -> Optional[str]:
     return value
 
 
+def _bounded_string(
+    value: Any,
+    label: str,
+    *,
+    optional: bool = False,
+    maximum: int = _MAX_CONTRACT_TEXT,
+) -> Optional[str]:
+    parsed = _string(value, label, optional=optional)
+    if parsed is not None and len(parsed) > maximum:
+        raise ApiFormatError(f"{label} must not exceed {maximum} characters")
+    return parsed
+
+
+def _identifier(value: Any, label: str, *, source: bool = False) -> str:
+    parsed = _bounded_string(value, label, maximum=128) or ""
+    pattern = _SOURCE_PATTERN if source else _ID_PATTERN
+    if not pattern.fullmatch(parsed):
+        kind = "source identifier" if source else "identifier"
+        raise ApiFormatError(f"{label} must be a bounded {kind}")
+    return parsed
+
+
+def _timestamp(value: Any, label: str) -> str:
+    parsed = _bounded_string(value, label, maximum=64) or ""
+    try:
+        moment = datetime.fromisoformat(parsed.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise ApiFormatError(f"{label} must be an ISO-8601 timestamp") from error
+    if moment.tzinfo is None or moment.utcoffset() is None:
+        raise ApiFormatError(f"{label} must include a timezone offset")
+    return parsed
+
+
+def _string_tuple(
+    value: Any,
+    label: str,
+    *,
+    identifiers: bool = False,
+    maximum: int = _MAX_CONTRACT_ITEMS,
+) -> Tuple[str, ...]:
+    if not isinstance(value, tuple):
+        raise ApiFormatError(f"{label} must be an immutable tuple")
+    if len(value) > maximum:
+        raise ApiFormatError(f"{label} must not contain more than {maximum} items")
+    if identifiers:
+        return tuple(_identifier(item, f"{label} item") for item in value)
+    return tuple(_bounded_string(item, f"{label} item") or "" for item in value)
+
+
 def _boolean(value: Any, label: str) -> bool:
     if not isinstance(value, bool):
         raise ApiFormatError(f"{label} must be boolean")
@@ -137,6 +232,476 @@ def _json_object(value: Any, label: str) -> Dict[str, JSONValue]:
     except (TypeError, ValueError) as error:
         raise ApiFormatError(f"{label} must contain only JSON values") from error
     return copy.deepcopy(value)
+
+
+@dataclass(frozen=True)
+class AcceptanceCriterion:
+    criterion_id: str
+    description: str
+    verification_source: Optional[str] = None
+    max_age_seconds: Optional[int] = None
+
+    def __post_init__(self) -> None:
+        _identifier(self.criterion_id, "criterion_id")
+        _bounded_string(self.description, "description")
+        if self.verification_source is not None:
+            _identifier(
+                self.verification_source,
+                "verification_source",
+                source=True,
+            )
+        if self.max_age_seconds is not None:
+            _integer(self.max_age_seconds, "max_age_seconds", minimum=1)
+
+    def to_dict(self) -> Dict[str, JSONValue]:
+        return {
+            "criterion_id": self.criterion_id,
+            "description": self.description,
+            "verification_source": self.verification_source,
+            "max_age_seconds": self.max_age_seconds,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "AcceptanceCriterion":
+        obj = _request_fields(
+            data,
+            "acceptance_criterion",
+            allowed={
+                "criterion_id", "description", "verification_source",
+                "max_age_seconds",
+            },
+        )
+        max_age = obj.get("max_age_seconds")
+        return cls(
+            criterion_id=_identifier(obj.get("criterion_id"), "criterion_id"),
+            description=_bounded_string(obj.get("description"), "description") or "",
+            verification_source=(
+                _identifier(
+                    obj.get("verification_source"),
+                    "verification_source",
+                    source=True,
+                )
+                if obj.get("verification_source") is not None else None
+            ),
+            max_age_seconds=(
+                _integer(max_age, "max_age_seconds", minimum=1)
+                if max_age is not None else None
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class GoalContract:
+    goal_id: str
+    objective: str
+    scope: Tuple[str, ...] = ()
+    authority: Tuple[str, ...] = ()
+    acceptance_criteria: Tuple[AcceptanceCriterion, ...] = ()
+
+    def __post_init__(self) -> None:
+        _identifier(self.goal_id, "goal_id")
+        _bounded_string(self.objective, "objective")
+        _string_tuple(self.scope, "scope")
+        _string_tuple(self.authority, "authority")
+        if not isinstance(self.acceptance_criteria, tuple):
+            raise ApiFormatError("acceptance_criteria must be an immutable tuple")
+        if not self.acceptance_criteria:
+            raise ApiFormatError("acceptance_criteria must contain at least one item")
+        if len(self.acceptance_criteria) > _MAX_CONTRACT_ITEMS:
+            raise ApiFormatError(
+                f"acceptance_criteria must not contain more than {_MAX_CONTRACT_ITEMS} items"
+            )
+        identifiers = []
+        for criterion in self.acceptance_criteria:
+            if not isinstance(criterion, AcceptanceCriterion):
+                raise ApiFormatError(
+                    "acceptance_criteria items must be AcceptanceCriterion"
+                )
+            identifiers.append(criterion.criterion_id)
+        if len(identifiers) != len(set(identifiers)):
+            raise ApiFormatError("acceptance_criteria criterion ids must be unique")
+
+    def to_dict(self) -> Dict[str, JSONValue]:
+        return {
+            "goal_id": self.goal_id,
+            "objective": self.objective,
+            "scope": list(self.scope),
+            "authority": list(self.authority),
+            "acceptance_criteria": [
+                criterion.to_dict() for criterion in self.acceptance_criteria
+            ],
+        }
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "GoalContract":
+        obj = _request_fields(
+            data,
+            "goal_contract",
+            allowed={
+                "goal_id", "objective", "scope", "authority",
+                "acceptance_criteria",
+            },
+        )
+        scope = obj.get("scope", [])
+        authority = obj.get("authority", [])
+        criteria = obj.get("acceptance_criteria", [])
+        if not isinstance(scope, list):
+            raise ApiFormatError("scope must be an array")
+        if not isinstance(authority, list):
+            raise ApiFormatError("authority must be an array")
+        if not isinstance(criteria, list):
+            raise ApiFormatError("acceptance_criteria must be an array")
+        return cls(
+            goal_id=_identifier(obj.get("goal_id"), "goal_id"),
+            objective=_bounded_string(obj.get("objective"), "objective") or "",
+            scope=tuple(scope),
+            authority=tuple(authority),
+            acceptance_criteria=tuple(
+                AcceptanceCriterion.from_dict(item) for item in criteria
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class ActionReceipt:
+    receipt_id: str
+    call_id: str
+    tool_name: str
+    target: str
+    kind: ReceiptKind
+    risk: str
+    outcome: ReceiptOutcome
+    executed: bool
+    started_at: str
+    completed_at: str
+    argument_keys: Tuple[str, ...] = ()
+    duration_ms: Optional[float] = None
+    truncated: bool = False
+    redacted: bool = False
+    result_digest: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        _identifier(self.receipt_id, "receipt_id")
+        _bounded_string(self.call_id, "call_id", maximum=256)
+        _identifier(self.tool_name, "tool_name")
+        _bounded_string(self.target, "target", maximum=256)
+        if not isinstance(self.kind, ReceiptKind):
+            raise ApiFormatError("kind must be ReceiptKind")
+        _identifier(self.risk, "risk", source=True)
+        if not isinstance(self.outcome, ReceiptOutcome):
+            raise ApiFormatError("outcome must be ReceiptOutcome")
+        _boolean(self.executed, "executed")
+        _timestamp(self.started_at, "started_at")
+        _timestamp(self.completed_at, "completed_at")
+        _string_tuple(self.argument_keys, "argument_keys")
+        if self.duration_ms is not None:
+            _number(self.duration_ms, "duration_ms")
+        _boolean(self.truncated, "truncated")
+        _boolean(self.redacted, "redacted")
+        if self.result_digest is not None:
+            _bounded_string(self.result_digest, "result_digest", maximum=128)
+
+    def to_dict(self) -> Dict[str, JSONValue]:
+        return {
+            "receipt_id": self.receipt_id,
+            "call_id": self.call_id,
+            "tool_name": self.tool_name,
+            "target": self.target,
+            "kind": self.kind.value,
+            "risk": self.risk,
+            "outcome": self.outcome.value,
+            "executed": self.executed,
+            "started_at": self.started_at,
+            "completed_at": self.completed_at,
+            "argument_keys": list(self.argument_keys),
+            "duration_ms": self.duration_ms,
+            "truncated": self.truncated,
+            "redacted": self.redacted,
+            "result_digest": self.result_digest,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "ActionReceipt":
+        obj = _object(data, "action_receipt")
+        keys = obj.get("argument_keys", [])
+        if not isinstance(keys, list):
+            raise ApiFormatError("argument_keys must be an array")
+        duration = obj.get("duration_ms")
+        return cls(
+            receipt_id=_identifier(obj.get("receipt_id"), "receipt_id"),
+            call_id=_bounded_string(
+                obj.get("call_id"), "call_id", maximum=256
+            ) or "",
+            tool_name=_identifier(obj.get("tool_name"), "tool_name"),
+            target=_bounded_string(obj.get("target"), "target", maximum=256) or "",
+            kind=_enum(ReceiptKind, obj.get("kind"), "kind"),
+            risk=_identifier(obj.get("risk"), "risk", source=True),
+            outcome=_enum(ReceiptOutcome, obj.get("outcome"), "outcome"),
+            executed=_boolean(obj.get("executed"), "executed"),
+            started_at=_timestamp(obj.get("started_at"), "started_at"),
+            completed_at=_timestamp(obj.get("completed_at"), "completed_at"),
+            argument_keys=tuple(keys),
+            duration_ms=(
+                _number(duration, "duration_ms") if duration is not None else None
+            ),
+            truncated=_boolean(obj.get("truncated", False), "truncated"),
+            redacted=_boolean(obj.get("redacted", False), "redacted"),
+            result_digest=_bounded_string(
+                obj.get("result_digest"),
+                "result_digest",
+                optional=True,
+                maximum=128,
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class VerificationResult:
+    verification_id: str
+    goal_id: str
+    criterion_id: str
+    source: str
+    outcome: EvidenceOutcome
+    observed_at: str
+    subject: Optional[str] = None
+    summary: Optional[str] = None
+    receipt_ids: Tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        for name in ("verification_id", "goal_id", "criterion_id"):
+            _identifier(getattr(self, name), name)
+        _identifier(self.source, "source", source=True)
+        if not isinstance(self.outcome, EvidenceOutcome):
+            raise ApiFormatError("outcome must be EvidenceOutcome")
+        _timestamp(self.observed_at, "observed_at")
+        for name in ("subject", "summary"):
+            value = getattr(self, name)
+            if value is not None:
+                _bounded_string(value, name)
+        _string_tuple(self.receipt_ids, "receipt_ids", identifiers=True)
+
+    def to_dict(self) -> Dict[str, JSONValue]:
+        return {
+            "verification_id": self.verification_id,
+            "goal_id": self.goal_id,
+            "criterion_id": self.criterion_id,
+            "source": self.source,
+            "outcome": self.outcome.value,
+            "observed_at": self.observed_at,
+            "subject": self.subject,
+            "summary": self.summary,
+            "receipt_ids": list(self.receipt_ids),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "VerificationResult":
+        obj = _request_fields(
+            data,
+            "verification_result",
+            allowed={
+                "verification_id", "goal_id", "criterion_id", "source",
+                "outcome", "observed_at", "subject", "summary", "receipt_ids",
+            },
+        )
+        receipt_ids = obj.get("receipt_ids", [])
+        if not isinstance(receipt_ids, list):
+            raise ApiFormatError("receipt_ids must be an array")
+        return cls(
+            verification_id=_identifier(
+                obj.get("verification_id"), "verification_id"
+            ),
+            goal_id=_identifier(obj.get("goal_id"), "goal_id"),
+            criterion_id=_identifier(obj.get("criterion_id"), "criterion_id"),
+            source=_identifier(obj.get("source"), "source", source=True),
+            outcome=_enum(EvidenceOutcome, obj.get("outcome"), "outcome"),
+            observed_at=_timestamp(obj.get("observed_at"), "observed_at"),
+            subject=_bounded_string(
+                obj.get("subject"), "subject", optional=True
+            ),
+            summary=_bounded_string(
+                obj.get("summary"), "summary", optional=True
+            ),
+            receipt_ids=tuple(receipt_ids),
+        )
+
+
+@dataclass(frozen=True)
+class SemanticAssessment:
+    status: CompletionStatus
+    confidence: float
+    reason: str
+    missing: Tuple[str, ...]
+    source: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.status, CompletionStatus):
+            raise ApiFormatError("semantic status must be CompletionStatus")
+        if self.status is CompletionStatus.ACTIVE:
+            raise ApiFormatError("semantic status must be terminal")
+        confidence = _number(self.confidence, "semantic confidence")
+        if confidence > 1.0:
+            raise ApiFormatError("semantic confidence must be <= 1.0")
+        _bounded_string(self.reason, "semantic reason")
+        _string_tuple(self.missing, "semantic missing")
+        _identifier(self.source, "semantic source", source=True)
+
+    def to_dict(self) -> Dict[str, JSONValue]:
+        return {
+            "status": self.status.value,
+            "confidence": self.confidence,
+            "reason": self.reason,
+            "missing": list(self.missing),
+            "source": self.source,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "SemanticAssessment":
+        obj = _object(data, "semantic_assessment")
+        missing = obj.get("missing", [])
+        if not isinstance(missing, list):
+            raise ApiFormatError("semantic missing must be an array")
+        return cls(
+            status=_enum(
+                CompletionStatus, obj.get("status"), "semantic status"
+            ),
+            confidence=_number(
+                obj.get("confidence", 0.0), "semantic confidence"
+            ),
+            reason=_bounded_string(
+                obj.get("reason", ""), "semantic reason"
+            ) or "",
+            missing=tuple(missing),
+            source=_identifier(
+                obj.get("source"), "semantic source", source=True
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class CriterionReport:
+    criterion_id: str
+    status: CriterionStatus
+    verification_id: Optional[str] = None
+    source: Optional[str] = None
+    observed_at: Optional[str] = None
+    age_seconds: Optional[float] = None
+    receipt_ids: Tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        _identifier(self.criterion_id, "criterion_id")
+        if not isinstance(self.status, CriterionStatus):
+            raise ApiFormatError("criterion status must be CriterionStatus")
+        if self.verification_id is not None:
+            _identifier(self.verification_id, "verification_id")
+        if self.source is not None:
+            _identifier(self.source, "source", source=True)
+        if self.observed_at is not None:
+            _timestamp(self.observed_at, "observed_at")
+        if self.age_seconds is not None:
+            _number(self.age_seconds, "age_seconds")
+        _string_tuple(self.receipt_ids, "receipt_ids", identifiers=True)
+
+    def to_dict(self) -> Dict[str, JSONValue]:
+        return {
+            "criterion_id": self.criterion_id,
+            "status": self.status.value,
+            "verification_id": self.verification_id,
+            "source": self.source,
+            "observed_at": self.observed_at,
+            "age_seconds": self.age_seconds,
+            "receipt_ids": list(self.receipt_ids),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "CriterionReport":
+        obj = _object(data, "criterion_report")
+        receipt_ids = obj.get("receipt_ids", [])
+        if not isinstance(receipt_ids, list):
+            raise ApiFormatError("receipt_ids must be an array")
+        age = obj.get("age_seconds")
+        return cls(
+            criterion_id=_identifier(obj.get("criterion_id"), "criterion_id"),
+            status=_enum(CriterionStatus, obj.get("status"), "criterion status"),
+            verification_id=(
+                _identifier(obj.get("verification_id"), "verification_id")
+                if obj.get("verification_id") is not None else None
+            ),
+            source=(
+                _identifier(obj.get("source"), "source", source=True)
+                if obj.get("source") is not None else None
+            ),
+            observed_at=(
+                _timestamp(obj.get("observed_at"), "observed_at")
+                if obj.get("observed_at") is not None else None
+            ),
+            age_seconds=_number(age, "age_seconds") if age is not None else None,
+            receipt_ids=tuple(receipt_ids),
+        )
+
+
+@dataclass(frozen=True)
+class CompletionReport:
+    goal_id: str
+    status: CompletionStatus
+    evaluated_at: str
+    criteria: Tuple[CriterionReport, ...] = ()
+    semantic: Optional[SemanticAssessment] = None
+
+    def __post_init__(self) -> None:
+        _identifier(self.goal_id, "goal_id")
+        if not isinstance(self.status, CompletionStatus):
+            raise ApiFormatError("completion status must be CompletionStatus")
+        if self.status not in {
+            CompletionStatus.COMPLETED,
+            CompletionStatus.INCOMPLETE,
+            CompletionStatus.UNCERTAIN,
+        }:
+            raise ApiFormatError(
+                "contracted completion status must be completed, incomplete, or uncertain"
+            )
+        _timestamp(self.evaluated_at, "evaluated_at")
+        if not isinstance(self.criteria, tuple):
+            raise ApiFormatError("criteria must be an immutable tuple")
+        if len(self.criteria) > _MAX_CONTRACT_ITEMS:
+            raise ApiFormatError(
+                f"criteria must not contain more than {_MAX_CONTRACT_ITEMS} items"
+            )
+        for criterion in self.criteria:
+            if not isinstance(criterion, CriterionReport):
+                raise ApiFormatError("criteria items must be CriterionReport")
+        if self.semantic is not None and not isinstance(
+            self.semantic, SemanticAssessment
+        ):
+            raise ApiFormatError("semantic must be SemanticAssessment")
+
+    def to_dict(self) -> Dict[str, JSONValue]:
+        return {
+            "goal_id": self.goal_id,
+            "status": self.status.value,
+            "evaluated_at": self.evaluated_at,
+            "criteria": [criterion.to_dict() for criterion in self.criteria],
+            "semantic": self.semantic.to_dict() if self.semantic else None,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "CompletionReport":
+        obj = _object(data, "completion_report")
+        criteria = obj.get("criteria", [])
+        if not isinstance(criteria, list):
+            raise ApiFormatError("criteria must be an array")
+        semantic = obj.get("semantic")
+        return cls(
+            goal_id=_identifier(obj.get("goal_id"), "goal_id"),
+            status=_enum(
+                CompletionStatus, obj.get("status"), "completion status"
+            ),
+            evaluated_at=_timestamp(obj.get("evaluated_at"), "evaluated_at"),
+            criteria=tuple(CriterionReport.from_dict(item) for item in criteria),
+            semantic=(
+                SemanticAssessment.from_dict(semantic)
+                if semantic is not None else None
+            ),
+        )
 
 
 @dataclass(frozen=True)
@@ -316,17 +881,21 @@ class SessionInfo:
 class TurnRequest:
     text: str
     client_request_id: Optional[str] = None
+    goal: Optional[GoalContract] = None
 
     def __post_init__(self) -> None:
         _string(self.text, "text")
         if self.client_request_id is not None:
             _string(self.client_request_id, "client_request_id")
+        if self.goal is not None and not isinstance(self.goal, GoalContract):
+            raise ApiFormatError("goal must be GoalContract")
 
     def to_dict(self) -> Dict[str, JSONValue]:
         return {
             "schema_version": API_SCHEMA_VERSION,
             "text": self.text,
             "client_request_id": self.client_request_id,
+            "goal": self.goal.to_dict() if self.goal is not None else None,
         }
 
     @classmethod
@@ -334,13 +903,17 @@ class TurnRequest:
         obj = _request_fields(
             data,
             "turn_request",
-            allowed={"schema_version", "text", "client_request_id"},
+            allowed={"schema_version", "text", "client_request_id", "goal"},
         )
         _schema(obj, "turn_request")
         return cls(
             text=_string(obj.get("text"), "text") or "",
             client_request_id=_string(
                 obj.get("client_request_id"), "client_request_id", optional=True
+            ),
+            goal=(
+                GoalContract.from_dict(obj.get("goal"))
+                if obj.get("goal") is not None else None
             ),
         )
 
@@ -543,6 +1116,8 @@ class TurnResult:
     usage: Optional[TokenUsage] = None
     metrics: TurnMetrics = field(default_factory=TurnMetrics)
     error: Optional[ErrorInfo] = None
+    receipts: Tuple[ActionReceipt, ...] = ()
+    completion: Optional[CompletionReport] = None
 
     def __post_init__(self) -> None:
         _string(self.session_id, "session_id")
@@ -561,6 +1136,15 @@ class TurnResult:
             raise ApiFormatError("metrics must be TurnMetrics")
         if self.error is not None and not isinstance(self.error, ErrorInfo):
             raise ApiFormatError("error must be ErrorInfo")
+        if not isinstance(self.receipts, tuple):
+            raise ApiFormatError("receipts must be an immutable tuple")
+        for receipt in self.receipts:
+            if not isinstance(receipt, ActionReceipt):
+                raise ApiFormatError("receipts items must be ActionReceipt")
+        if self.completion is not None and not isinstance(
+            self.completion, CompletionReport
+        ):
+            raise ApiFormatError("completion must be CompletionReport")
 
     def to_dict(self) -> Dict[str, JSONValue]:
         return {
@@ -574,6 +1158,10 @@ class TurnResult:
             "usage": _usage_to_dict(self.usage),
             "metrics": self.metrics.to_dict(),
             "error": self.error.to_dict() if self.error is not None else None,
+            "receipts": [receipt.to_dict() for receipt in self.receipts],
+            "completion": (
+                self.completion.to_dict() if self.completion is not None else None
+            ),
         }
 
     @classmethod
@@ -582,6 +1170,10 @@ class TurnResult:
         _schema(obj, "turn_result")
         message = obj.get("message")
         error = obj.get("error")
+        receipts = obj.get("receipts", [])
+        if not isinstance(receipts, list):
+            raise ApiFormatError("receipts must be an array")
+        completion = obj.get("completion")
         return cls(
             session_id=_string(obj.get("session_id"), "session_id") or "",
             turn_id=_string(obj.get("turn_id"), "turn_id") or "",
@@ -598,6 +1190,11 @@ class TurnResult:
             usage=_usage_from_dict(obj.get("usage")),
             metrics=TurnMetrics.from_dict(obj.get("metrics", {})),
             error=ErrorInfo.from_dict(error) if error is not None else None,
+            receipts=tuple(ActionReceipt.from_dict(item) for item in receipts),
+            completion=(
+                CompletionReport.from_dict(completion)
+                if completion is not None else None
+            ),
         )
 
 

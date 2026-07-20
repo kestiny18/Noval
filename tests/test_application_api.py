@@ -9,9 +9,17 @@ import pytest
 
 from noval.application import ClientSpec, NovalRuntime
 from noval.api import (
+    AcceptanceCriterion,
+    ActionReceipt,
     ApiFormatError,
+    CompletionReport,
+    CompletionStatus,
+    CriterionReport,
+    CriterionStatus,
     ErrorInfo,
+    EvidenceOutcome,
     EventType,
+    GoalContract,
     NovalError,
     PermissionDecision,
     PermissionRequest,
@@ -19,6 +27,9 @@ from noval.api import (
     RequestInspection,
     RuntimeEvent,
     RuntimeOptions,
+    ReceiptKind,
+    ReceiptOutcome,
+    SemanticAssessment,
     SessionInfo,
     SessionOptions,
     SessionPersistence,
@@ -27,6 +38,7 @@ from noval.api import (
     TurnRequest,
     TurnResult,
     TurnStatus,
+    VerificationResult,
 )
 from noval.client import MockClient, TokenUsage, mock_text, mock_tool_call
 from noval.config import Config
@@ -174,6 +186,166 @@ def test_session_info_and_permission_contracts_are_json_safe():
     assert PermissionStateView.from_dict(json_round_trip(state.to_dict())) == state
     assert PermissionRequest.from_dict(json_round_trip(request.to_dict())) == request
     assert PermissionDecision.ALLOW_ONCE.value == "allow_once"
+
+
+def test_goal_evidence_and_completion_contracts_round_trip():
+    goal = GoalContract(
+        goal_id="release-0.12.0",
+        objective="Publish v0.12.0 only after all required checks pass.",
+        scope=("goal evidence contract", "release metadata"),
+        authority=("may modify this repository", "must use a pull request"),
+        acceptance_criteria=(
+            AcceptanceCriterion(
+                criterion_id="tests",
+                description="The full test suite passes.",
+                verification_source="hook:test-suite",
+                max_age_seconds=3600,
+            ),
+        ),
+    )
+    receipt = ActionReceipt(
+        receipt_id="receipt-1",
+        call_id="call-1",
+        tool_name="run_bash",
+        target="tool:run_bash",
+        kind=ReceiptKind.ACTION,
+        risk="dangerous",
+        outcome=ReceiptOutcome.SUCCEEDED,
+        executed=True,
+        started_at="2026-07-20T12:00:00+00:00",
+        completed_at="2026-07-20T12:00:01+00:00",
+        argument_keys=("command",),
+        duration_ms=1000.0,
+        truncated=False,
+        redacted=True,
+        result_digest="sha256:abc123",
+    )
+    verification = VerificationResult(
+        verification_id="verification-1",
+        goal_id=goal.goal_id,
+        criterion_id="tests",
+        source="hook:test-suite",
+        outcome=EvidenceOutcome.PASSED,
+        observed_at="2026-07-20T12:00:01+00:00",
+        subject="repository test suite",
+        summary="All tests passed.",
+        receipt_ids=(receipt.receipt_id,),
+    )
+    semantic = SemanticAssessment(
+        status=CompletionStatus.COMPLETED,
+        confidence=0.91,
+        reason="The visible reply reports the required checks.",
+        missing=(),
+        source="semantic_judge:test-model",
+    )
+    report = CompletionReport(
+        goal_id=goal.goal_id,
+        status=CompletionStatus.COMPLETED,
+        evaluated_at="2026-07-20T12:00:02+00:00",
+        criteria=(
+            CriterionReport(
+                criterion_id="tests",
+                status=CriterionStatus.PASSED,
+                verification_id=verification.verification_id,
+                source=verification.source,
+                observed_at=verification.observed_at,
+                age_seconds=1.0,
+                receipt_ids=verification.receipt_ids,
+            ),
+        ),
+        semantic=semantic,
+    )
+
+    assert GoalContract.from_dict(json_round_trip(goal.to_dict())) == goal
+    assert ActionReceipt.from_dict(json_round_trip(receipt.to_dict())) == receipt
+    assert VerificationResult.from_dict(
+        json_round_trip(verification.to_dict())
+    ) == verification
+    assert CompletionReport.from_dict(json_round_trip(report.to_dict())) == report
+
+
+def test_goal_contract_rejects_unsafe_shapes_and_requires_criteria():
+    with pytest.raises(ApiFormatError, match="acceptance_criteria"):
+        GoalContract(goal_id="g1", objective="Do the work.")
+    with pytest.raises(ApiFormatError, match="unknown field"):
+        GoalContract.from_dict({
+            "goal_id": "g1",
+            "objective": "Do the work.",
+            "acceptance_criteria": [
+                {"criterion_id": "done", "description": "It is done."}
+            ],
+            "surprise": True,
+        })
+    with pytest.raises(ApiFormatError, match="unique"):
+        GoalContract(
+            goal_id="g1",
+            objective="Do the work.",
+            acceptance_criteria=(
+                AcceptanceCriterion("done", "First definition."),
+                AcceptanceCriterion("done", "Second definition."),
+            ),
+        )
+    with pytest.raises(ApiFormatError, match="identifier"):
+        VerificationResult(
+            verification_id="contains spaces",
+            goal_id="g1",
+            criterion_id="done",
+            source="host:test",
+            outcome=EvidenceOutcome.PASSED,
+            observed_at="2026-07-20T12:00:00+00:00",
+        )
+
+
+def test_turn_contract_adds_optional_goal_receipts_and_completion_compatibly():
+    goal = GoalContract(
+        goal_id="g1",
+        objective="Verify the result.",
+        acceptance_criteria=(
+            AcceptanceCriterion("done", "The result is verified."),
+        ),
+    )
+    request = TurnRequest("do it", client_request_id="c1", goal=goal)
+    encoded_request = json_round_trip(request.to_dict())
+
+    assert TurnRequest.from_dict(encoded_request) == request
+    assert TurnRequest.from_dict({"text": "legacy"}).goal is None
+
+    receipt = ActionReceipt(
+        receipt_id="r1",
+        call_id="call1",
+        tool_name="read_file",
+        target="tool:read_file",
+        kind=ReceiptKind.OBSERVATION,
+        risk="read",
+        outcome=ReceiptOutcome.SUCCEEDED,
+        executed=True,
+        started_at="2026-07-20T12:00:00+00:00",
+        completed_at="2026-07-20T12:00:00+00:00",
+    )
+    completion = CompletionReport(
+        goal_id="g1",
+        status=CompletionStatus.UNCERTAIN,
+        evaluated_at="2026-07-20T12:00:01+00:00",
+        criteria=(CriterionReport("done", CriterionStatus.MISSING),),
+    )
+    result = TurnResult(
+        session_id="s1",
+        turn_id="t1",
+        status=TurnStatus.UNCERTAIN,
+        stop_reason=StopReason.COMPLETED,
+        receipts=(receipt,),
+        completion=completion,
+    )
+
+    assert TurnResult.from_dict(json_round_trip(result.to_dict())) == result
+    legacy = TurnResult.from_dict({
+        "session_id": "s1",
+        "turn_id": "t1",
+        "status": "completed",
+        "stop_reason": "completed",
+    })
+    assert legacy.receipts == ()
+    assert legacy.completion is None
 
 
 def test_turn_result_round_trip_preserves_canonical_message_usage_and_error():
