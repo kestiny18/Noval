@@ -386,6 +386,21 @@ def test_unmapped_stop_hook_does_not_create_completion_evidence():
     assert controller.state.verifications == []
 
 
+def test_stop_hook_evidence_omits_receipts_evicted_from_bounded_state():
+    controller = TaskController()
+    controller.activate_goal(structured_goal(source="hook:test-suite"))
+
+    report = controller.record_stop_hook_result(
+        "test-suite",
+        "allow",
+        receipt_ids=("receipt-already-evicted",),
+    )
+
+    assert report is not None
+    assert report.status is CompletionStatus.COMPLETED
+    assert controller.state.verifications[-1].receipt_ids == ()
+
+
 def test_completion_verifier_uses_judge_without_deterministic_completion_rules():
     state = TaskState(recent_user_inputs=["Fix the configuration loading issue"])
     judge = SemanticJudge(
@@ -406,6 +421,29 @@ def test_completion_verifier_uses_judge_without_deterministic_completion_rules()
     assert verdict.source == "judge:judge-model"
     assert verdict.reason == "tests were not mentioned"
     assert verdict.missing == ["verification evidence"]
+
+
+def test_explicit_goal_tolerates_sparse_semantic_judge_output():
+    controller = TaskController(
+        completion_verifier=CompletionVerifier(SemanticJudge(
+            MockClient([mock_text(json.dumps({
+                "status": "completed",
+                "confidence": 0.8,
+            }))]),
+            model="provider/model name@v1",
+        ))
+    )
+    controller.activate_goal(structured_goal())
+    controller.observe_user_input("Prepare the release")
+
+    controller.verify_completion("The release is ready.")
+    report = controller.completion_report()
+
+    assert report is not None
+    assert report.status is CompletionStatus.UNCERTAIN
+    assert report.semantic is not None
+    assert report.semantic.reason == ""
+    assert report.semantic.source.startswith("judge:sha256-")
 
 
 def test_semantic_judge_uses_only_recent_inputs_and_final_reply():

@@ -298,6 +298,28 @@ def test_goal_evidence_and_completion_contracts_round_trip():
     assert CompletionReport.from_dict(json_round_trip(report.to_dict())) == report
 
 
+def test_semantic_assessment_allows_an_empty_reason_but_rejects_nonfinite_confidence():
+    assessment = SemanticAssessment(
+        status=CompletionStatus.UNCERTAIN,
+        confidence=0.0,
+        reason="",
+        missing=(),
+        source="judge:test-model",
+    )
+
+    assert SemanticAssessment.from_dict(
+        json_round_trip(assessment.to_dict())
+    ) == assessment
+    with pytest.raises(ApiFormatError, match="finite"):
+        SemanticAssessment(
+            status=CompletionStatus.UNCERTAIN,
+            confidence=float("nan"),
+            reason="",
+            missing=(),
+            source="judge:test-model",
+        )
+
+
 def test_goal_contract_rejects_unsafe_shapes_and_requires_criteria():
     with pytest.raises(ApiFormatError, match="acceptance_criteria"):
         GoalContract(goal_id="g1", objective="Do the work.")

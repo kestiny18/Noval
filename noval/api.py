@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -161,6 +162,19 @@ def _bounded_string(
     return parsed
 
 
+def _bounded_text(
+    value: Any,
+    label: str,
+    *,
+    maximum: int = _MAX_CONTRACT_TEXT,
+) -> str:
+    if not isinstance(value, str):
+        raise ApiFormatError(f"{label} must be a string")
+    if len(value) > maximum:
+        raise ApiFormatError(f"{label} must not exceed {maximum} characters")
+    return value
+
+
 def _identifier(value: Any, label: str, *, source: bool = False) -> str:
     parsed = _bounded_string(value, label, maximum=128) or ""
     pattern = _SOURCE_PATTERN if source else _ID_PATTERN
@@ -213,6 +227,8 @@ def _number(value: Any, label: str, *, minimum: float = 0.0) -> float:
     if not isinstance(value, (int, float)) or isinstance(value, bool):
         raise ApiFormatError(f"{label} must be a number")
     parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ApiFormatError(f"{label} must be finite")
     if parsed < minimum:
         raise ApiFormatError(f"{label} must be >= {minimum}")
     return parsed
@@ -544,7 +560,7 @@ class SemanticAssessment:
         confidence = _number(self.confidence, "semantic confidence")
         if confidence > 1.0:
             raise ApiFormatError("semantic confidence must be <= 1.0")
-        _bounded_string(self.reason, "semantic reason")
+        _bounded_text(self.reason, "semantic reason")
         _string_tuple(self.missing, "semantic missing")
         _identifier(self.source, "semantic source", source=True)
 
@@ -570,9 +586,7 @@ class SemanticAssessment:
             confidence=_number(
                 obj.get("confidence", 0.0), "semantic confidence"
             ),
-            reason=_bounded_string(
-                obj.get("reason", ""), "semantic reason"
-            ) or "",
+            reason=_bounded_text(obj.get("reason", ""), "semantic reason"),
             missing=tuple(missing),
             source=_identifier(
                 obj.get("source"), "semantic source", source=True

@@ -7,8 +7,10 @@ or maintain a task plan.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import math
 import re
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
@@ -472,6 +474,11 @@ class TaskController:
                 f"unsupported Stop Hook outcome {hook_outcome!r}"
             ) from error
         observed_at = _timestamp_text(self._current_time())
+        known_receipts = {receipt.receipt_id for receipt in self.state.receipts}
+        retained_receipt_ids = tuple(
+            receipt_id for receipt_id in receipt_ids
+            if receipt_id in known_receipts
+        )
         report = self.completion_report()
         for criterion in matching:
             report = self.record_verification(VerificationResult(
@@ -483,7 +490,7 @@ class TaskController:
                 observed_at=observed_at,
                 subject=f"Stop Hook {hook_id}",
                 summary=f"Stop Hook outcome: {hook_outcome}",
-                receipt_ids=tuple(receipt_ids),
+                receipt_ids=retained_receipt_ids,
             ))
         return report
 
@@ -653,11 +660,28 @@ def _semantic_assessment(
         status = CompletionStatus.UNCERTAIN
     return SemanticAssessment(
         status=status,
-        confidence=verdict.confidence,
-        reason=redact_sensitive_text(verdict.reason),
-        missing=tuple(redact_sensitive_text(item) for item in verdict.missing),
-        source=verdict.source,
+        confidence=_float_between_zero_one(verdict.confidence),
+        reason=_compact_text(redact_sensitive_text(verdict.reason), 4000),
+        missing=tuple(
+            item
+            for item in (
+                _compact_text(redact_sensitive_text(str(raw)), 4000)
+                for raw in verdict.missing[:64]
+            )
+            if item
+        ),
+        source=_semantic_source(verdict.source),
     )
+
+
+def _semantic_source(value: Any) -> str:
+    source = str(value)
+    if len(source) <= 128 and re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9._:/-]*", source
+    ):
+        return source
+    digest = hashlib.sha256(source.encode("utf-8")).hexdigest()[:16]
+    return f"judge:sha256-{digest}"
 
 
 def _remember_recent_unique(current: Iterable[str], text: str) -> List[str]:
@@ -693,7 +717,9 @@ def _string_list(value: Any) -> List[str]:
 
 def _float_between_zero_one(value: Any) -> float:
     if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return max(0.0, min(1.0, float(value)))
+        parsed = float(value)
+        if math.isfinite(parsed):
+            return max(0.0, min(1.0, parsed))
     return 0.0
 
 
