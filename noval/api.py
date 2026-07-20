@@ -55,6 +55,7 @@ class PermissionDecision(str, Enum):
 
 class EventType(str, Enum):
     SESSION_OPENED = "session.opened"
+    SESSION_RENAMED = "session.renamed"
     SESSION_CLOSED = "session.closed"
     TURN_STARTED = "turn.started"
     TURN_CANCEL_REQUESTED = "turn.cancel_requested"
@@ -109,6 +110,7 @@ _ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _SOURCE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
 _MAX_CONTRACT_TEXT = 4000
 _MAX_CONTRACT_ITEMS = 64
+SESSION_TITLE_MAX_LENGTH = 60
 
 
 def _object(data: Any, label: str) -> Mapping[str, Any]:
@@ -837,7 +839,11 @@ class SessionInfo:
             raise ApiFormatError("persistence must be SessionPersistence")
         _boolean(self.is_open, "is_open")
         if self.title is not None:
-            _string(self.title, "title")
+            _bounded_string(
+                self.title,
+                "title",
+                maximum=SESSION_TITLE_MAX_LENGTH,
+            )
         _integer(self.message_count, "message_count")
         if self.last_active is not None:
             _string(self.last_active, "last_active")

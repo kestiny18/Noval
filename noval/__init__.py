@@ -22,6 +22,7 @@ from .api import (  # noqa: F401
     RequestInspection,
     RuntimeEvent,
     RuntimeOptions,
+    SESSION_TITLE_MAX_LENGTH,
     ReceiptKind,
     ReceiptOutcome,
     SemanticAssessment,
