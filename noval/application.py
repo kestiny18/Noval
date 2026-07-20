@@ -26,6 +26,7 @@ from .api import (
     RequestInspection,
     RuntimeEvent,
     RuntimeOptions,
+    SESSION_TITLE_MAX_LENGTH,
     SessionInfo,
     SessionOptions,
     SessionPersistence,
@@ -298,6 +299,33 @@ class AgentSession:
         with self._state_lock:
             return self._permission_state_locked()
 
+    def rename(self, title: str) -> SessionInfo:
+        """Set bounded display metadata without rewriting conversation history."""
+        if not isinstance(title, str):
+            raise NovalError(
+                "invalid_session_title",
+                "Session title must be a string.",
+                session_id=self._base_info.session_id,
+            )
+        normalized = title.strip()
+        if not normalized or len(normalized) > SESSION_TITLE_MAX_LENGTH:
+            raise NovalError(
+                "invalid_session_title",
+                f"Session title must contain 1 to {SESSION_TITLE_MAX_LENGTH} characters.",
+                session_id=self._base_info.session_id,
+            )
+        with self._state_lock:
+            self._require_idle_locked()
+            if self._store is not None:
+                self._store.update_metadata({"title": normalized})
+            self._base_info = replace(self._base_info, title=normalized)
+            info = replace(self._base_info, is_open=True)
+        self._emit(
+            EventType.SESSION_RENAMED.value,
+            payload={"title": normalized},
+        )
+        return info
+
     def _permission_state_locked(self) -> PermissionStateView:
         return PermissionStateView(
             mode=self._permissions.mode,
@@ -565,6 +593,14 @@ class AgentSession:
             with self._state_lock:
                 if self._active_turn_id == turn_id:
                     self._active_turn_id = None
+                self._base_info = replace(
+                    self._base_info,
+                    message_count=sum(
+                        message.role is not MessageRole.SYSTEM
+                        for message in self._agent.messages
+                    ),
+                    last_active=_utc_now(),
+                )
 
     def cancel_active_turn(self) -> bool:
         with self._state_lock:
@@ -913,6 +949,7 @@ class NovalRuntime:
         judge_model = options.judge_model or self._config.judge_model
 
         store: Optional[PersistentSessionStore]
+        session_title: Optional[str] = None
         if persistence is SessionPersistence.PERSISTENT:
             if session_id is None:
                 store = JsonlSessionStore.create(
@@ -937,7 +974,11 @@ class NovalRuntime:
                         session_id=session_id,
                     ) from error
             resolved_session_id = store.session_id
-            application_metadata = store.load_metadata().get("application")
+            store_metadata = store.load_metadata()
+            stored_title = store_metadata.get("title")
+            if isinstance(stored_title, str) and stored_title.strip():
+                session_title = stored_title
+            application_metadata = store_metadata.get("application")
             if session_id is not None and isinstance(application_metadata, dict):
                 if options.provider is None:
                     stored_provider = application_metadata.get("provider")
@@ -1094,6 +1135,7 @@ class NovalRuntime:
             provider=provider,
             model=model,
             is_open=True,
+            title=session_title,
             message_count=resumed_message_count,
             schema_version=2 if store is not None else None,
         )

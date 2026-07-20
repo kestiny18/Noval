@@ -229,6 +229,8 @@ def test_session_info_and_permission_contracts_are_json_safe():
     assert PermissionStateView.from_dict(json_round_trip(state.to_dict())) == state
     assert PermissionRequest.from_dict(json_round_trip(request.to_dict())) == request
     assert PermissionDecision.ALLOW_ONCE.value == "allow_once"
+    with pytest.raises(ApiFormatError, match="60"):
+        replace(info, title="x" * 61)
 
 
 def test_transcript_contracts_round_trip_json_safely():
@@ -368,6 +370,67 @@ def test_transcript_and_turn_result_exclude_provider_private_state_and_arguments
     assert "credential" not in encoded
     call = session.transcript().entries[0].tool_calls[0]
     assert call.argument_keys == ("path", "token")
+    session.close()
+    runtime.close()
+
+
+def test_session_rename_updates_live_info_emits_event_and_persists(tmp_path):
+    events = []
+    runtime = NovalRuntime(
+        application_config(tmp_path),
+        client_factory=RecordingClientFactory(["done"]),
+        event_sink=events.append,
+    )
+    session = runtime.create_session(SessionOptions(
+        workdir=str(tmp_path),
+        persistence=SessionPersistence.PERSISTENT,
+    ))
+    session_id = session.info.session_id
+    session.run_turn(TurnRequest("name this session"))
+
+    renamed = session.rename("  Desktop readiness  ")
+
+    assert renamed.title == "Desktop readiness"
+    assert renamed.message_count == 2
+    assert session.info.title == "Desktop readiness"
+    assert events[-1].type == EventType.SESSION_RENAMED.value
+    assert events[-1].payload == {"title": "Desktop readiness"}
+    with pytest.raises(NovalError) as invalid:
+        session.rename("   ")
+    assert invalid.value.code == "invalid_session_title"
+    session.close()
+    runtime.close()
+
+    resumed_runtime = NovalRuntime(
+        application_config(tmp_path),
+        client_factory=QueueClientFactory([]),
+    )
+    listed = resumed_runtime.list_persisted_sessions(str(tmp_path))
+    assert listed[0].title == "Desktop readiness"
+    resumed = resumed_runtime.resume_session(
+        session_id,
+        SessionOptions(
+            workdir=str(tmp_path),
+            persistence=SessionPersistence.PERSISTENT,
+        ),
+    )
+    assert resumed.info.title == "Desktop readiness"
+    resumed.close()
+    resumed_runtime.close()
+
+
+def test_ephemeral_session_rename_is_live_only(tmp_path):
+    runtime = NovalRuntime(
+        application_config(tmp_path),
+        client_factory=QueueClientFactory([]),
+    )
+    session = runtime.create_session(SessionOptions(
+        workdir=str(tmp_path),
+        persistence=SessionPersistence.EPHEMERAL,
+    ))
+
+    assert session.rename("Temporary").title == "Temporary"
+    assert runtime.list_persisted_sessions(str(tmp_path)) == ()
     session.close()
     runtime.close()
 
@@ -1088,6 +1151,9 @@ def test_permission_changes_cannot_overtake_turn_admission(
         with pytest.raises(NovalError) as busy:
             session.set_permission_mode(PermissionMode.FULL_ACCESS)
         assert busy.value.code == "session_busy"
+        with pytest.raises(NovalError) as rename_busy:
+            session.rename("Cannot race")
+        assert rename_busy.value.code == "session_busy"
         with pytest.raises(NovalError) as verification_busy:
             session.record_verification(VerificationResult(
                 verification_id="busy-verification",
