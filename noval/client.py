@@ -389,7 +389,6 @@ class OpenAICompatibleClient:
             "model": self.model,
             "messages": _openai_messages(messages),
             "stream": True,
-            "stream_options": {"include_usage": True},
         }
         if provider_tools:
             kwargs.update(tools=provider_tools, tool_choice="auto")

@@ -262,6 +262,15 @@ def _public_message(message: ConversationMessage) -> ConversationMessage:
     return ConversationMessage(message.role, blocks)
 
 
+def _observed_session_title(value: object) -> Optional[str]:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    title = value.strip()
+    if len(title) > SESSION_TITLE_MAX_LENGTH:
+        return title[:SESSION_TITLE_MAX_LENGTH - 1] + "…"
+    return title
+
+
 class AgentSession:
     """One isolated live session owned by a :class:`NovalRuntime`."""
 
@@ -1022,9 +1031,7 @@ class NovalRuntime:
                     ) from error
             resolved_session_id = store.session_id
             store_metadata = store.load_metadata()
-            stored_title = store_metadata.get("title")
-            if isinstance(stored_title, str) and stored_title.strip():
-                session_title = stored_title
+            session_title = _observed_session_title(store_metadata.get("title"))
             application_metadata = store_metadata.get("application")
             if session_id is not None and isinstance(application_metadata, dict):
                 if options.provider is None:
@@ -1300,7 +1307,7 @@ class NovalRuntime:
                 provider=meta.provider or self._config.provider,
                 model=meta.model or self._config.model,
                 is_open=meta.session_id in open_ids,
-                title=meta.title,
+                title=_observed_session_title(meta.title),
                 message_count=meta.message_count,
                 last_active=meta.last_active,
                 compatible=meta.compatible,

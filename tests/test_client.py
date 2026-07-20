@@ -244,7 +244,7 @@ def test_openai_stream_emits_only_visible_text_and_reconstructs_final_response()
     assert response.usage.total_tokens == 15
     assert response.usage.reasoning_tokens == 2
     assert create.calls[0]["stream"] is True
-    assert create.calls[0]["stream_options"] == {"include_usage": True}
+    assert "stream_options" not in create.calls[0]
     assert create.calls[0]["tool_choice"] == "auto"
 
 
