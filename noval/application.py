@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import re
 import threading
 import time
 from dataclasses import dataclass, replace
@@ -33,6 +34,10 @@ from .api import (
     TurnRequest,
     TurnResult,
     TurnStatus,
+    TranscriptEntry,
+    TranscriptPage,
+    TranscriptToolCall,
+    TranscriptToolResult,
     VerificationResult,
 )
 from .client import (
@@ -48,6 +53,7 @@ from .context import ContextManager
 from .permissions import PermissionController, PermissionMode, PermissionState
 from .process import ProcessRuntime, SandboxMode, SandboxPolicy, sandbox_status_text
 from .redaction import redact_sensitive_text
+from .messages import ConversationMessage, MessageRole, ToolCallBlock
 from .runtime_log import runtime_log_context, setup_runtime_logging
 from .requests import (
     InMemoryRequestJournal,
@@ -77,6 +83,9 @@ from .usage import JsonlUsageStore, MeteredLLMClient
 
 
 log = logging.getLogger("noval.application")
+
+_TRANSCRIPT_PAGE_LIMIT = 200
+_TURN_CONTEXT_RE = re.compile(r"^<context>.*?</context>\s*", re.DOTALL)
 
 
 @dataclass(frozen=True)
@@ -186,6 +195,68 @@ def _redact_arguments(arguments: Dict[str, object]) -> Dict[str, object]:
     return decoded if isinstance(decoded, dict) else {}
 
 
+def _tool_argument_keys(arguments: str) -> Tuple[str, ...]:
+    try:
+        parsed = json.loads(arguments)
+    except (TypeError, json.JSONDecodeError):
+        return ()
+    if not isinstance(parsed, dict):
+        return ()
+    return tuple(sorted(str(key) for key in parsed))
+
+
+def _transcript_entry(
+    sequence: int,
+    timestamp: Optional[str],
+    message: ConversationMessage,
+) -> Optional[TranscriptEntry]:
+    if message.role is MessageRole.SYSTEM:
+        return None
+    text = message.text
+    if message.role is MessageRole.USER:
+        text = _TURN_CONTEXT_RE.sub("", text, count=1)
+    return TranscriptEntry(
+        sequence=sequence,
+        timestamp=timestamp,
+        role=message.role.value,
+        text=text,
+        tool_calls=tuple(
+            TranscriptToolCall(
+                call_id=call.id,
+                name=call.name,
+                argument_keys=_tool_argument_keys(call.arguments),
+            )
+            for call in message.tool_calls
+        ),
+        tool_results=tuple(
+            TranscriptToolResult(
+                call_id=result.call_id,
+                content=result.content,
+                is_error=result.is_error,
+            )
+            for result in message.tool_results
+        ),
+    )
+
+
+def _public_message(message: ConversationMessage) -> ConversationMessage:
+    """Drop adapter-private state before a message crosses the host boundary."""
+    blocks = tuple(
+        ToolCallBlock(
+            block.id,
+            block.name,
+            json.dumps(
+                {"argument_keys": list(_tool_argument_keys(block.arguments))},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+        )
+        if isinstance(block, ToolCallBlock) else block
+        for block in message.blocks
+    )
+    return ConversationMessage(message.role, blocks)
+
+
 class AgentSession:
     """One isolated live session owned by a :class:`NovalRuntime`."""
 
@@ -272,6 +343,70 @@ class AgentSession:
         with self._state_lock:
             self._require_idle_locked()
             return self._agent.completion_report()
+
+    def transcript(
+        self,
+        *,
+        after_sequence: int = 0,
+        limit: int = 100,
+    ) -> TranscriptPage:
+        """Return a bounded, safe projection of canonical conversation history."""
+        if (
+            not isinstance(after_sequence, int)
+            or isinstance(after_sequence, bool)
+            or after_sequence < 0
+        ):
+            raise ValueError("after_sequence must be an integer >= 0")
+        if (
+            not isinstance(limit, int)
+            or isinstance(limit, bool)
+            or limit < 1
+            or limit > _TRANSCRIPT_PAGE_LIMIT
+        ):
+            raise ValueError(
+                f"limit must be an integer between 1 and {_TRANSCRIPT_PAGE_LIMIT}"
+            )
+        with self._state_lock:
+            if self._closed:
+                raise NovalError(
+                    "session_closed",
+                    "Session is closed.",
+                    session_id=self._base_info.session_id,
+                )
+            if self._store is not None:
+                source = (
+                    (record.seq + 1, record.ts, record.message)
+                    for record in self._store.load_records()
+                )
+            else:
+                source = (
+                    (sequence, None, message)
+                    for sequence, message in enumerate(
+                        (
+                            item for item in self._agent.messages
+                            if item.role is not MessageRole.SYSTEM
+                        ),
+                        start=1,
+                    )
+                )
+            entries = []
+            for sequence, timestamp, message in source:
+                if sequence <= after_sequence:
+                    continue
+                entry = _transcript_entry(sequence, timestamp, message)
+                if entry is not None:
+                    entries.append(entry)
+                if len(entries) > limit:
+                    break
+        page_entries = tuple(entries[:limit])
+        next_sequence = (
+            page_entries[-1].sequence if page_entries else after_sequence
+        )
+        return TranscriptPage(
+            entries=page_entries,
+            next_sequence=next_sequence,
+            has_more=len(entries) > limit,
+        )
 
     def record_verification(
         self,
@@ -527,7 +662,7 @@ class AgentSession:
             turn_id=turn_id,
             client_request_id=request.client_request_id,
             status=_public_status(reason, outcome.completion),
-            message=outcome.message,
+            message=_public_message(outcome.message),
             stop_reason=reason,
             usage=outcome.usage,
             metrics=metrics,

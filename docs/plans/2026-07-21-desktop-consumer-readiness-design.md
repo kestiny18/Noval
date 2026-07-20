@@ -26,7 +26,7 @@ consumer disconnect.
 ### Transcript
 
 `AgentSession.transcript(after_sequence=0, limit=100)` returns a bounded page.
-Each entry contains its canonical record sequence, timestamp when available,
+Each entry contains a stable one-based transcript sequence, timestamp when available,
 role, visible text, safe tool-call descriptors, and safe tool results. Tool
 descriptors expose call id, name, and argument keys rather than raw arguments.
 System content, replay state, and provenance are omitted.

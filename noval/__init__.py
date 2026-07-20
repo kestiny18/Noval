@@ -33,6 +33,10 @@ from .api import (  # noqa: F401
     TurnRequest,
     TurnResult,
     TurnStatus,
+    TranscriptEntry,
+    TranscriptPage,
+    TranscriptToolCall,
+    TranscriptToolResult,
     VerificationResult,
 )
 from .application import (  # noqa: F401

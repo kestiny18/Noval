@@ -39,6 +39,10 @@ from noval.api import (
     TurnRequest,
     TurnResult,
     TurnStatus,
+    TranscriptEntry,
+    TranscriptPage,
+    TranscriptToolCall,
+    TranscriptToolResult,
     VerificationResult,
 )
 from noval.client import (
@@ -51,7 +55,12 @@ from noval.client import (
     mock_tool_call,
 )
 from noval.config import Config
-from noval.messages import assistant_message
+from noval.messages import (
+    AdapterReplayState,
+    ToolCallBlock,
+    assistant_message,
+    tool_result_message,
+)
 from noval.permissions import PermissionMode
 from noval.process import NetworkAccess, SandboxMode
 from noval.tools import Risk, Tool
@@ -220,6 +229,147 @@ def test_session_info_and_permission_contracts_are_json_safe():
     assert PermissionStateView.from_dict(json_round_trip(state.to_dict())) == state
     assert PermissionRequest.from_dict(json_round_trip(request.to_dict())) == request
     assert PermissionDecision.ALLOW_ONCE.value == "allow_once"
+
+
+def test_transcript_contracts_round_trip_json_safely():
+    page = TranscriptPage(
+        entries=(
+            TranscriptEntry(
+                sequence=3,
+                timestamp="2026-07-21T01:02:03Z",
+                role="assistant",
+                text="Checking the file.",
+                tool_calls=(
+                    TranscriptToolCall("call-1", "read_file", ("path",)),
+                ),
+            ),
+            TranscriptEntry(
+                sequence=4,
+                timestamp="2026-07-21T01:02:04Z",
+                role="tool",
+                tool_results=(
+                    TranscriptToolResult("call-1", "safe content", False),
+                ),
+            ),
+        ),
+        next_sequence=4,
+        has_more=True,
+    )
+
+    assert TranscriptPage.from_dict(json_round_trip(page.to_dict())) == page
+
+
+def test_transcript_is_paged_for_persistent_and_ephemeral_sessions(tmp_path):
+    persistent_runtime = NovalRuntime(
+        application_config(tmp_path),
+        client_factory=QueueClientFactory([
+            mock_text("first"),
+            mock_text("second"),
+        ]),
+    )
+    persistent = persistent_runtime.create_session(SessionOptions(
+        workdir=str(tmp_path),
+        persistence=SessionPersistence.PERSISTENT,
+    ))
+    persistent.run_turn(TurnRequest("first question"))
+    persistent.run_turn(TurnRequest("second question"))
+
+    first_page = persistent.transcript(limit=2)
+    second_page = persistent.transcript(
+        after_sequence=first_page.next_sequence,
+        limit=2,
+    )
+
+    assert [entry.sequence for entry in first_page.entries] == [1, 2]
+    assert [entry.text for entry in first_page.entries] == [
+        "first question", "first",
+    ]
+    assert first_page.has_more is True
+    assert [entry.sequence for entry in second_page.entries] == [3, 4]
+    assert [entry.text for entry in second_page.entries] == [
+        "second question", "second",
+    ]
+    assert second_page.has_more is False
+    assert all(entry.timestamp is not None for entry in first_page.entries)
+    persistent.close()
+    persistent_runtime.close()
+
+    ephemeral_runtime = NovalRuntime(
+        application_config(tmp_path),
+        client_factory=RecordingClientFactory(["memory reply"]),
+    )
+    ephemeral = ephemeral_runtime.create_session(SessionOptions(
+        workdir=str(tmp_path),
+        persistence=SessionPersistence.EPHEMERAL,
+    ))
+    ephemeral.run_turn(TurnRequest("memory question"))
+
+    page = ephemeral.transcript()
+
+    assert [entry.text for entry in page.entries] == [
+        "memory question", "memory reply",
+    ]
+    assert all(entry.timestamp is None for entry in page.entries)
+    with pytest.raises(ValueError, match="between 1 and 200"):
+        ephemeral.transcript(limit=201)
+    ephemeral.close()
+    ephemeral_runtime.close()
+
+
+def test_transcript_and_turn_result_exclude_provider_private_state_and_arguments(
+    tmp_path,
+):
+    replay = AdapterReplayState(
+        "anthropic-messages",
+        1,
+        {"blocks": [{"type": "thinking", "thinking": "private reasoning"}]},
+    )
+    message = assistant_message(
+        "visible",
+        tool_calls=(
+            ToolCallBlock(
+                "call-1",
+                "read_file",
+                '{"path":"secret/location.txt","token":"credential"}',
+            ),
+        ),
+        replay_state=replay,
+    )
+    raw_result = TurnResult(
+        session_id="s1",
+        turn_id="t1",
+        status=TurnStatus.COMPLETED,
+        stop_reason=StopReason.COMPLETED,
+        message=message,
+    ).to_dict()
+
+    assert "replay_state" not in json.dumps(raw_result)
+    assert "private reasoning" not in json.dumps(raw_result)
+    assert "secret/location.txt" not in json.dumps(raw_result)
+    assert "credential" not in json.dumps(raw_result)
+
+    runtime = NovalRuntime(
+        application_config(tmp_path),
+        client_factory=QueueClientFactory([]),
+    )
+    session = runtime.create_session(SessionOptions(
+        workdir=str(tmp_path),
+        persistence=SessionPersistence.EPHEMERAL,
+    ))
+    session._agent._append_message(message)
+    session._agent._append_message(
+        tool_result_message("call-1", "already redacted output")
+    )
+
+    encoded = json.dumps(session.transcript().to_dict())
+
+    assert "private reasoning" not in encoded
+    assert "secret/location.txt" not in encoded
+    assert "credential" not in encoded
+    call = session.transcript().entries[0].tool_calls[0]
+    assert call.argument_keys == ("path", "token")
+    session.close()
+    runtime.close()
 
 
 def test_goal_evidence_and_completion_contracts_round_trip():
