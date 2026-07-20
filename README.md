@@ -7,7 +7,7 @@
 [![CI](https://github.com/kestiny18/Noval/actions/workflows/ci.yml/badge.svg)](https://github.com/kestiny18/Noval/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
-[![Release](https://img.shields.io/badge/release-v0.11.0-brightgreen.svg)](https://github.com/kestiny18/Noval/releases/tag/v0.11.0)
+[![Release](https://img.shields.io/badge/release-v0.12.0-brightgreen.svg)](https://github.com/kestiny18/Noval/releases/tag/v0.12.0)
 
 <p align="center">
   <strong>Strong models need a thin harness.</strong><br>
@@ -309,16 +309,16 @@ separate from normal CI. See [`evals/README.md`](evals/README.md).
 
 ## Current status
 
-`v0.11.0` is the current stable release. It establishes the principle-guided,
-strong-model, thin-harness contract and adds project-controlled discovery through
-`.llmignore`. Noval is still `0.x`: public contracts may evolve before v1.0, and
-it is not a hosted product, a drag-and-drop workflow builder, or an autonomous
-multi-agent team.
+`v0.12.0` is the current stable release. It adds the optional ADR-0005
+goal/evidence/completion contract: hosts can define acceptance criteria, Noval
+records safe action receipts, trusted verification is freshness-aware, and
+semantic confidence cannot replace missing evidence. Noval is still `0.x`:
+public contracts may evolve before v1.0, and it is not a hosted product, a
+drag-and-drop workflow builder, or an autonomous multi-agent team.
 
-The current development line adds the ADR-0005 goal/evidence/completion
-contract. The next architectural work is effect-aware authority, broader
-deterministic verification adapters, behavior Eval, and v1.0 contract
-stabilization—not mandatory agent roles in the core.
+The next architectural work is effect-aware authority, broader deterministic
+verification adapters, behavior Eval, and v1.0 contract stabilization—not
+mandatory agent roles in the core.
 
 ## Contributing and security
 

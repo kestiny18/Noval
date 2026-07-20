@@ -7,7 +7,7 @@
 [![CI](https://github.com/kestiny18/Noval/actions/workflows/ci.yml/badge.svg)](https://github.com/kestiny18/Noval/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
-[![Release](https://img.shields.io/badge/release-v0.11.0-brightgreen.svg)](https://github.com/kestiny18/Noval/releases/tag/v0.11.0)
+[![Release](https://img.shields.io/badge/release-v0.12.0-brightgreen.svg)](https://github.com/kestiny18/Noval/releases/tag/v0.12.0)
 
 <p align="center">
   <strong>强模型需要薄 Harness。</strong><br>
@@ -34,7 +34,7 @@ Noval 起源于一次最朴素的 tool-calling 实验：由人亲自扮演工具
 
 如果你正在构建自己的 Code Agent 或领域 Agent，希望保留完全可读、可替换、可测试的执行内核，而不是把产品交给一个巨型黑盒，Noval 就是为你准备的。它仍处于 `0.x`，不提供拖拽式工作流或“一键自治团队”；它提供的是一块可以长期演进的地基。
 
-> **当前状态**：`v0.11.0` 是当前已发布稳定版本。它正式确立原则约束、强模型、薄 Harness 的运行契约，并新增由项目控制的 `.llmignore` 文件发现过滤；已有的 Headless/Application API、多 Session 隔离和安全执行边界保持不变。
+> **当前状态**：`v0.12.0` 是当前已发布稳定版本。它新增可选的目标—证据—完成契约：Host 可以声明验收条件，Noval 记录安全的行动收据，由可信验证与新鲜度规则派生完成状态，语义置信度不能替代缺失的证据。
 
 ## 核心设计
 
@@ -438,6 +438,7 @@ v0.9 不读取或迁移旧 schema v1 Session：会话列表会标记为不兼容
 | `v0.9.0` | Provider 真中立：canonical messages、Session v2、OpenAI-compatible 与 Anthropic adapters | `v0.9.0` |
 | `v0.10.0` | 可嵌入内核：多 Session Application API、并发/权限/取消、writer lease、实时事件与请求重建 | `v0.10.0` |
 | `v0.11.0` | 原则约束 Agent：强模型、薄 Harness 运行契约，英文优先公共界面与 `.llmignore` 文件发现策略 | `v0.11.0` |
+| `v0.12.0` | 目标—证据—完成契约：显式验收条件、安全行动收据、可信验证、新鲜度与可恢复完成报告 | `v0.12.0` |
 
 详细变化见 [CHANGELOG.md](CHANGELOG.md)。
 
