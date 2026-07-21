@@ -11,6 +11,7 @@ a core seam, or a cross-cutting invariant.
 | [0004](0004-principle-guided-thin-harness.md) | Accepted | Adopt principle-guided, invariant-enforced autonomy |
 | [0005](0005-goal-evidence-completion-contract.md) | Accepted | Establish goal, evidence, and completion contracts |
 | [0006](0006-desktop-consumer-observation-boundary.md) | Accepted | Expose safe desktop-consumer observation contracts |
+| [0007](0007-first-party-desktop-host.md) | Accepted | Build the first-party desktop as an isolated Electron host |
 
 The earlier Chinese decision ledger is preserved in
 [DESIGN.zh-CN.md](../../DESIGN.zh-CN.md). New decisions should use an ADR rather
