@@ -12,6 +12,7 @@ export class SidecarSupervisor extends EventEmitter {
   private child?: ChildProcessWithoutNullStreams;
   private pending = new Map<string, Pending>();
   private coreVersion = "unknown";
+  private expectedExits = new WeakSet<ChildProcessWithoutNullStreams>();
 
   async start(settingsPath?: string, extraEnv:Record<string,string>={}): Promise<void> {
     if (this.child) return;
@@ -22,7 +23,8 @@ export class SidecarSupervisor extends EventEmitter {
     const lines = createInterface({input: this.child.stdout, crlfDelay: Infinity});
     lines.on("line", line => this.consume(line));
     this.child.stderr.on("data", data => this.emit("diagnostic", String(data).slice(0, 2000)));
-    this.child.once("exit", () => { this.child = undefined; this.failPending("Sidecar exited."); this.emit("exit"); });
+    const child=this.child;
+    this.child.once("exit", (_code,signal) => { if(this.child===child)this.child=undefined;this.failPending("Sidecar exited.");if(!this.expectedExits.has(child))this.emit("exit",{signal}); });
     const hello = await this.request<Record<string, unknown>>("system.hello", {});
     this.coreVersion = String(hello.core_version ?? "unknown");
     await this.request("runtime.start", {settings_path: settingsPath ?? null});
@@ -51,5 +53,5 @@ export class SidecarSupervisor extends EventEmitter {
 
   private failPending(message: string): void { for (const [,p] of this.pending) { clearTimeout(p.timer); p.reject(new Error(message)); } this.pending.clear(); }
   getCoreVersion(): string { return this.coreVersion; }
-  async stop(): Promise<void> { if (!this.child) return; this.child.stdin.end(); this.child.kill(); this.child=undefined; this.failPending("Sidecar stopped."); }
+  async stop(): Promise<void> { if (!this.child) return;const child=this.child;this.expectedExits.add(child);this.child=undefined;child.stdin.end();child.kill();this.failPending("Sidecar stopped."); }
 }
