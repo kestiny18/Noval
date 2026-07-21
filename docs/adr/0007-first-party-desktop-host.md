@@ -76,4 +76,3 @@ embedding Node concerns in Core or relying on a user's Python environment.
   authentication, and listener lifecycle concerns without product value.
 - System Python fallback was rejected because it makes dependency and runtime
   behavior non-reproducible.
-

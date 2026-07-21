@@ -102,4 +102,3 @@ The preview is complete only when Core tests and Evals remain green, Desktop
 tests pass, the packaged app starts without system Python, and the unsigned
 installer installs and uninstalls on Windows. Merge to `main` waits for explicit
 human installation acceptance.
-
