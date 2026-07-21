@@ -235,3 +235,7 @@ questions are:
 4. public-contract stabilization for v1.0.
 
 See the [ADR index](docs/adr/README.md) and GitHub Roadmap for tracked decisions.
+
+ADR-0007 defines the first-party Desktop as an isolated Electron host with an
+embedded Python sidecar. Desktop consumes the public Application API and does
+not add Electron, transport, UI, or Eval branches to the kernel.
