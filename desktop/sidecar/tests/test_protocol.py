@@ -51,3 +51,13 @@ def test_workspace_must_be_selected_before_listing(tmp_path):
     assert selected["workdir"] == str(tmp_path.resolve())
     assert server.dispatch(parse_request(request("session.list"))) == {"sessions": []}
     server.close()
+
+
+def test_configuration_exit_is_returned_as_safe_error(monkeypatch):
+    output = io.BytesIO()
+    server = SidecarServer(io.BytesIO(request("runtime.start") + b"\n"), output)
+    monkeypatch.setattr(server, "_runtime_start", lambda _params: (_ for _ in ()).throw(SystemExit("Configuration is missing.")))
+    server.serve()
+    value = json.loads(output.getvalue())
+    assert value["error"]["code"] == "configuration_error"
+    assert value["error"]["safe_message"] == "Configuration is missing."
