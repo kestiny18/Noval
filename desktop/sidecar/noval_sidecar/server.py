@@ -236,4 +236,3 @@ class SidecarServer:
         if self._runtime is not None:
             self._runtime.close()
             self._runtime = None
-

@@ -51,4 +51,3 @@ def test_workspace_must_be_selected_before_listing(tmp_path):
     assert selected["workdir"] == str(tmp_path.resolve())
     assert server.dispatch(parse_request(request("session.list"))) == {"sessions": []}
     server.close()
-
