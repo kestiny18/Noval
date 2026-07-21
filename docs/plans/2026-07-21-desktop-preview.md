@@ -68,4 +68,3 @@
 5. Inspect actual diff and installer checksums, then commit.
 6. Open a pull request if authorized, but do not merge until the user installs
    and accepts the preview.
-
