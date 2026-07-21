@@ -1,0 +1,83 @@
+{
+  "name": "noval-desktop",
+  "productName": "Noval",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/main/index.js",
+  "scripts": {
+    "version:print": "node scripts/version.mjs",
+    "dev": "concurrently -k \"vite\" \"tsc -p tsconfig.main.json --watch\" \"wait-on tcp:5173 file:dist/main/index.js && cross-env NOVAL_DEV_SERVER_URL=http://localhost:5173 electron .\"",
+    "build:preload": "esbuild src/preload/index.ts --bundle --platform=node --format=cjs --external:electron --outfile=dist/preload/index.cjs",
+    "build": "npm run clean && vite build && tsc -p tsconfig.main.json && npm run build:preload",
+    "clean": "node scripts/clean.mjs",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.main.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "sidecar:build": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-sidecar.ps1",
+    "icon:build": "node scripts/icon.mjs",
+    "package:win": "npm run build && npm run icon:build && npm run sidecar:build && node scripts/package.mjs"
+  },
+  "dependencies": {
+    "@fontsource-variable/manrope": "^5.2.8",
+    "lucide-react": "^0.468.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/react": "^16.1.0",
+    "@types/node": "^22.10.5",
+    "@types/react": "^19.0.3",
+    "@types/react-dom": "^19.0.2",
+    "@vitejs/plugin-react": "^6.0.3",
+    "concurrently": "^9.1.2",
+    "cross-env": "^7.0.3",
+    "electron": "^43.1.1",
+    "electron-builder": "^26.15.3",
+    "esbuild": "^0.28.1",
+    "jsdom": "^25.0.1",
+    "png-to-ico": "^3.0.2",
+    "typescript": "^5.7.2",
+    "vite": "^8.1.5",
+    "vitest": "^4.1.10",
+    "wait-on": "^8.0.1"
+  },
+  "build": {
+    "appId": "io.github.kestiny18.noval.desktop",
+    "productName": "Noval",
+    "asar": true,
+    "files": [
+      "dist/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "build/sidecar",
+        "to": "sidecar"
+      }
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico",
+      "artifactName": "Noval-Desktop-${version}-win-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "Noval"
+    }
+  }
+}

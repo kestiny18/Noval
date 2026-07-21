@@ -1,0 +1,1 @@
+import {execFileSync} from "node:child_process";import{fileURLToPath}from"node:url";const now=new Date();const yy=String(now.getFullYear()).slice(-2);const mdd=(now.getMonth()+1)*100+now.getDate();const count=execFileSync("git",["rev-list","--count","HEAD"],{encoding:"utf8",cwd:fileURLToPath(new URL("../..",import.meta.url))}).trim();process.stdout.write(`${yy}.${mdd}.${count}`);

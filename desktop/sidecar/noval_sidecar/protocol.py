@@ -81,4 +81,3 @@ def event(name: str, event_id: str, payload: Mapping[str, Any]) -> dict[str, Any
         "event": name,
         "payload": dict(payload),
     }
-
