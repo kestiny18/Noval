@@ -33,8 +33,9 @@ Desktop preferences use Electron's platform `userData` directory. Core data
 continues to use `~/.noval`. Neither side reads the other's configuration
 files. Chromium session data remains in the platform-local Electron location.
 
-The initial product is a professional minimum loop: select one workspace,
-create and resume Sessions, stream visible output, observe tool lifecycle,
+The initial product is a professional minimum loop: keep a Desktop-local list
+of projects while selecting one active workspace at a time, create and resume
+Sessions, stream visible output, observe tool lifecycle,
 approve actions, cancel a turn, recover from sidecar failure, select Provider
 and model, and inspect completion evidence. It is not an IDE and does not add a
 terminal, editor, Git UI, Eval UI, multi-window support, cloud sync, or agent
@@ -55,9 +56,11 @@ directory-style Python sidecar and has no remote telemetry or crash upload.
 Safe local logs and user-initiated diagnostic export are allowed. Signing and
 automatic updates are later release-layer decisions.
 
-Desktop versions use `YY.(month * 100 + day).git_commit_count`, for example
-`26.721.87`. The App ID is `io.github.kestiny18.noval.desktop` and the product
-name is `Noval`.
+Desktop versions use `release_prefix.git_commit_count`, for example
+`26.722.108`. The release prefix uses `YY.(month * 100 + day)` but is updated
+explicitly only when a new stable preview is published; ordinary builds retain
+the current prefix while the commit-count suffix grows. The App ID is
+`io.github.kestiny18.noval.desktop` and the product name is `Noval`.
 
 ## Consequences
 

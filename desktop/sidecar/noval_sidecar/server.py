@@ -60,6 +60,7 @@ class SidecarServer:
             "system.hello": self._hello,
             "runtime.start": self._runtime_start,
             "workspace.select": self._workspace_select,
+            "workspace.sessions": self._workspace_sessions,
             "session.list": self._session_list,
             "session.create": self._session_create,
             "session.resume": self._session_resume,
@@ -107,6 +108,14 @@ class SidecarServer:
             raise ValueError("workdir must be an existing directory")
         self._workspace = path
         return {"workdir": str(path)}
+
+    def _workspace_sessions(self, params: dict[str, Any]) -> dict[str, Any]:
+        if self._runtime is None:
+            raise ValueError("Runtime is not started.")
+        path = Path(self._required_string(params, "workdir")).expanduser().resolve()
+        if not path.is_dir():
+            raise ValueError("workdir must be an existing directory")
+        return {"sessions": [item.to_dict() for item in self._runtime.list_persisted_sessions(str(path))]}
 
     def _session_list(self, params: dict[str, Any]) -> dict[str, Any]:
         runtime, workspace = self._ready()

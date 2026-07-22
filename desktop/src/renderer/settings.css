@@ -1,7 +1,0 @@
-.sidebar footer { display: grid; gap: 10px; }
-.settings-link { display: flex; align-items: center; gap: 7px; background: none; border: 0; color: var(--muted); padding: 0; }
-.welcome-settings { position: absolute; right: 22px; top: 22px; background: transparent; border: 1px solid var(--line); border-radius: 8px; color: var(--muted); padding: 8px; }
-.settings-panel label { display: grid; gap: 5px; margin: 10px 0; color: var(--muted); font-size: 11px; }
-.settings-panel input, .settings-panel select { background: #11120f; border: 1px solid var(--line); border-radius: 7px; padding: 9px; color: var(--paper); outline: 0; }
-.settings-panel input:focus, .settings-panel select:focus { border-color: #718a38; }
-.settings-note { font-size: 10px !important; line-height: 1.5; }
