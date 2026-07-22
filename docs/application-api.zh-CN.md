@@ -14,6 +14,8 @@ Noval 的 Application API 把“循环为何停止”和“任务是否完成”
 
 同一套 headless API 已提供 Desktop 或终端宿主所需的基础能力，而无需访问 Agent 内部对象：
 
+- `runtime.configuration()` 返回当前有效 Runtime 配置的无凭据视图，只包含 Provider、模型、Judge 模型、Base URL 和凭据是否已配置；
+- `runtime.list_persisted_projects()` 从 canonical Session 存储派生稳定的项目清单，宿主无需自行解析 `~/.noval/sessions` 或自定义 `sessions_dir`；
 - `session.transcript()` 使用从 1 开始的稳定序号和游标分页读取历史；它不暴露 system message、Provider replay state、provenance 或工具参数值，工具调用只提供参数名；
 - `session.rename()` 只能在 Session 空闲时修改有界标题，并写入可变 metadata sidecar，不会改写 canonical JSONL；
 - 支持流式能力的 client 会依次发出 `model.started`、零个或多个 `model.output.delta`，最后发出 `model.completed`；失败的部分流会发出 `model.output.aborted`，但不会写入 canonical Session；

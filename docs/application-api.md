@@ -25,6 +25,8 @@ from noval import NovalRuntime, SessionOptions, TurnRequest
 
 events = SimpleQueue()
 with NovalRuntime.from_settings(event_sink=events.put) as runtime:
+    configuration = runtime.configuration()
+    projects = runtime.list_persisted_projects()
     with runtime.create_session(SessionOptions(workdir="project")) as session:
         history = session.transcript(limit=100)
         session.rename("Architecture review")
@@ -36,6 +38,12 @@ with NovalRuntime.from_settings(event_sink=events.put) as runtime:
         if replay.gap_detected:
             history = session.transcript(limit=100)
 ```
+
+`configuration()` is a credential-free view of the effective Runtime settings.
+It exposes only Provider/model selection, base URL, and whether a credential is
+available. `list_persisted_projects()` derives a stable project inventory from
+canonical Session storage, so hosts do not parse `~/.noval/sessions` or a
+custom `sessions_dir` themselves.
 
 `transcript()` returns stable one-based sequence numbers and cursor pagination.
 It omits system messages, Provider replay state, provenance, and tool argument

@@ -726,6 +726,84 @@ class CompletionReport:
 
 
 @dataclass(frozen=True)
+class RuntimeConfiguration:
+    """Safe, credential-free view of the Runtime's effective configuration."""
+
+    provider: str
+    model: str
+    judge_model: str
+    base_url: str
+    api_key_configured: bool
+
+    def __post_init__(self) -> None:
+        for name in ("provider", "model", "judge_model", "base_url"):
+            _string(getattr(self, name), name)
+        _boolean(self.api_key_configured, "api_key_configured")
+
+    def to_dict(self) -> Dict[str, JSONValue]:
+        return {
+            "schema_version": API_SCHEMA_VERSION,
+            "provider": self.provider,
+            "model": self.model,
+            "judge_model": self.judge_model,
+            "base_url": self.base_url,
+            "api_key_configured": self.api_key_configured,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "RuntimeConfiguration":
+        obj = _object(data, "runtime_configuration")
+        _schema(obj, "runtime_configuration")
+        return cls(
+            provider=_string(obj.get("provider"), "provider") or "",
+            model=_string(obj.get("model"), "model") or "",
+            judge_model=_string(obj.get("judge_model"), "judge_model") or "",
+            base_url=_string(obj.get("base_url"), "base_url") or "",
+            api_key_configured=_boolean(
+                obj.get("api_key_configured"), "api_key_configured"
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class PersistedProjectInfo:
+    """Message-free project summary derived from canonical Session storage."""
+
+    workdir: str
+    created_at: str
+    session_count: int
+    available: bool
+
+    def __post_init__(self) -> None:
+        _string(self.workdir, "workdir")
+        _string(self.created_at, "created_at")
+        _integer(self.session_count, "session_count", minimum=1)
+        _boolean(self.available, "available")
+
+    def to_dict(self) -> Dict[str, JSONValue]:
+        return {
+            "schema_version": API_SCHEMA_VERSION,
+            "workdir": self.workdir,
+            "created_at": self.created_at,
+            "session_count": self.session_count,
+            "available": self.available,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "PersistedProjectInfo":
+        obj = _object(data, "persisted_project_info")
+        _schema(obj, "persisted_project_info")
+        return cls(
+            workdir=_string(obj.get("workdir"), "workdir") or "",
+            created_at=_string(obj.get("created_at"), "created_at") or "",
+            session_count=_integer(
+                obj.get("session_count"), "session_count", minimum=1
+            ),
+            available=_boolean(obj.get("available"), "available"),
+        )
+
+
+@dataclass(frozen=True)
 class RuntimeOptions:
     settings_path: Optional[str] = None
 
