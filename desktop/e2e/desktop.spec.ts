@@ -1,5 +1,5 @@
 import {expect,test,_electron as electron} from "@playwright/test";
-import {mkdtemp,rm} from "node:fs/promises";
+import {mkdir,mkdtemp,rm,writeFile} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import path from "node:path";
 
@@ -19,4 +19,14 @@ test("launches the real Electron host with a persistent single-page project shel
     const exited=new Promise<void>(resolve=>{if(process.exitCode!==null)resolve();else process.once("exit",()=>resolve())});
     await page.close();await exited;await rm(userData,{recursive:true,force:true});
   }
+});
+
+test("uses folder state and hover actions for a persisted project",async()=>{
+  const userData=await mkdtemp(path.join(tmpdir(),"noval-desktop-tree-e2e-"));
+  const projectPath=path.join(userData,"sample-project");await mkdir(projectPath);
+  await writeFile(path.join(userData,"desktop-settings.json"),JSON.stringify({workspace:projectPath,workspaces:[projectPath]}),"utf8");
+  const root=path.resolve(import.meta.dirname,".."),executablePath=path.join(root,"node_modules","electron","dist",process.platform==="win32"?"electron.exe":"electron");
+  const application=await electron.launch({executablePath,args:[".",`--user-data-dir=${userData}`],cwd:root,env:{...process.env,NOVAL_PYTHON:process.env.NOVAL_PYTHON??"py"}});const page=await application.firstWindow();
+  try{const project=page.getByRole("button",{name:"sample-project",exact:true});await expect(project).toBeVisible();await expect(project.locator(".lucide-folder-open")).toBeVisible();await project.hover();await expect(page.getByRole("button",{name:/New task in sample-project/i})).toBeVisible();await expect(page.getByText(/Export diagnostics/i)).toHaveCount(0)}
+  finally{const process=application.process();const exited=new Promise<void>(resolve=>{if(process.exitCode!==null)resolve();else process.once("exit",()=>resolve())});await page.close();await exited;await rm(userData,{recursive:true,force:true})}
 });

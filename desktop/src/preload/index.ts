@@ -14,6 +14,5 @@ const api: NovalDesktopApi = {
   appInfo:()=>ipcRenderer.invoke("noval:app-info"),
   getProviderProfile:()=>ipcRenderer.invoke("noval:get-provider-profile"),
   saveProviderProfile:profile=>ipcRenderer.invoke("noval:save-provider-profile",profile),
-  exportDiagnostics:()=>ipcRenderer.invoke("noval:export-diagnostics"),
 };
 contextBridge.exposeInMainWorld("noval",Object.freeze(api));
