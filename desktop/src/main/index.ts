@@ -1,6 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from "electron";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { existsSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { mkdir, writeFile as writeTextFile } from "node:fs/promises";
 import { Preferences, ProviderProfile } from "./preferences.js";
@@ -14,8 +15,12 @@ let workspace: string | null = null;
 let preferences:Preferences;
 let recovering=false;
 
-function projectList(){return preferences.workspaces().map(value=>({path:value,name:path.basename(value),active:value===workspace}))}
-function requireProject(value:string):string{const match=preferences.workspaces().find(item=>item===value);if(!match)throw new Error("The project is not registered in Noval Desktop.");return match}
+interface CoreProject {workdir:string;available:boolean}
+interface RuntimeConfiguration {provider:"openai-compatible"|"anthropic";model:string;judge_model:string;base_url:string;api_key_configured:boolean}
+async function projectPaths():Promise<string[]>{const result=await sidecar.request<{projects:CoreProject[]}>("workspace.list",{});return (await preferences.synchronizeWorkspaces(result.projects.filter(item=>item.available).map(item=>item.workdir))).filter(value=>existsSync(value))}
+async function projectList(){return (await projectPaths()).map(value=>({path:value,name:path.basename(value),active:value===workspace}))}
+async function requireProject(value:string):Promise<string>{const match=(await projectPaths()).find(item=>item===value);if(!match)throw new Error("The project is not registered in Noval Desktop.");return match}
+async function effectiveProfile():Promise<ProviderProfile>{const value=await sidecar.request<RuntimeConfiguration>("runtime.configuration",{});return {provider:value.provider,model:value.model,judgeModel:value.judge_model,baseUrl:value.base_url,hasApiKey:value.api_key_configured}}
 
 function publishHostState(state:"connected"|"recovering"|"disconnected",detail?:string):void{
   mainWindow?.webContents.send("noval:event",{protocol_version:PROTOCOL_VERSION,kind:"event",event_id:`host-${Date.now()}`,event:"host.connection",payload:{state,detail}});
@@ -23,7 +28,7 @@ function publishHostState(state:"connected"|"recovering"|"disconnected",detail?:
 
 async function startRuntime():Promise<void>{
   const profile=preferences.profile(),apiKey=preferences.apiKey();
-  if(!profile){await sidecar.start();return}
+  if(!profile){await sidecar.start(process.env.NOVAL_SETTINGS_PATH);return}
   const settingsPath=path.join(app.getPath("userData"),"runtime-settings.json");
   await mkdir(path.dirname(settingsPath),{recursive:true});
   await writeTextFile(settingsPath,JSON.stringify({provider:profile.provider,model:profile.model,judge_model:profile.judgeModel,base_url:profile.baseUrl||"https://api.openai.com/v1",anthropic_base_url:profile.provider==="anthropic"?profile.baseUrl:"",api_key_env:"NOVAL_DESKTOP_API_KEY"},null,2),{encoding:"utf8",mode:0o600});
@@ -71,10 +76,10 @@ function registerIpc(): void {
   });
   ipcMain.handle("noval:get-workspace",()=>workspace);
   ipcMain.handle("noval:list-projects",()=>projectList());
-  ipcMain.handle("noval:project-sessions",async(_e,value:string)=>((await sidecar.request<{sessions:unknown[]}>("workspace.sessions",{workdir:requireProject(value)})).sessions));
-  ipcMain.handle("noval:activate-project",async(_e,value:string)=>{workspace=requireProject(value);await preferences.setWorkspace(workspace);await sidecar.request("workspace.select",{workdir:workspace});return workspace});
-  ipcMain.handle("noval:remove-project",async(_e,value:string)=>{requireProject(value);await preferences.removeWorkspace(value);workspace=preferences.workspace();if(workspace)await sidecar.request("workspace.select",{workdir:workspace});return projectList()});
-  ipcMain.handle("noval:reveal-project",async(_e,value:string)=>{const error=await shell.openPath(requireProject(value));if(error)throw new Error("The project could not be opened in File Explorer.")});
+  ipcMain.handle("noval:project-sessions",async(_e,value:string)=>((await sidecar.request<{sessions:unknown[]}>("workspace.sessions",{workdir:await requireProject(value)})).sessions));
+  ipcMain.handle("noval:activate-project",async(_e,value:string)=>{workspace=await requireProject(value);await preferences.setWorkspace(workspace);await sidecar.request("workspace.select",{workdir:workspace});return workspace});
+  ipcMain.handle("noval:remove-project",async(_e,value:string)=>{await requireProject(value);await preferences.removeWorkspace(value);const remaining=await projectPaths();workspace=remaining[0]??null;if(workspace){await preferences.setWorkspace(workspace);await sidecar.request("workspace.select",{workdir:workspace})}return projectList()});
+  ipcMain.handle("noval:reveal-project",async(_e,value:string)=>{const error=await shell.openPath(await requireProject(value));if(error)throw new Error("The project could not be opened in File Explorer.")});
   ipcMain.handle("noval:list-sessions",async()=>((await sidecar.request<{sessions:unknown[]}>("session.list",{})).sessions));
   ipcMain.handle("noval:create-session",(_e,options={})=>sidecar.request("session.create",{options}));
   ipcMain.handle("noval:resume-session",(_e,id:string)=>sidecar.request("session.resume",{session_id:id}));
@@ -88,17 +93,17 @@ function registerIpc(): void {
   ipcMain.handle("noval:permission-reset",(_e,id:string)=>sidecar.request("session.reset_permissions",{session_id:id}));
   ipcMain.handle("noval:permission-resolve",async(_e,id:string,decision:string)=>{await sidecar.request("permission.resolve",{permission_request_id:id,decision});});
   ipcMain.handle("noval:app-info",()=>({desktopVersion:app.getVersion(),coreVersion:sidecar.getCoreVersion(),protocolVersion:PROTOCOL_VERSION}));
-  ipcMain.handle("noval:get-provider-profile",()=>preferences.profile());
+  ipcMain.handle("noval:get-provider-profile",()=>effectiveProfile());
   ipcMain.handle("noval:save-provider-profile",async(_e,value:Omit<ProviderProfile,"hasApiKey">&{apiKey?:string})=>{
     if(!value||!['openai-compatible','anthropic'].includes(value.provider)||!value.model?.trim()||!value.judgeModel?.trim())throw new Error("Provider and model values are required.");
     await preferences.setProfile({provider:value.provider,model:value.model.trim(),judgeModel:value.judgeModel.trim(),baseUrl:String(value.baseUrl??"").trim()},value.apiKey?.trim());
-    await sidecar.stop();await startRuntime();if(workspace)await sidecar.request("workspace.select",{workdir:workspace});return preferences.profile();
+    await sidecar.stop();await startRuntime();if(workspace)await sidecar.request("workspace.select",{workdir:workspace});return effectiveProfile();
   });
   ipcMain.handle("noval:open-external",async(_e,url:string)=>{if(/^https:\/\/(github\.com|docs\.noval\.)/i.test(url)) await shell.openExternal(url);});
 }
 
 app.whenReady().then(async()=>{
-  Menu.setApplicationMenu(null);preferences=new Preferences();await preferences.load();workspace=preferences.workspace();registerIpc();sidecar.on("event",value=>mainWindow?.webContents.send("noval:event",value));sidecar.on("exit",()=>void recoverRuntime());await startRuntime();if(workspace){try{await sidecar.request("workspace.select",{workdir:workspace})}catch{workspace=null}}await createWindow();publishHostState("connected");
+  Menu.setApplicationMenu(null);preferences=new Preferences();await preferences.load();workspace=preferences.workspace();registerIpc();sidecar.on("event",value=>mainWindow?.webContents.send("noval:event",value));sidecar.on("exit",()=>void recoverRuntime());await startRuntime();const projects=await projectPaths();if(!workspace||!projects.includes(workspace))workspace=projects[0]??null;if(workspace){await preferences.setWorkspace(workspace);await sidecar.request("workspace.select",{workdir:workspace})}await createWindow();publishHostState("connected");
 });
 app.on("window-all-closed",()=>app.quit());
 app.on("before-quit",()=>{void sidecar.stop();});

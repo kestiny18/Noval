@@ -198,3 +198,7 @@ class Config:
             f"  2) Set environment variable {self.api_key_env} "
             f"(PowerShell: $env:{self.api_key_env}=\"sk-...\")"
         )
+
+    def api_key_configured(self) -> bool:
+        """Report credential availability without exposing credential content."""
+        return bool(self.api_key or os.environ.get(self.api_key_env))

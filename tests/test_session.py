@@ -9,7 +9,7 @@ from noval.messages import (
 )
 from noval.session import (
     SCHEMA_VERSION, JsonlSessionStore, SessionLockedError,
-    UnsupportedSessionVersion, list_sessions,
+    UnsupportedSessionVersion, list_persisted_projects, list_sessions,
 )
 
 
@@ -43,6 +43,29 @@ def test_create_is_lazy_and_writes_canonical_schema_v2(tmp_path):
     assert record.message == message
     assert record.ts
     assert (path.parent / "project.json").exists()
+
+
+def test_persisted_project_inventory_uses_stable_creation_order(tmp_path):
+    base = tmp_path / "sessions"
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+
+    second_store = JsonlSessionStore.create(base, second, "model")
+    second_store.append(user_message("second"))
+    second_store.close()
+    first_store = JsonlSessionStore.create(base, first, "model")
+    first_store.append(user_message("first"))
+    first_store.close()
+
+    projects = list_persisted_projects(base)
+    assert [item.workdir for item in projects] == [
+        str(second.resolve()),
+        str(first.resolve()),
+    ]
+    assert [item.session_count for item in projects] == [1, 1]
+    assert all(item.available for item in projects)
 
 
 def test_record_page_is_bounded_and_uses_canonical_sequence_cursor(tmp_path):

@@ -25,8 +25,10 @@ from .api import (
     PermissionDecision,
     PermissionRequest,
     PermissionStateView,
+    PersistedProjectInfo,
     RequestInspection,
     RuntimeEvent,
+    RuntimeConfiguration,
     RuntimeOptions,
     SESSION_TITLE_MAX_LENGTH,
     SessionInfo,
@@ -71,6 +73,7 @@ from .session import (
     PersistentSessionStore,
     SessionLockedError,
     SessionMetadataStore,
+    list_persisted_projects,
     list_sessions,
 )
 from .shell import resolve_shell_backend
@@ -1318,6 +1321,33 @@ class NovalRuntime:
     def list_active_sessions(self) -> Tuple[SessionInfo, ...]:
         with self._lock:
             return tuple(session.info for session in self._sessions.values())
+
+    def configuration(self) -> RuntimeConfiguration:
+        """Return the effective Runtime configuration without credential values."""
+        return RuntimeConfiguration(
+            provider=self._config.provider,
+            model=self._config.model,
+            judge_model=self._config.judge_model,
+            base_url=(
+                self._config.anthropic_base_url
+                if self._config.provider == "anthropic"
+                and self._config.anthropic_base_url
+                else self._config.base_url
+            ),
+            api_key_configured=self._config.api_key_configured(),
+        )
+
+    def list_persisted_projects(self) -> Tuple[PersistedProjectInfo, ...]:
+        """Project inventory projected from canonical Session storage."""
+        return tuple(
+            PersistedProjectInfo(
+                workdir=project.workdir,
+                created_at=project.created_at,
+                session_count=project.session_count,
+                available=project.available,
+            )
+            for project in list_persisted_projects(self._config.sessions_dir())
+        )
 
     def list_persisted_sessions(self, workdir: str) -> Tuple[SessionInfo, ...]:
         root = Path(workdir).expanduser().resolve()

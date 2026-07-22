@@ -87,6 +87,16 @@ class SessionMeta:
     provider: str = ""
 
 
+@dataclass(frozen=True)
+class PersistedProjectMeta:
+    """Project inventory derived from message-bearing Session directories."""
+
+    workdir: str
+    created_at: str
+    session_count: int
+    available: bool
+
+
 class UnsupportedSessionVersion(ValueError):
     def __init__(self, session_id: str, version: Any):
         self.session_id = session_id
@@ -418,6 +428,35 @@ def list_sessions(base_dir: Path, workdir: Path) -> List[SessionMeta]:
             metas.append(meta)
     metas.sort(key=lambda m: m.last_active, reverse=True)
     return metas
+
+
+def list_persisted_projects(base_dir: Path) -> List[PersistedProjectMeta]:
+    """List projects recorded by canonical Session storage in stable order."""
+    root = Path(base_dir)
+    if not root.is_dir():
+        return []
+    projects: List[PersistedProjectMeta] = []
+    for project_dir in root.iterdir():
+        if not project_dir.is_dir():
+            continue
+        data = _read_json_object(project_dir / "project.json")
+        workdir = data.get("real_workdir")
+        created_at = data.get("created_at")
+        if not isinstance(workdir, str) or not workdir.strip():
+            continue
+        if not isinstance(created_at, str) or not created_at.strip():
+            continue
+        session_count = sum(1 for _ in project_dir.glob("*.jsonl"))
+        if session_count < 1:
+            continue
+        projects.append(PersistedProjectMeta(
+            workdir=workdir,
+            created_at=created_at,
+            session_count=session_count,
+            available=Path(workdir).expanduser().is_dir(),
+        ))
+    projects.sort(key=lambda item: item.created_at)
+    return projects
 
 
 def _read_session_meta(path: Path) -> Optional[SessionMeta]:

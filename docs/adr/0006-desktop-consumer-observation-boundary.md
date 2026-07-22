@@ -24,6 +24,13 @@ Noval will extend the Application API with a **safe observation boundary**:
   entries. It excludes system messages, Provider replay state, provenance,
   and raw tool arguments. Persisted tool results are already normalized,
   truncated, and redacted before they reach this boundary.
+- A credential-free Runtime configuration view exposes the effective Provider,
+  model, judge model, base URL, and only whether a credential is configured.
+  It never exposes the credential value or the configured environment-variable
+  value.
+- A persisted-project inventory is derived from canonical Session storage. It
+  exposes only workdir, creation time, Session count, and path availability;
+  hosts do not scan or reinterpret the Session directory themselves.
 - Session titles are mutable metadata. Renaming is idle-only, bounded, and
   never rewrites canonical Session JSONL.
 - Every live Session keeps a bounded in-memory ring of its runtime events.
@@ -53,6 +60,7 @@ new replay window is explicitly bounded and memory-only.
 |---|---|
 | Canonical conversation and recovery | Session JSONL |
 | Safe historical projection | Application API transcript DTOs |
+| Effective configuration and persisted-project projection | Application API |
 | Visible text reconstruction | Provider adapter |
 | Streaming capability selection and fallback | Agent/provider seam |
 | Event sequencing, buffering, and gap reporting | Live `AgentSession` |

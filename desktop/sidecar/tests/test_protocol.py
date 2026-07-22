@@ -1,5 +1,6 @@
 import io
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -53,6 +54,21 @@ def test_workspace_must_be_selected_before_listing(tmp_path):
     server.close()
 
 
+def test_runtime_exposes_safe_configuration_and_project_inventory():
+    server = SidecarServer(io.BytesIO(), io.BytesIO())
+    server.dispatch(parse_request(request("runtime.start")))
+
+    configuration = server.dispatch(parse_request(request("runtime.configuration")))
+    projects = server.dispatch(parse_request(request("workspace.list")))
+
+    assert configuration["provider"] in {"openai-compatible", "anthropic"}
+    assert configuration["model"]
+    assert isinstance(configuration["api_key_configured"], bool)
+    assert "api_key" not in configuration
+    assert isinstance(projects["projects"], list)
+    server.close()
+
+
 def test_workspace_sessions_lists_without_changing_active_workspace(tmp_path):
     first = tmp_path / "first"
     second = tmp_path / "second"
@@ -65,6 +81,30 @@ def test_workspace_sessions_lists_without_changing_active_workspace(tmp_path):
     assert server.dispatch(parse_request(request("session.list"))) == {"sessions": []}
     assert server._workspace == first.resolve()
     server.close()
+
+
+def test_resume_is_idempotent_for_a_session_already_open_in_the_sidecar(tmp_path):
+    info = SimpleNamespace(to_dict=lambda: {"session_id": "open-session"})
+    permissions = SimpleNamespace(to_dict=lambda: {"mode": "ask", "approved_tools": []})
+    session = SimpleNamespace(info=info, permission_state=lambda: permissions)
+
+    class Runtime:
+        def get_session(self, session_id):
+            assert session_id == "open-session"
+            return session
+
+        def resume_session(self, *args, **kwargs):
+            raise AssertionError("an already-open Session must not be reopened")
+
+    server = SidecarServer(io.BytesIO(), io.BytesIO())
+    server._runtime = Runtime()
+    server._workspace = tmp_path
+
+    result = server.dispatch(parse_request(request(
+        "session.resume", {"session_id": "open-session"}
+    )))
+
+    assert result["session"]["session_id"] == "open-session"
 
 
 def test_configuration_exit_is_returned_as_safe_error(monkeypatch):

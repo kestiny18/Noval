@@ -59,6 +59,8 @@ class SidecarServer:
         handlers: dict[str, Callable[[dict[str, Any]], Any]] = {
             "system.hello": self._hello,
             "runtime.start": self._runtime_start,
+            "runtime.configuration": self._runtime_configuration,
+            "workspace.list": self._workspace_list,
             "workspace.select": self._workspace_select,
             "workspace.sessions": self._workspace_sessions,
             "session.list": self._session_list,
@@ -109,6 +111,13 @@ class SidecarServer:
         self._workspace = path
         return {"workdir": str(path)}
 
+    def _runtime_configuration(self, params: dict[str, Any]) -> dict[str, Any]:
+        return self._runtime_required().configuration().to_dict()
+
+    def _workspace_list(self, params: dict[str, Any]) -> dict[str, Any]:
+        projects = self._runtime_required().list_persisted_projects()
+        return {"projects": [project.to_dict() for project in projects]}
+
     def _workspace_sessions(self, params: dict[str, Any]) -> dict[str, Any]:
         if self._runtime is None:
             raise ValueError("Runtime is not started.")
@@ -135,7 +144,13 @@ class SidecarServer:
 
     def _session_resume(self, params: dict[str, Any]) -> dict[str, Any]:
         runtime, _ = self._ready()
-        session = runtime.resume_session(self._required_string(params, "session_id"), self._options(params), permission_handler=self._permission_handler)
+        session_id = self._required_string(params, "session_id")
+        try:
+            session = runtime.get_session(session_id)
+        except NovalError as error:
+            if error.code != "session_not_open":
+                raise
+            session = runtime.resume_session(session_id, self._options(params), permission_handler=self._permission_handler)
         return {"session": session.info.to_dict(), "permissions": session.permission_state().to_dict()}
 
     def _session(self, params: dict[str, Any]):
@@ -224,11 +239,15 @@ class SidecarServer:
         self._send(event(value.type, value.event_id, value.to_dict()))
 
     def _ready(self) -> tuple[NovalRuntime, Path]:
-        if self._runtime is None:
-            raise ValueError("Runtime is not started.")
+        runtime = self._runtime_required()
         if self._workspace is None:
             raise ValueError("A workspace must be selected.")
-        return self._runtime, self._workspace
+        return runtime, self._workspace
+
+    def _runtime_required(self) -> NovalRuntime:
+        if self._runtime is None:
+            raise ValueError("Runtime is not started.")
+        return self._runtime
 
     @staticmethod
     def _required_string(params: dict[str, Any], key: str) -> str:

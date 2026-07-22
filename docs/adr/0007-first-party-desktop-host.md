@@ -30,12 +30,18 @@ Electron, TypeScript, React, and an embedded Python sidecar.
   opaque Provider reasoning never does.
 
 Desktop preferences use Electron's platform `userData` directory. Core data
-continues to use `~/.noval`. Neither side reads the other's configuration
-files. Chromium session data remains in the platform-local Electron location.
+continues to use `~/.noval`. Electron never reads Core configuration or Session
+files directly: the sidecar projects effective configuration, persisted
+projects, and Sessions through the public Application API. Desktop preferences
+retain presentation state, the stable explicit-project order, hidden projects,
+and optional encrypted Provider overrides. Chromium session data remains in the
+platform-local Electron location.
 
-The initial product is a professional minimum loop: keep a Desktop-local list
-of projects while selecting one active workspace at a time, create and resume
-Sessions, stream visible output, observe tool lifecycle,
+The initial product is a professional minimum loop: combine the stable
+Desktop-local project list with projects discovered from Core Session storage
+while selecting one active workspace at a time, create a Session lazily on the
+first submitted message, resume existing Sessions, stream visible output,
+observe tool lifecycle,
 approve actions, cancel a turn, recover from sidecar failure, select Provider
 and model, and inspect completion evidence. It is not an IDE and does not add a
 terminal, editor, Git UI, Eval UI, multi-window support, cloud sync, or agent

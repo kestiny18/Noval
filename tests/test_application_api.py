@@ -27,7 +27,9 @@ from noval.api import (
     PermissionDecision,
     PermissionRequest,
     PermissionStateView,
+    PersistedProjectInfo,
     RequestInspection,
+    RuntimeConfiguration,
     RuntimeEvent,
     RuntimeOptions,
     ReceiptKind,
@@ -63,9 +65,11 @@ from noval.messages import (
     ToolCallBlock,
     assistant_message,
     tool_result_message,
+    user_message,
 )
 from noval.permissions import PermissionMode
 from noval.process import NetworkAccess, SandboxMode
+from noval.session import JsonlSessionStore
 from noval.tools import Risk, Tool
 
 
@@ -202,6 +206,50 @@ def test_runtime_and_session_options_round_trip_and_reject_unknown_requests():
         TurnRequest.from_dict({"text": "hello", "surprise": True})
     with pytest.raises(ApiFormatError, match="text"):
         TurnRequest(text="")
+
+
+def test_runtime_configuration_and_project_contracts_are_json_safe():
+    configuration = RuntimeConfiguration(
+        provider="openai-compatible",
+        model="agent-model",
+        judge_model="judge-model",
+        base_url="https://example.invalid",
+        api_key_configured=True,
+    )
+    project = PersistedProjectInfo(
+        workdir="C:/projects/a",
+        created_at="2026-07-23T00:00:00Z",
+        session_count=2,
+        available=True,
+    )
+
+    assert RuntimeConfiguration.from_dict(
+        json_round_trip(configuration.to_dict())
+    ) == configuration
+    assert PersistedProjectInfo.from_dict(
+        json_round_trip(project.to_dict())
+    ) == project
+
+
+def test_runtime_observes_effective_configuration_and_stored_projects(tmp_path):
+    config = application_config(tmp_path)
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    store = JsonlSessionStore.create(config.sessions_dir(), workdir, config.model)
+    store.append(user_message("Persist this project"))
+    store.close()
+    runtime = NovalRuntime(config, client_factory=QueueClientFactory([]))
+
+    observed = runtime.configuration()
+    projects = runtime.list_persisted_projects()
+
+    assert observed.provider == config.provider
+    assert observed.model == config.model
+    assert observed.judge_model == config.judge_model
+    assert observed.api_key_configured is True
+    assert [project.workdir for project in projects] == [str(workdir.resolve())]
+    assert projects[0].session_count == 1
+    runtime.close()
 
 
 def test_session_info_and_permission_contracts_are_json_safe():
