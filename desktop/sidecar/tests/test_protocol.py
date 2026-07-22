@@ -53,6 +53,20 @@ def test_workspace_must_be_selected_before_listing(tmp_path):
     server.close()
 
 
+def test_workspace_sessions_lists_without_changing_active_workspace(tmp_path):
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    server = SidecarServer(io.BytesIO(), io.BytesIO())
+    server.dispatch(parse_request(request("runtime.start")))
+    server.dispatch(parse_request(request("workspace.select", {"workdir": str(first)})))
+    assert server.dispatch(parse_request(request("workspace.sessions", {"workdir": str(second)}))) == {"sessions": []}
+    assert server.dispatch(parse_request(request("session.list"))) == {"sessions": []}
+    assert server._workspace == first.resolve()
+    server.close()
+
+
 def test_configuration_exit_is_returned_as_safe_error(monkeypatch):
     output = io.BytesIO()
     server = SidecarServer(io.BytesIO(request("runtime.start") + b"\n"), output)

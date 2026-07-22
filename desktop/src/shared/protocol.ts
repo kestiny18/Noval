@@ -15,6 +15,7 @@ export type SidecarEvent = z.infer<typeof EventSchema>;
 export interface SessionInfo {
   session_id: string; workdir: string; provider: string; model: string; is_open: boolean; title: string | null; message_count: number;
 }
+export interface ProjectInfo { path:string;name:string;active:boolean }
 export interface PermissionState { mode: "ask" | "full_access"; approved_tools: string[] }
 export interface ProviderProfile { provider:"openai-compatible"|"anthropic";model:string;judgeModel:string;baseUrl:string;hasApiKey:boolean }
 export interface TranscriptEntry { sequence: number; role: "user" | "assistant" | "tool"; text: string; timestamp: string | null; tool_calls: Array<{call_id:string;name:string;argument_keys:string[]}>; tool_results: Array<{call_id:string;content:string;is_error:boolean}> }
@@ -28,6 +29,11 @@ export type RuntimeConnectionState = "connected"|"recovering"|"disconnected";
 export interface NovalDesktopApi {
   chooseWorkspace(): Promise<string | null>;
   getWorkspace(): Promise<string | null>;
+  listProjects():Promise<ProjectInfo[]>;
+  projectSessions(path:string):Promise<SessionInfo[]>;
+  activateProject(path:string):Promise<string>;
+  removeProject(path:string):Promise<ProjectInfo[]>;
+  revealProject(path:string):Promise<void>;
   listSessions(): Promise<SessionInfo[]>;
   createSession(options?: Record<string, unknown>): Promise<{session: SessionInfo; permissions: PermissionState}>;
   resumeSession(sessionId: string): Promise<{session: SessionInfo; permissions: PermissionState}>;

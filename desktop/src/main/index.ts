@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from "electron";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { writeFile } from "node:fs/promises";
@@ -15,6 +15,9 @@ let workspace: string | null = null;
 let preferences:Preferences;
 const diagnostics=new DiagnosticBuffer();
 let recovering=false;
+
+function projectList(){return preferences.workspaces().map(value=>({path:value,name:path.basename(value),active:value===workspace}))}
+function requireProject(value:string):string{const match=preferences.workspaces().find(item=>item===value);if(!match)throw new Error("The project is not registered in Noval Desktop.");return match}
 
 function publishHostState(state:"connected"|"recovering"|"disconnected",detail?:string):void{
   mainWindow?.webContents.send("noval:event",{protocol_version:PROTOCOL_VERSION,kind:"event",event_id:`host-${Date.now()}`,event:"host.connection",payload:{state,detail}});
@@ -42,6 +45,7 @@ async function createWindow(): Promise<void> {
   mainWindow = new BrowserWindow({
     width: 1280, height: 820, minWidth: 920, minHeight: 640, show: false,
     backgroundColor: "#10110f", titleBarStyle: "hiddenInset",
+    autoHideMenuBar:true,
     webPreferences: { preload: path.join(dirname,"../preload/index.cjs"), contextIsolation:true, nodeIntegration:false, sandbox:true },
   });
   mainWindow.webContents.setWindowOpenHandler(() => ({action:"deny"}));
@@ -68,6 +72,11 @@ function registerIpc(): void {
     workspace = choice.filePaths[0]; await preferences.setWorkspace(workspace);await sidecar.request("workspace.select",{workdir:workspace}); return workspace;
   });
   ipcMain.handle("noval:get-workspace",()=>workspace);
+  ipcMain.handle("noval:list-projects",()=>projectList());
+  ipcMain.handle("noval:project-sessions",async(_e,value:string)=>((await sidecar.request<{sessions:unknown[]}>("workspace.sessions",{workdir:requireProject(value)})).sessions));
+  ipcMain.handle("noval:activate-project",async(_e,value:string)=>{workspace=requireProject(value);await preferences.setWorkspace(workspace);await sidecar.request("workspace.select",{workdir:workspace});return workspace});
+  ipcMain.handle("noval:remove-project",async(_e,value:string)=>{requireProject(value);await preferences.removeWorkspace(value);workspace=preferences.workspace();if(workspace)await sidecar.request("workspace.select",{workdir:workspace});return projectList()});
+  ipcMain.handle("noval:reveal-project",async(_e,value:string)=>{const error=await shell.openPath(requireProject(value));if(error)throw new Error("The project could not be opened in File Explorer.")});
   ipcMain.handle("noval:list-sessions",async()=>((await sidecar.request<{sessions:unknown[]}>("session.list",{})).sessions));
   ipcMain.handle("noval:create-session",(_e,options={})=>sidecar.request("session.create",{options}));
   ipcMain.handle("noval:resume-session",(_e,id:string)=>sidecar.request("session.resume",{session_id:id}));
@@ -92,7 +101,7 @@ function registerIpc(): void {
 }
 
 app.whenReady().then(async()=>{
-  preferences=new Preferences();await preferences.load();workspace=preferences.workspace();registerIpc();sidecar.on("event",value=>mainWindow?.webContents.send("noval:event",value));sidecar.on("diagnostic",value=>diagnostics.add("sidecar",String(value)));sidecar.on("protocol-error",()=>diagnostics.add("sidecar","Invalid protocol envelope received."));sidecar.on("exit",()=>void recoverRuntime());await startRuntime();if(workspace){try{await sidecar.request("workspace.select",{workdir:workspace})}catch{workspace=null}}await createWindow();publishHostState("connected");
+  Menu.setApplicationMenu(null);preferences=new Preferences();await preferences.load();workspace=preferences.workspace();registerIpc();sidecar.on("event",value=>mainWindow?.webContents.send("noval:event",value));sidecar.on("diagnostic",value=>diagnostics.add("sidecar",String(value)));sidecar.on("protocol-error",()=>diagnostics.add("sidecar","Invalid protocol envelope received."));sidecar.on("exit",()=>void recoverRuntime());await startRuntime();if(workspace){try{await sidecar.request("workspace.select",{workdir:workspace})}catch{workspace=null}}await createWindow();publishHostState("connected");
 });
 app.on("window-all-closed",()=>app.quit());
 app.on("before-quit",()=>{void sidecar.stop();});
