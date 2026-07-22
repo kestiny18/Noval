@@ -6,14 +6,12 @@ import { mkdir, writeFile as writeTextFile } from "node:fs/promises";
 import { Preferences, ProviderProfile } from "./preferences.js";
 import { SidecarSupervisor } from "./sidecar.js";
 import { PROTOCOL_VERSION } from "../shared/protocol.js";
-import { DiagnosticBuffer } from "./diagnostics.js";
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
 const sidecar = new SidecarSupervisor();
 let mainWindow: BrowserWindow | null = null;
 let workspace: string | null = null;
 let preferences:Preferences;
-const diagnostics=new DiagnosticBuffer();
 let recovering=false;
 
 function projectList(){return preferences.workspaces().map(value=>({path:value,name:path.basename(value),active:value===workspace}))}
@@ -33,10 +31,10 @@ async function startRuntime():Promise<void>{
 }
 
 async function recoverRuntime():Promise<void>{
-  if(recovering)return;recovering=true;publishHostState("recovering");diagnostics.add("host","Sidecar recovery started.");
+  if(recovering)return;recovering=true;publishHostState("recovering");
   for(let attempt=1;attempt<=3;attempt++){
     await new Promise(resolve=>setTimeout(resolve,Math.min(500*2**(attempt-1),2000)));
-    try{await startRuntime();if(workspace)await sidecar.request("workspace.select",{workdir:workspace});diagnostics.add("host",`Sidecar recovered on attempt ${attempt}.`);publishHostState("connected");recovering=false;return}catch(error){diagnostics.add("host",`Recovery attempt ${attempt} failed: ${error instanceof Error?error.message:"unknown error"}`);await sidecar.stop()}
+    try{await startRuntime();if(workspace)await sidecar.request("workspace.select",{workdir:workspace});publishHostState("connected");recovering=false;return}catch{await sidecar.stop()}
   }
   recovering=false;publishHostState("disconnected","Automatic recovery failed. Restart Noval to try again.");
 }
@@ -97,11 +95,10 @@ function registerIpc(): void {
     await sidecar.stop();await startRuntime();if(workspace)await sidecar.request("workspace.select",{workdir:workspace});return preferences.profile();
   });
   ipcMain.handle("noval:open-external",async(_e,url:string)=>{if(/^https:\/\/(github\.com|docs\.noval\.)/i.test(url)) await shell.openExternal(url);});
-  ipcMain.handle("noval:export-diagnostics",async()=>{const target=await dialog.showSaveDialog(mainWindow!,{title:"Export Noval diagnostics",defaultPath:`noval-diagnostics-${new Date().toISOString().slice(0,10)}.json`,filters:[{name:"JSON",extensions:["json"]}]});if(target.canceled||!target.filePath)return null;const payload={schema_version:1,exported_at:new Date().toISOString(),desktop_version:app.getVersion(),core_version:sidecar.getCoreVersion(),protocol_version:PROTOCOL_VERSION,platform:process.platform,logs:diagnostics.snapshot()};await writeTextFile(target.filePath,JSON.stringify(payload,null,2),"utf8");return target.filePath;});
 }
 
 app.whenReady().then(async()=>{
-  Menu.setApplicationMenu(null);preferences=new Preferences();await preferences.load();workspace=preferences.workspace();registerIpc();sidecar.on("event",value=>mainWindow?.webContents.send("noval:event",value));sidecar.on("diagnostic",value=>diagnostics.add("sidecar",String(value)));sidecar.on("protocol-error",()=>diagnostics.add("sidecar","Invalid protocol envelope received."));sidecar.on("exit",()=>void recoverRuntime());await startRuntime();if(workspace){try{await sidecar.request("workspace.select",{workdir:workspace})}catch{workspace=null}}await createWindow();publishHostState("connected");
+  Menu.setApplicationMenu(null);preferences=new Preferences();await preferences.load();workspace=preferences.workspace();registerIpc();sidecar.on("event",value=>mainWindow?.webContents.send("noval:event",value));sidecar.on("exit",()=>void recoverRuntime());await startRuntime();if(workspace){try{await sidecar.request("workspace.select",{workdir:workspace})}catch{workspace=null}}await createWindow();publishHostState("connected");
 });
 app.on("window-all-closed",()=>app.quit());
 app.on("before-quit",()=>{void sidecar.stop();});

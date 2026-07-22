@@ -26,7 +26,8 @@ on the right.
 - Each expanded project shows five Sessions initially and reveals five more on
   request.
 - No central create button or separate welcome page exists.
-- Settings and diagnostics remain at the lower-left edge.
+- Settings remains at the lower-left edge. The product does not expose a
+  diagnostic-export action.
 - Conversation, permissions, evidence, recovery, and Provider settings keep
   their existing runtime contracts.
 

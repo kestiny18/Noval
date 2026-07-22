@@ -50,5 +50,4 @@ export interface NovalDesktopApi {
   appInfo(): Promise<{desktopVersion:string;coreVersion:string;protocolVersion:number}>;
   getProviderProfile():Promise<ProviderProfile|null>;
   saveProviderProfile(profile:Omit<ProviderProfile,"hasApiKey">&{apiKey?:string}):Promise<ProviderProfile>;
-  exportDiagnostics():Promise<string|null>;
 }

@@ -52,9 +52,9 @@ confinement, sandboxing, Hooks, redaction, or validation.
 ## Distribution and privacy
 
 The first release is an unsigned Windows x64 preview. It uses an embedded,
-directory-style Python sidecar and has no remote telemetry or crash upload.
-Safe local logs and user-initiated diagnostic export are allowed. Signing and
-automatic updates are later release-layer decisions.
+directory-style Python sidecar and has no remote telemetry, crash upload, or
+diagnostic-export surface. Signing and automatic updates are later
+release-layer decisions.
 
 Desktop versions use `release_prefix.git_commit_count`, for example
 `26.722.108`. The release prefix uses `YY.(month * 100 + day)` but is updated
