@@ -455,7 +455,7 @@ def list_persisted_projects(base_dir: Path) -> List[PersistedProjectMeta]:
             session_count=session_count,
             available=Path(workdir).expanduser().is_dir(),
         ))
-    projects.sort(key=lambda item: item.created_at)
+    projects.sort(key=lambda item: (item.created_at, item.workdir.casefold()))
     return projects
 
 

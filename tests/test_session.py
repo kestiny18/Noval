@@ -59,6 +59,16 @@ def test_persisted_project_inventory_uses_stable_creation_order(tmp_path):
     first_store.append(user_message("first"))
     first_store.close()
 
+    for project_dir in base.iterdir():
+        metadata_path = project_dir / "project.json"
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        metadata["created_at"] = (
+            "2026-07-23T00:00:00.000+00:00"
+            if metadata["real_workdir"] == str(second.resolve())
+            else "2026-07-23T00:00:01.000+00:00"
+        )
+        metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
     projects = list_persisted_projects(base)
     assert [item.workdir for item in projects] == [
         str(second.resolve()),
