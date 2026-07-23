@@ -85,6 +85,7 @@ function registerIpc(): void {
   ipcMain.handle("noval:resume-session",(_e,id:string)=>sidecar.request("session.resume",{session_id:id}));
   ipcMain.handle("noval:rename-session",(_e,id:string,title:string)=>sidecar.request("session.rename",{session_id:id,title}));
   ipcMain.handle("noval:transcript",(_e,id:string,after=0)=>sidecar.request("session.transcript",{session_id:id,after_sequence:after,limit:100}));
+  ipcMain.handle("noval:transcript-history",(_e,id:string,before?:number)=>sidecar.request("session.transcript_history",{session_id:id,before_sequence:before,limit:24}));
   ipcMain.handle("noval:copy-text",(_e,text:string)=>{if(typeof text!=="string")throw new Error("Only text can be copied.");clipboard.writeText(text)});
   ipcMain.handle("noval:events",(_e,id:string,after=0)=>sidecar.request("session.events",{session_id:id,after_sequence:after,limit:100}));
   ipcMain.handle("noval:start-turn",(_e,id:string,text:string)=>sidecar.request("turn.start",{session_id:id,text},600000));

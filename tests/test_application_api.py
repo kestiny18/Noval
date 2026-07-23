@@ -44,6 +44,7 @@ from noval.api import (
     TurnResult,
     TurnStatus,
     TranscriptEntry,
+    TranscriptHistoryPage,
     TranscriptPage,
     TranscriptToolCall,
     TranscriptToolResult,
@@ -309,6 +310,15 @@ def test_transcript_contracts_round_trip_json_safely():
 
     assert TranscriptPage.from_dict(json_round_trip(page.to_dict())) == page
 
+    history = TranscriptHistoryPage(
+        entries=page.entries[-1:],
+        previous_sequence=3,
+        has_more=True,
+    )
+    assert TranscriptHistoryPage.from_dict(
+        json_round_trip(history.to_dict())
+    ) == history
+
 
 def test_transcript_is_paged_for_persistent_and_ephemeral_sessions(tmp_path):
     persistent_runtime = NovalRuntime(
@@ -365,6 +375,45 @@ def test_transcript_is_paged_for_persistent_and_ephemeral_sessions(tmp_path):
         ephemeral.transcript(limit=201)
     ephemeral.close()
     ephemeral_runtime.close()
+
+
+def test_transcript_history_returns_latest_entries_then_older_pages(tmp_path):
+    runtime = NovalRuntime(
+        application_config(tmp_path),
+        client_factory=QueueClientFactory([
+            mock_text("answer one"),
+            mock_text("answer two"),
+            mock_text("answer three"),
+        ]),
+    )
+    session = runtime.create_session(SessionOptions(
+        workdir=str(tmp_path),
+        persistence=SessionPersistence.PERSISTENT,
+    ))
+    for number in ("one", "two", "three"):
+        session.run_turn(TurnRequest(f"question {number}"))
+
+    latest = session.transcript_history(limit=2)
+    older = session.transcript_history(
+        before_sequence=latest.previous_sequence,
+        limit=2,
+    )
+
+    assert [entry.sequence for entry in latest.entries] == [5, 6]
+    assert [entry.text for entry in latest.entries] == [
+        "question three",
+        "answer three",
+    ]
+    assert latest.previous_sequence == 5
+    assert latest.has_more is True
+    assert [entry.sequence for entry in older.entries] == [3, 4]
+    assert older.previous_sequence == 3
+    assert older.has_more is True
+    assert {entry.sequence for entry in latest.entries}.isdisjoint(
+        entry.sequence for entry in older.entries
+    )
+    session.close()
+    runtime.close()
 
 
 def test_transcript_and_turn_result_exclude_provider_private_state_and_arguments(

@@ -40,6 +40,7 @@ from .api import (
     TurnResult,
     TurnStatus,
     TranscriptEntry,
+    TranscriptHistoryPage,
     TranscriptPage,
     TranscriptToolCall,
     TranscriptToolResult,
@@ -475,6 +476,85 @@ class AgentSession:
             entries=page_entries,
             next_sequence=next_sequence,
             has_more=len(entries) > limit,
+        )
+
+    def transcript_history(
+        self,
+        *,
+        before_sequence: Optional[int] = None,
+        limit: int = 24,
+    ) -> TranscriptHistoryPage:
+        """Return the newest safe transcript entries before an exclusive cursor."""
+        if (
+            before_sequence is not None
+            and (
+                not isinstance(before_sequence, int)
+                or isinstance(before_sequence, bool)
+                or before_sequence < 1
+            )
+        ):
+            raise ValueError("before_sequence must be null or an integer >= 1")
+        if (
+            not isinstance(limit, int)
+            or isinstance(limit, bool)
+            or limit < 1
+            or limit > _TRANSCRIPT_PAGE_LIMIT
+        ):
+            raise ValueError(
+                f"limit must be an integer between 1 and {_TRANSCRIPT_PAGE_LIMIT}"
+            )
+        with self._state_lock:
+            if self._closed:
+                raise NovalError(
+                    "session_closed",
+                    "Session is closed.",
+                    session_id=self._base_info.session_id,
+                )
+            if self._store is not None:
+                records, has_more = self._store.load_record_history(
+                    before_sequence - 1 if before_sequence is not None else None,
+                    limit,
+                )
+                page_entries = tuple(
+                    entry
+                    for record in records
+                    if (
+                        entry := _transcript_entry(
+                            record.seq + 1,
+                            record.ts,
+                            record.message,
+                        )
+                    )
+                    is not None
+                )
+            else:
+                projected = tuple(
+                    entry
+                    for sequence, message in enumerate(
+                        (
+                            item
+                            for item in self._agent.messages
+                            if item.role is not MessageRole.SYSTEM
+                        ),
+                        start=1,
+                    )
+                    if (
+                        entry := _transcript_entry(sequence, None, message)
+                    )
+                    is not None
+                    and (
+                        before_sequence is None
+                        or entry.sequence < before_sequence
+                    )
+                )
+                has_more = len(projected) > limit
+                page_entries = projected[-limit:]
+        return TranscriptHistoryPage(
+            entries=page_entries,
+            previous_sequence=(
+                page_entries[0].sequence if page_entries else before_sequence
+            ),
+            has_more=has_more,
         )
 
     def replay_events(

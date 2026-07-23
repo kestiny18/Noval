@@ -22,6 +22,7 @@ import os
 import re
 import secrets
 import sys
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -57,6 +58,9 @@ class PersistentSessionStore(SessionStore, SessionMetadataStore, Protocol):
     def load_records(self) -> List["SessionRecord"]: ...
     def load_record_page(
         self, after_seq: int, limit: int
+    ) -> Tuple[List["SessionRecord"], bool]: ...
+    def load_record_history(
+        self, before_seq: Optional[int], limit: int
     ) -> Tuple[List["SessionRecord"], bool]: ...
     def context_path(self) -> Path: ...
     def task_path(self) -> Path: ...
@@ -397,6 +401,37 @@ class JsonlSessionStore:
             if len(records) > limit:
                 return records[:limit], True
         return records, False
+
+    def load_record_history(
+        self,
+        before_seq: Optional[int],
+        limit: int,
+    ) -> Tuple[List[SessionRecord], bool]:
+        """Return the newest bounded records before an exclusive sequence."""
+        records = deque(maxlen=limit + 1)
+        for rec in _iter_records(self._path):
+            if "_meta" in rec:
+                continue
+            seq = rec.get("seq")
+            ts = rec.get("ts")
+            raw_message = rec.get("message")
+            if not isinstance(seq, int) or not isinstance(ts, str):
+                continue
+            if before_seq is not None and seq >= before_seq:
+                continue
+            try:
+                message = ConversationMessage.from_dict(raw_message)
+            except MessageFormatError:
+                log.warning(
+                    "skipping corrupt canonical session message: %s seq=%s",
+                    self._path,
+                    seq,
+                )
+                continue
+            records.append(SessionRecord(seq=seq, ts=ts, message=message))
+        has_more = len(records) > limit
+        page = list(records)
+        return (page[-limit:] if has_more else page), has_more
 
     def load(self) -> List[ConversationMessage]:
         return [record.message for record in self.load_records()]

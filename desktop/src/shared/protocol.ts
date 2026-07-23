@@ -19,6 +19,7 @@ export interface ProjectInfo { path:string;name:string;active:boolean }
 export interface PermissionState { mode: "ask" | "full_access"; approved_tools: string[] }
 export interface ProviderProfile { provider:"openai-compatible"|"anthropic";model:string;judgeModel:string;baseUrl:string;hasApiKey:boolean }
 export interface TranscriptEntry { sequence: number; role: "user" | "assistant" | "tool"; text: string; timestamp: string | null; tool_calls: Array<{call_id:string;name:string;argument_keys:string[]}>; tool_results: Array<{call_id:string;content:string;is_error:boolean}> }
+export interface TranscriptHistoryPage {entries:TranscriptEntry[];previous_sequence:number|null;has_more:boolean}
 export interface CompletionCriterion { criterion_id:string;status:"passed"|"failed"|"missing"|"stale"|"unknown";source:string|null;observed_at:string|null }
 export interface CompletionReport { goal_id:string;status:"completed"|"incomplete"|"uncertain";evaluated_at:string;criteria:CompletionCriterion[];semantic?:{status:string;summary?:string}|null }
 export interface TurnResult { status:string;completion:CompletionReport|null;error?:{code?:string;safe_message?:string}|null }
@@ -39,6 +40,7 @@ export interface NovalDesktopApi {
   resumeSession(sessionId: string): Promise<{session: SessionInfo; permissions: PermissionState}>;
   renameSession(sessionId: string, title: string): Promise<SessionInfo>;
   transcript(sessionId: string, afterSequence?: number): Promise<{entries: TranscriptEntry[]; next_sequence:number; has_more:boolean}>;
+  transcriptHistory(sessionId:string,beforeSequence?:number):Promise<TranscriptHistoryPage>;
   copyText(text:string):Promise<void>;
   replayEvents(sessionId:string,afterSequence?:number):Promise<EventPage>;
   startTurn(sessionId: string, text: string): Promise<TurnResult>;

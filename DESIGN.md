@@ -246,3 +246,7 @@ not add Electron, transport, UI, or Eval branches to the kernel.
 ADR-0008 limits project and Session discovery to the current canonical Session
 schema. Unsupported experimental files remain untouched but are not projected
 to hosts.
+
+ADR-0009 adds bounded reverse transcript pagination so hosts can render the
+latest history first and progressively request older safe projections without
+parsing canonical Session files themselves.
