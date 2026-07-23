@@ -206,6 +206,24 @@ def test_load_skips_bad_lines_and_invalid_canonical_messages(tmp_path, caplog):
     assert "corrupt" in caplog.text
 
 
+def test_load_record_history_is_bounded_and_uses_an_exclusive_cursor(tmp_path):
+    base = tmp_path / "sessions"
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    store = JsonlSessionStore.create(base, workdir, "model-a")
+    for value in ("zero", "one", "two", "three", "four"):
+        store.append(user_message(value))
+
+    latest, latest_has_more = store.load_record_history(None, 2)
+    older, older_has_more = store.load_record_history(latest[0].seq, 2)
+
+    assert [record.seq for record in latest] == [3, 4]
+    assert latest_has_more is True
+    assert [record.seq for record in older] == [1, 2]
+    assert older_has_more is True
+    store.close()
+
+
 def test_list_sessions_derives_title_and_sidecar_overrides(tmp_path):
     base = tmp_path / "sessions"
     workdir = tmp_path / "project"

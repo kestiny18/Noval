@@ -13,6 +13,7 @@ a core seam, or a cross-cutting invariant.
 | [0006](0006-desktop-consumer-observation-boundary.md) | Accepted | Expose safe desktop-consumer observation contracts |
 | [0007](0007-first-party-desktop-host.md) | Accepted | Build the first-party desktop as an isolated Electron host |
 | [0008](0008-current-session-schema-discovery.md) | Accepted | Discover only the current canonical Session schema |
+| [0009](0009-bidirectional-transcript-pagination.md) | Accepted | Add bounded reverse transcript pagination |
 
 The earlier Chinese decision ledger is preserved in
 [DESIGN.zh-CN.md](../../DESIGN.zh-CN.md). New decisions should use an ADR rather

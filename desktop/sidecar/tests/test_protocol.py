@@ -31,6 +31,7 @@ def test_hello_reports_stable_capabilities():
     result = server.dispatch(parsed)
     assert result["protocol_version"] == 1
     assert "sessions" in result["capabilities"]
+    assert "transcript_history" in result["capabilities"]
     assert result["core_version"]
 
 
@@ -105,6 +106,38 @@ def test_resume_is_idempotent_for_a_session_already_open_in_the_sidecar(tmp_path
     )))
 
     assert result["session"]["session_id"] == "open-session"
+
+
+def test_transcript_history_forwards_the_exclusive_cursor(tmp_path):
+    page = SimpleNamespace(to_dict=lambda: {
+        "schema_version": 1,
+        "entries": [],
+        "previous_sequence": 25,
+        "has_more": True,
+    })
+
+    class Session:
+        def transcript_history(self, *, before_sequence, limit):
+            assert before_sequence == 25
+            assert limit == 24
+            return page
+
+    class Runtime:
+        def get_session(self, session_id):
+            assert session_id == "open-session"
+            return Session()
+
+    server = SidecarServer(io.BytesIO(), io.BytesIO())
+    server._runtime = Runtime()
+    server._workspace = tmp_path
+
+    result = server.dispatch(parse_request(request(
+        "session.transcript_history",
+        {"session_id": "open-session", "before_sequence": 25, "limit": 24},
+    )))
+
+    assert result["previous_sequence"] == 25
+    assert result["has_more"] is True
 
 
 def test_configuration_exit_is_returned_as_safe_error(monkeypatch):

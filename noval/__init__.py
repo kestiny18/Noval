@@ -38,6 +38,7 @@ from .api import (  # noqa: F401
     TurnResult,
     TurnStatus,
     TranscriptEntry,
+    TranscriptHistoryPage,
     TranscriptPage,
     TranscriptToolCall,
     TranscriptToolResult,

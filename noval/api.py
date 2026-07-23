@@ -1138,6 +1138,59 @@ class TranscriptPage:
 
 
 @dataclass(frozen=True)
+class TranscriptHistoryPage:
+    entries: Tuple[TranscriptEntry, ...] = ()
+    previous_sequence: Optional[int] = None
+    has_more: bool = False
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.entries, tuple):
+            raise ApiFormatError("transcript history entries must be an immutable tuple")
+        if not all(isinstance(item, TranscriptEntry) for item in self.entries):
+            raise ApiFormatError("transcript history entries items are invalid")
+        if self.previous_sequence is not None:
+            _integer(
+                self.previous_sequence,
+                "transcript history previous_sequence",
+                minimum=1,
+            )
+        _boolean(self.has_more, "transcript history has_more")
+
+    def to_dict(self) -> Dict[str, JSONValue]:
+        return {
+            "schema_version": API_SCHEMA_VERSION,
+            "entries": [entry.to_dict() for entry in self.entries],
+            "previous_sequence": self.previous_sequence,
+            "has_more": self.has_more,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "TranscriptHistoryPage":
+        obj = _object(data, "transcript_history_page")
+        _schema(obj, "transcript_history_page")
+        entries = obj.get("entries", [])
+        if not isinstance(entries, list):
+            raise ApiFormatError("transcript history entries must be an array")
+        previous = obj.get("previous_sequence")
+        return cls(
+            entries=tuple(TranscriptEntry.from_dict(item) for item in entries),
+            previous_sequence=(
+                _integer(
+                    previous,
+                    "transcript history previous_sequence",
+                    minimum=1,
+                )
+                if previous is not None
+                else None
+            ),
+            has_more=_boolean(
+                obj.get("has_more", False),
+                "transcript history has_more",
+            ),
+        )
+
+
+@dataclass(frozen=True)
 class TurnRequest:
     text: str
     client_request_id: Optional[str] = None

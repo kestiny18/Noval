@@ -7,6 +7,7 @@ const api: NovalDesktopApi = {
   listSessions:()=>ipcRenderer.invoke("noval:list-sessions"), createSession:options=>ipcRenderer.invoke("noval:create-session",options),
   resumeSession:id=>ipcRenderer.invoke("noval:resume-session",id), renameSession:(id,title)=>ipcRenderer.invoke("noval:rename-session",id,title),
   transcript:(id,after)=>ipcRenderer.invoke("noval:transcript",id,after), replayEvents:(id,after)=>ipcRenderer.invoke("noval:events",id,after), startTurn:(id,text)=>ipcRenderer.invoke("noval:start-turn",id,text),
+  transcriptHistory:(id,before)=>ipcRenderer.invoke("noval:transcript-history",id,before),
   copyText:text=>ipcRenderer.invoke("noval:copy-text",text),
   cancelTurn:id=>ipcRenderer.invoke("noval:cancel-turn",id), setPermissionMode:(id,mode)=>ipcRenderer.invoke("noval:permission-mode",id,mode),
   revokeTool:(id,tool)=>ipcRenderer.invoke("noval:permission-revoke",id,tool),resetPermissions:id=>ipcRenderer.invoke("noval:permission-reset",id),

@@ -68,6 +68,7 @@ class SidecarServer:
             "session.resume": self._session_resume,
             "session.rename": self._session_rename,
             "session.transcript": self._session_transcript,
+            "session.transcript_history": self._session_transcript_history,
             "session.events": self._session_events,
             "session.permissions": self._session_permissions,
             "session.permission_mode": self._session_permission_mode,
@@ -89,7 +90,7 @@ class SidecarServer:
             "core_version": importlib.metadata.version("noval"),
             "python_version": platform.python_version(),
             "platform": sys.platform,
-            "capabilities": ["sessions", "transcript", "events", "permissions", "visible_streaming", "cancellation"],
+            "capabilities": ["sessions", "transcript", "transcript_history", "events", "permissions", "visible_streaming", "cancellation"],
         }
 
     def _runtime_start(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -162,6 +163,15 @@ class SidecarServer:
 
     def _session_transcript(self, params: dict[str, Any]) -> dict[str, Any]:
         return self._session(params).transcript(after_sequence=int(params.get("after_sequence", 0)), limit=int(params.get("limit", 100))).to_dict()
+
+    def _session_transcript_history(self, params: dict[str, Any]) -> dict[str, Any]:
+        before_sequence = params.get("before_sequence")
+        return self._session(params).transcript_history(
+            before_sequence=(
+                int(before_sequence) if before_sequence is not None else None
+            ),
+            limit=int(params.get("limit", 24)),
+        ).to_dict()
 
     def _session_events(self, params: dict[str, Any]) -> dict[str, Any]:
         return self._session(params).replay_events(after_sequence=int(params.get("after_sequence", 0)), limit=int(params.get("limit", 100))).to_dict()
