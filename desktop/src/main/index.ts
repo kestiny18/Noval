@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { existsSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { mkdir, writeFile as writeTextFile } from "node:fs/promises";
-import { Preferences, ProviderProfile } from "./preferences.js";
+import { AppearancePreferences, Preferences, ProviderProfile } from "./preferences.js";
 import { SidecarSupervisor } from "./sidecar.js";
 import { PROTOCOL_VERSION } from "../shared/protocol.js";
 
@@ -95,6 +95,11 @@ function registerIpc(): void {
   ipcMain.handle("noval:permission-reset",(_e,id:string)=>sidecar.request("session.reset_permissions",{session_id:id}));
   ipcMain.handle("noval:permission-resolve",async(_e,id:string,decision:string)=>{await sidecar.request("permission.resolve",{permission_request_id:id,decision});});
   ipcMain.handle("noval:app-info",()=>({desktopVersion:app.getVersion(),coreVersion:sidecar.getCoreVersion(),protocolVersion:PROTOCOL_VERSION}));
+  ipcMain.handle("noval:get-appearance",()=>preferences.appearance());
+  ipcMain.handle("noval:save-appearance",async(_e,value:AppearancePreferences)=>{
+    if(!value||!["system","light","dark"].includes(value.theme)||!["comfortable","compact"].includes(value.density))throw new Error("Appearance settings are invalid.");
+    await preferences.setAppearance(value);return preferences.appearance();
+  });
   ipcMain.handle("noval:get-provider-profile",()=>effectiveProfile());
   ipcMain.handle("noval:save-provider-profile",async(_e,value:Omit<ProviderProfile,"hasApiKey">&{apiKey?:string})=>{
     if(!value||!['openai-compatible','anthropic'].includes(value.provider)||!value.model?.trim()||!value.judgeModel?.trim())throw new Error("Provider and model values are required.");
