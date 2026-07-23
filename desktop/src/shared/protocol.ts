@@ -14,6 +14,7 @@ export type SidecarEvent = z.infer<typeof EventSchema>;
 
 export interface SessionInfo {
   session_id: string; workdir: string; provider: string; model: string; is_open: boolean; title: string | null; message_count: number;
+  compatible: boolean; session_schema_version: number | null;
 }
 export interface ProjectInfo { path:string;name:string;active:boolean }
 export interface PermissionState { mode: "ask" | "full_access"; approved_tools: string[] }
