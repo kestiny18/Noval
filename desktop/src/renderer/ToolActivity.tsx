@@ -2,8 +2,9 @@ import {FilePenLine,Search,TerminalSquare,Wrench} from "lucide-react";
 import type {TranscriptEntry} from "../shared/protocol";
 
 type ActivityKind="command"|"inspect"|"edit"|"other";
-type MessageItem={type:"message";key:string;role:TranscriptEntry["role"];text:string};
-export type ActivityItem={type:"activity";key:string;kind:ActivityKind;toolNames:string[];count:number;failed:boolean;pending:boolean};
+export type MessageItem={type:"message";key:string;role:TranscriptEntry["role"];text:string;timestamp:string|null};
+type ActivityDetail={key:string;toolName:string;content:string|null;failed:boolean;pending:boolean};
+export type ActivityItem={type:"activity";key:string;kind:ActivityKind;toolNames:string[];count:number;failed:boolean;pending:boolean;details:ActivityDetail[]};
 export type TimelineItem=MessageItem|ActivityItem;
 
 export function buildTimeline(entries:TranscriptEntry[]):TimelineItem[]{
@@ -11,14 +12,14 @@ export function buildTimeline(entries:TranscriptEntry[]):TimelineItem[]{
  const callIds=new Set(entries.flatMap(entry=>entry.tool_calls.map(call=>call.call_id)));
  const timeline:TimelineItem[]=[];
  for(const entry of entries){
-  if(entry.text)timeline.push({type:"message",key:`message-${entry.sequence}`,role:entry.role,text:entry.text});
+  if(entry.text)timeline.push({type:"message",key:`message-${entry.sequence}`,role:entry.role,text:entry.text,timestamp:entry.timestamp});
   for(const call of entry.tool_calls){
-   const result=results.get(call.call_id),activity:ActivityItem={type:"activity",key:`activity-${call.call_id}`,kind:activityKind(call.name),toolNames:[call.name],count:1,failed:Boolean(result?.is_error),pending:!result};
+   const result=results.get(call.call_id),activity:ActivityItem={type:"activity",key:`activity-${call.call_id}`,kind:activityKind(call.name),toolNames:[call.name],count:1,failed:Boolean(result?.is_error),pending:!result,details:[{key:call.call_id,toolName:call.name,content:result?.content??null,failed:Boolean(result?.is_error),pending:!result}]};
    appendActivity(timeline,activity);
   }
   for(const result of entry.tool_results){
    if(callIds.has(result.call_id))continue;
-   appendActivity(timeline,{type:"activity",key:`result-${result.call_id}`,kind:"other",toolNames:[],count:1,failed:result.is_error,pending:false});
+   appendActivity(timeline,{type:"activity",key:`result-${result.call_id}`,kind:"other",toolNames:[],count:1,failed:result.is_error,pending:false,details:[{key:result.call_id,toolName:"Tool",content:result.content,failed:result.is_error,pending:false}]});
   }
  }
  return timeline;
@@ -27,15 +28,16 @@ export function buildTimeline(entries:TranscriptEntry[]):TimelineItem[]{
 export function ToolActivity({activity}:{activity:ActivityItem}){
  const Icon=activity.kind==="command"?TerminalSquare:activity.kind==="inspect"?Search:activity.kind==="edit"?FilePenLine:Wrench;
  const label=activityLabel(activity);
- return <div className={`activity-row ${activity.failed?"failed":activity.pending?"pending":""}`} aria-label={`${label}${activity.toolNames.length?`: ${activity.toolNames.join(", ")}`:""}`} title={activity.toolNames.join(", ")}>
-  <Icon size={15}/><span>{label}</span>
- </div>
+ return <details className={`activity-row ${activity.failed?"failed":activity.pending?"pending":""}`}>
+  <summary aria-label={`${label}${activity.toolNames.length?`: ${activity.toolNames.join(", ")}`:""}`} title={activity.toolNames.join(", ")}><Icon size={15}/><span>{label}</span></summary>
+  <div className="activity-details">{activity.details.map(detail=><section key={detail.key}><strong>{detail.toolName}</strong><small>{detail.pending?"Running":detail.failed?"Failed":"Completed"}</small>{detail.content&&<pre>{detail.content}</pre>}</section>)}</div>
+ </details>
 }
 
 function appendActivity(timeline:TimelineItem[],activity:ActivityItem){
  const previous=timeline.at(-1);
  if(previous?.type==="activity"&&previous.kind===activity.kind&&previous.failed===activity.failed&&previous.pending===activity.pending){
-  previous.count+=activity.count;previous.toolNames.push(...activity.toolNames);return;
+  previous.count+=activity.count;previous.toolNames.push(...activity.toolNames);previous.details.push(...activity.details);return;
  }
  timeline.push(activity);
 }

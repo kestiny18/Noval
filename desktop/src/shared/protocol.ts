@@ -39,6 +39,7 @@ export interface NovalDesktopApi {
   resumeSession(sessionId: string): Promise<{session: SessionInfo; permissions: PermissionState}>;
   renameSession(sessionId: string, title: string): Promise<SessionInfo>;
   transcript(sessionId: string, afterSequence?: number): Promise<{entries: TranscriptEntry[]; next_sequence:number; has_more:boolean}>;
+  copyText(text:string):Promise<void>;
   replayEvents(sessionId:string,afterSequence?:number):Promise<EventPage>;
   startTurn(sessionId: string, text: string): Promise<TurnResult>;
   cancelTurn(sessionId: string): Promise<boolean>;
