@@ -216,8 +216,6 @@ def test_list_sessions_derives_title_and_sidecar_overrides(tmp_path):
 
     [meta] = list_sessions(base, workdir)
     assert meta.title == "Explain the session store"
-    assert meta.compatible is True
-    assert meta.schema_version == 2
     store.set_title("Custom title")
     assert list_sessions(base, workdir)[0].title == "Custom title"
 
@@ -269,23 +267,24 @@ def test_adapter_replay_state_and_provenance_round_trip(tmp_path):
     assert resumed.load() == [message]
 
 
-def test_v1_session_is_listed_as_incompatible_and_open_fails_without_mutation(tmp_path):
+def test_v1_session_is_not_discovered_and_open_fails_without_mutation(tmp_path):
     base = tmp_path / "sessions"
     workdir = tmp_path / "project"
     workdir.mkdir()
     seed = JsonlSessionStore.create(base, workdir, "model-a")
+    seed.append(user_message("temporary current session"))
+    current_path = seed._path
+    close(seed)
+    current_path.unlink()
     path = seed._dir / "legacy.jsonl"
-    path.parent.mkdir(parents=True)
     original = "\n".join([
         json.dumps({"_meta": {"schema_version": 1, "session_id": "legacy", "model": "m"}}),
         json.dumps({"seq": 0, "ts": "t", "msg": {"role": "user", "content": "old"}}),
     ]) + "\n"
     path.write_text(original, encoding="utf-8")
 
-    [meta] = list_sessions(base, workdir)
-    assert meta.compatible is False
-    assert meta.schema_version == 1
-    assert "incompatible" in meta.title
+    assert list_sessions(base, workdir) == []
+    assert list_persisted_projects(base) == []
     with pytest.raises(UnsupportedSessionVersion, match="reads only schema v2"):
         JsonlSessionStore.open(base, workdir, "legacy", "model-a")
     assert path.read_text(encoding="utf-8") == original

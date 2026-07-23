@@ -263,8 +263,6 @@ def test_session_info_and_permission_contracts_are_json_safe():
         title="Investigate runtime",
         message_count=12,
         last_active="2026-07-18T11:00:00Z",
-        compatible=True,
-        schema_version=2,
     )
     state = PermissionStateView(PermissionMode.ASK, ("run_bash",))
     request = PermissionRequest(

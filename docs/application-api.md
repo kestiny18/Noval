@@ -1,6 +1,6 @@
 # Application API
 
-[简体中文](application-api.zh-CN.md) · [ADR-0005](adr/0005-goal-evidence-completion-contract.md) · [ADR-0006](adr/0006-desktop-consumer-observation-boundary.md)
+[简体中文](application-api.zh-CN.md) · [ADR-0005](adr/0005-goal-evidence-completion-contract.md) · [ADR-0006](adr/0006-desktop-consumer-observation-boundary.md) · [ADR-0008](adr/0008-current-session-schema-discovery.md)
 
 Noval's Application API keeps operational termination separate from task
 completion:
@@ -38,6 +38,10 @@ with NovalRuntime.from_settings(event_sink=events.put) as runtime:
         if replay.gap_detected:
             history = session.transcript(limit=100)
 ```
+
+Persisted project and Session inventories contain only canonical files using
+the current Session schema. Unsupported experimental files are not projected
+to hosts.
 
 `configuration()` is a credential-free view of the effective Runtime settings.
 It exposes only Provider/model selection, base URL, and whether a credential is

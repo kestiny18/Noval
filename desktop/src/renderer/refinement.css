@@ -19,7 +19,6 @@ body{background:var(--sidebar);color:var(--text)}
 .project-row{min-height:34px;border-radius:7px}.project-row.current{background:transparent}.project-row:hover{background:var(--hover)}
 .project-main{height:34px;gap:8px;padding:0 9px;color:var(--text)}.project-main span{font-size:12.5px;font-weight:560}.project-main svg{color:var(--muted)}
 .session-list{padding:1px 0 7px 26px}.session-row,.show-more{height:31px;padding:0 10px;border-radius:7px;font-size:11.5px;color:var(--muted)}
-.session-row.incompatible{color:var(--faint);cursor:not-allowed}.session-row.incompatible:hover{background:transparent}
 .session-row:hover{background:var(--hover)}.session-row.active{background:var(--active);color:var(--text);font-weight:560}.show-more,.no-sessions,.no-projects{color:var(--faint)}
 .menu{background:var(--panel);border-color:var(--line);border-radius:10px;box-shadow:var(--shadow)}
 .menu button{color:var(--text)!important}.menu button:hover{background:var(--hover)}

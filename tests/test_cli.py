@@ -48,7 +48,6 @@ class FakeSession:
             model="agent",
             is_open=True,
             message_count=message_count,
-            schema_version=2,
         )
         self.available_tools = ("read_file", "run_bash")
         self.requests = []

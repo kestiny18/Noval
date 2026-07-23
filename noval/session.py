@@ -82,8 +82,6 @@ class SessionMeta:
     title: str
     message_count: int
     model: str
-    compatible: bool = True
-    schema_version: Optional[int] = SCHEMA_VERSION
     provider: str = ""
 
 
@@ -446,7 +444,11 @@ def list_persisted_projects(base_dir: Path) -> List[PersistedProjectMeta]:
             continue
         if not isinstance(created_at, str) or not created_at.strip():
             continue
-        session_count = sum(1 for _ in project_dir.glob("*.jsonl"))
+        session_count = sum(
+            1
+            for path in project_dir.glob("*.jsonl")
+            if _session_schema_version(path) == SCHEMA_VERSION
+        )
         if session_count < 1:
             continue
         projects.append(PersistedProjectMeta(
@@ -461,24 +463,24 @@ def list_persisted_projects(base_dir: Path) -> List[PersistedProjectMeta]:
 
 def _read_session_meta(path: Path) -> Optional[SessionMeta]:
     """Read a summary from metadata, the first user message, and file mtime."""
+    if _session_schema_version(path) != SCHEMA_VERSION:
+        return None
     session_id = path.stem
     created_at = ""
     model = ""
     first_user = ""
     msg_count = 0
-    schema_version: Optional[int] = None
     for rec in _iter_records(path):
         if "_meta" in rec:
             m = rec["_meta"]
             if not isinstance(m, dict):
                 continue
-            schema_version = m.get("schema_version")
             created_at = m.get("created_at", "")
             model = m.get("model", "")
             session_id = m.get("session_id", session_id)
             continue
         raw_message = rec.get("message")
-        if schema_version == SCHEMA_VERSION and isinstance(raw_message, dict):
+        if isinstance(raw_message, dict):
             try:
                 message = ConversationMessage.from_dict(raw_message)
             except MessageFormatError:
@@ -486,15 +488,12 @@ def _read_session_meta(path: Path) -> Optional[SessionMeta]:
             msg_count += 1
             if not first_user and message.role is MessageRole.USER:
                 first_user = message.text
-        elif "msg" in rec or "message" in rec:
-            msg_count += 1
     try:
         last_active = datetime.fromtimestamp(path.stat().st_mtime).astimezone().isoformat(timespec="seconds")
     except OSError:
         last_active = created_at
 
     # Prefer a custom sidecar title; otherwise derive it from the first user message.
-    compatible = schema_version == SCHEMA_VERSION
     sidecar = _read_json_object(path.parent / (path.stem + ".meta.json"))
     title_value = sidecar.get("title")
     title = title_value if isinstance(title_value, str) and title_value.strip() else None
@@ -504,13 +503,11 @@ def _read_session_meta(path: Path) -> Optional[SessionMeta]:
         if isinstance(application, dict) and isinstance(application.get("provider", ""), str)
         else ""
     )
-    if not compatible:
-        title = f"[incompatible v{schema_version if schema_version is not None else '?'}] {title or path.stem}"
-    elif title is None:
+    if title is None:
         title = _derive_title(first_user) if first_user else "(empty session)"
     return SessionMeta(
         session_id, created_at, last_active, title, msg_count, model,
-        compatible=compatible, schema_version=schema_version, provider=provider,
+        provider=provider,
     )
 
 
