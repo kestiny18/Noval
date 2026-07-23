@@ -13,7 +13,7 @@ test("launches the real Electron host with a persistent single-page project shel
   const page=await application.firstWindow();
   try{
     await expect(page.getByRole("button",{name:/add project/i})).toBeVisible();
-    await expect(page.getByText(/Your work starts with a project/i)).toBeVisible();
+    await expect(page.getByText(/添加一个项目以开始使用 Noval/i)).toBeVisible();
     await expect(page.getByRole("button",{name:/settings/i})).toBeVisible();
     expect(await page.evaluate(()=>({node:(window as any).require,api:Boolean(window.noval)}))).toEqual({node:undefined,api:true});
   }finally{
@@ -30,7 +30,7 @@ test("uses folder state and hover actions for a persisted project",async()=>{
   await writeFile(path.join(userData,"desktop-settings.json"),JSON.stringify({workspace:projectPath,workspaces:[projectPath]}),"utf8");
   const root=path.resolve(import.meta.dirname,".."),executablePath=path.join(root,"node_modules","electron","dist",process.platform==="win32"?"electron.exe":"electron");
   const application=await electron.launch({executablePath,args:[".",`--user-data-dir=${userData}`],cwd:root,env:{...process.env,NOVAL_PYTHON:process.env.NOVAL_PYTHON??"py",NOVAL_SETTINGS_PATH:settingsPath}});const page=await application.firstWindow();
-  try{const project=page.getByRole("button",{name:"sample-project",exact:true});await expect(project).toBeVisible();await expect(project.locator(".lucide-folder-open")).toBeVisible();await project.hover();await expect(page.getByRole("button",{name:/New task in sample-project/i})).toBeVisible();await expect(page.getByText(/Export diagnostics/i)).toHaveCount(0)}
+  try{const project=page.getByRole("button",{name:"sample-project",exact:true});await expect(project).toBeVisible();await expect(project.locator(".lucide-folder-open")).toBeVisible();await expect(page.getByRole("heading",{name:"我们应该在 sample-project 中构建什么？"})).toBeVisible();await project.hover();await expect(page.getByRole("button",{name:/New task in sample-project/i})).toBeVisible();await page.getByRole("button",{name:/New task in sample-project/i}).click();await expect(page.getByRole("heading",{name:"我们应该在 sample-project 中构建什么？"})).toBeVisible();await expect(page.locator(".tag-chip")).toHaveCount(0);await expect(page.getByText(/Export diagnostics/i)).toHaveCount(0)}
   finally{const process=application.process();const exited=new Promise<void>(resolve=>{if(process.exitCode!==null)resolve();else process.once("exit",()=>resolve())});await page.close();await exited;await rm(userData,{recursive:true,force:true})}
 });
 
