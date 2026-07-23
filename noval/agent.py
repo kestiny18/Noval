@@ -1122,30 +1122,23 @@ def _choose_resume_session(sessions: List[SessionMeta]) -> Optional[str]:
     shown = sessions[:20]
     print("\nResumable sessions:")
     for i, s in enumerate(shown, 1):
-        compatibility = "" if s.compatible else "  [incompatible]"
         print(
             f"  {i}. {s.title}  [{s.session_id}]  {s.last_active}  "
-            f"{s.message_count} messages{compatibility}"
+            f"{s.message_count} messages"
         )
     ans = input("Select a number or session ID (Enter=latest, n=new): ").strip()
     if not ans:
-        selected = next((session for session in shown if session.compatible), None)
-        return selected.session_id if selected is not None else None
+        return shown[0].session_id
     if ans.lower() in ("n", "new"):
         return None
     if ans.isdigit():
         idx = int(ans)
         if 1 <= idx <= len(shown):
-            selected = shown[idx - 1]
-            if not selected.compatible:
-                raise SystemExit(f"Session {selected.session_id} uses an incompatible schema and cannot be resumed")
-            return selected.session_id
+            return shown[idx - 1].session_id
     matches = [
         s for s in sessions if s.session_id.startswith(ans)
     ]
     if len(matches) == 1:
-        if not matches[0].compatible:
-            raise SystemExit(f"Session {matches[0].session_id} uses an incompatible schema and cannot be resumed")
         return matches[0].session_id
     raise SystemExit(f"Invalid session selection: {ans}")
 

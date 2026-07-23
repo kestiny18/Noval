@@ -160,6 +160,9 @@ preserved.
 ## State, recovery, and freshness
 
 - Session schema v2 stores canonical non-system messages in append-only JSONL.
+- Only current-schema Session files participate in project and Session
+  discovery. Unsupported files remain untouched and explicit open attempts
+  fail closed.
 - Safe transcript pages are projections of canonical messages, while live event
   replay is bounded to one open Session and is never restored.
 - Task sidecar schema v2 stores recoverable goal/evidence snapshots and accepts
@@ -239,3 +242,7 @@ See the [ADR index](docs/adr/README.md) and GitHub Roadmap for tracked decisions
 ADR-0007 defines the first-party Desktop as an isolated Electron host with an
 embedded Python sidecar. Desktop consumes the public Application API and does
 not add Electron, transport, UI, or Eval branches to the kernel.
+
+ADR-0008 limits project and Session discovery to the current canonical Session
+schema. Unsupported experimental files remain untouched but are not projected
+to hosts.

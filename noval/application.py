@@ -1218,7 +1218,6 @@ class NovalRuntime:
             is_open=True,
             title=session_title,
             message_count=resumed_message_count,
-            schema_version=2 if store is not None else None,
         )
         selected_sink = event_sink if event_sink is not None else self._event_sink
 
@@ -1364,8 +1363,6 @@ class NovalRuntime:
                 title=_observed_session_title(meta.title),
                 message_count=meta.message_count,
                 last_active=meta.last_active,
-                compatible=meta.compatible,
-                schema_version=meta.schema_version,
             )
             for meta in list_sessions(self._config.sessions_dir(), root)
         )

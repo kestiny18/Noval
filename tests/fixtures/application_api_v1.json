@@ -23,9 +23,7 @@
     "is_open": true,
     "title": "Inspect Noval",
     "message_count": 4,
-    "last_active": "2026-07-18T12:00:00Z",
-    "compatible": true,
-    "session_schema_version": 2
+    "last_active": "2026-07-18T12:00:00Z"
   },
   "turn_request": {
     "schema_version": 1,

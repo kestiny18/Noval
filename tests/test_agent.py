@@ -655,18 +655,6 @@ def test_choose_resume_session_accepts_number_prefix_and_new(monkeypatch):
     assert _choose_resume_session(sessions) is None
 
 
-def test_choose_resume_session_skips_or_rejects_incompatible(monkeypatch):
-    old = _meta("old")
-    old.compatible = False
-    current = _meta("current")
-    monkeypatch.setattr("builtins.input", lambda prompt: "")
-    assert _choose_resume_session([old, current]) == "current"
-
-    monkeypatch.setattr("builtins.input", lambda prompt: "1")
-    with pytest.raises(SystemExit, match="incompatible"):
-        _choose_resume_session([old, current])
-
-
 # --- Lightweight CLI layout -----------------------------------------------
 def test_turn_prefixes_align_labels():
     assert _turn_prefix("You") == "You   > "

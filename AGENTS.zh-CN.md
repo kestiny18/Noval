@@ -61,7 +61,7 @@
 - **Token 用量**：Provider 只负责填充 `TokenUsage`，持久化由 `MeteredLLMClient` 装饰器旁路完成；统计故障不得影响模型响应。事件按日期/session/pid 追加，查询时全局汇总，不保存项目路径或消息正文。
 - **Application API**：宿主只通过 `NovalRuntime` / `AgentSession` 与 JSON-safe DTO 操作内核，不直接组装 Agent。一个 Runtime 可并行多个 Session；所有可变状态必须 per-session 隔离，同一 Session 的第二个 turn 立即返回 `session_busy`，内核不排队。Session 创建/执行不得调用 `os.chdir()` 或修改进程环境。事件 live-only；ASK 缺 PermissionHandler 时 fail-closed；持久 Session 持有跨进程 writer lease。每次模型调用必须生成 request id，并可通过安全 request journal 重建 canonical/adapter input，不保存凭证或 opaque thinking。
 - **目标、证据与完成契约**：显式 `GoalContract` 只记录目标、范围、授权说明和验收条件，不是计划或权限授予。每次工具调用生成安全 `ActionReceipt`，但收据本身不能满足验收条件。可信宿主或验收条件明确映射的 `hook:<id>` Stop Hook 可以生成 `VerificationResult`；Pre/Post Hook 不是完成证据。显式目标下，失败证据为 incomplete，缺失/过期/未知证据为 uncertain，只有全部当前证据通过才是 completed；semantic judge 不能升级该结果。目标与证据属于可恢复 task sidecar，不得保存参数值、原始工具输出、凭据、消息正文或 opaque thinking。
-- **Session / checkpoint v2**：原始 Session JSONL 只写 canonical schema v2，是唯一真相源，永不因压缩删除或改写；v1 Session 明确拒绝且不迁移、不改写、不删除，列表标记为不兼容。checkpoint v2 是可回退、可重建的派生态，只能覆盖完整对话回合；旧 checkpoint 不复用。恢复使用最新有效 checkpoint + 原始尾部。
+- **Session / checkpoint v2**：原始 Session JSONL 只写 canonical schema v2，是唯一真相源，永不因压缩删除或改写；只有当前 schema 的 Session 进入项目与 Session 发现，显式打开旧格式时明确拒绝且不迁移、不改写、不删除。checkpoint v2 是可回退、可重建的派生态，只能覆盖完整对话回合；旧 checkpoint 不复用。恢复使用最新有效 checkpoint + 原始尾部。
 - **可测试性**：`LLMClient` 必须能被 mock，使整条 agent 循环可在不联网、不烧钱的情况下测试。
 - **循环安全**：agent 循环必须有 `max_steps` 上限，达到上限优雅停止。
 - **密钥**：永不硬编码 api_key，一律从环境变量 / 配置读取。

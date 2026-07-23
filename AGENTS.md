@@ -170,7 +170,8 @@ told what to correct.
 
 - Raw Session JSONL uses canonical schema v2, is the only truth source, and is
   never deleted or rewritten by compaction.
-- Schema-v1 Sessions are rejected without migration, rewriting, or deletion.
+- Only current-schema Sessions participate in discovery. Explicit attempts to
+  open older Sessions are rejected without migration, rewriting, or deletion.
 - A checkpoint is recoverable derived state and covers only complete protocol
   turns. Old checkpoint schemas are not reused.
 - Restore from the latest valid checkpoint plus the raw tail; fall back safely
