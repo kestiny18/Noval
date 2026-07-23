@@ -14,6 +14,8 @@ const api: NovalDesktopApi = {
   resolvePermission:(id,decision)=>ipcRenderer.invoke("noval:permission-resolve",id,decision),
   onEvent:listener=>{const handler=(_event:Electron.IpcRendererEvent,value:SidecarEvent)=>listener(value);ipcRenderer.on("noval:event",handler);return()=>ipcRenderer.removeListener("noval:event",handler);},
   appInfo:()=>ipcRenderer.invoke("noval:app-info"),
+  getAppearance:()=>ipcRenderer.invoke("noval:get-appearance"),
+  saveAppearance:value=>ipcRenderer.invoke("noval:save-appearance",value),
   getProviderProfile:()=>ipcRenderer.invoke("noval:get-provider-profile"),
   saveProviderProfile:profile=>ipcRenderer.invoke("noval:save-provider-profile",profile),
 };

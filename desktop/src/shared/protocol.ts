@@ -18,6 +18,8 @@ export interface SessionInfo {
 export interface ProjectInfo { path:string;name:string;active:boolean }
 export interface PermissionState { mode: "ask" | "full_access"; approved_tools: string[] }
 export interface ProviderProfile { provider:"openai-compatible"|"anthropic";model:string;judgeModel:string;baseUrl:string;hasApiKey:boolean }
+export interface AppearancePreferences {theme:"system"|"light"|"dark";density:"comfortable"|"compact"}
+export interface AppInfo {desktopVersion:string;coreVersion:string;protocolVersion:number}
 export interface TranscriptEntry { sequence: number; role: "user" | "assistant" | "tool"; text: string; timestamp: string | null; tool_calls: Array<{call_id:string;name:string;argument_keys:string[]}>; tool_results: Array<{call_id:string;content:string;is_error:boolean}> }
 export interface TranscriptHistoryPage {entries:TranscriptEntry[];previous_sequence:number|null;has_more:boolean}
 export interface CompletionCriterion { criterion_id:string;status:"passed"|"failed"|"missing"|"stale"|"unknown";source:string|null;observed_at:string|null }
@@ -50,7 +52,9 @@ export interface NovalDesktopApi {
   resetPermissions(sessionId:string):Promise<PermissionState>;
   resolvePermission(permissionRequestId: string, decision: "allow_once" | "allow_session" | "deny"): Promise<void>;
   onEvent(listener: (event: SidecarEvent) => void): () => void;
-  appInfo(): Promise<{desktopVersion:string;coreVersion:string;protocolVersion:number}>;
+  appInfo(): Promise<AppInfo>;
+  getAppearance():Promise<AppearancePreferences>;
+  saveAppearance(value:AppearancePreferences):Promise<AppearancePreferences>;
   getProviderProfile():Promise<ProviderProfile|null>;
   saveProviderProfile(profile:Omit<ProviderProfile,"hasApiKey">&{apiKey?:string}):Promise<ProviderProfile>;
 }

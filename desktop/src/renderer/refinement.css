@@ -47,15 +47,23 @@ body{background:var(--sidebar);color:var(--text)}
 .error{border-color:var(--danger-line);background:var(--danger-soft)}.scrim{background:var(--scrim)}
 
 @media(prefers-color-scheme:dark){
- :root{
+ :root:not([data-theme="light"]){
   --sidebar:#121212;--paper:#181818;--surface:#202021;--text:#e3e3e5;--muted:#8e8e93;--faint:#68686d;
   --line:#29292b;--line-strong:#3a3a3d;--hover:#222224;--active:#2d2d30;--accent:#e3e3e5;
   --panel:#202021;--panel-soft:#202021;--danger-soft:#2a1d1c;--danger-line:#693d39;
   --warning-soft:#33291b;--warning-text:#e7b96a;--scrim:#00000080;
   --shadow:0 16px 48px rgba(0,0,0,.34);--composer-shadow:0 8px 28px rgba(0,0,0,.22)
  }
- .send{color:#181818!important}.status-dot{box-shadow:0 0 0 2px #181818}
- .composer:focus-within{box-shadow:0 8px 30px rgba(0,0,0,.3)}
- .permission,.grants-panel{box-shadow:0 24px 72px rgba(0,0,0,.45)}
+ :root:not([data-theme="light"]) .send{color:#181818!important}:root:not([data-theme="light"]) .status-dot{box-shadow:0 0 0 2px #181818}
+ :root:not([data-theme="light"]) .composer:focus-within{box-shadow:0 8px 30px rgba(0,0,0,.3)}
+ :root:not([data-theme="light"]) .permission,:root:not([data-theme="light"]) .grants-panel{box-shadow:0 24px 72px rgba(0,0,0,.45)}
 }
+:root[data-theme="dark"]{
+ --sidebar:#121212;--paper:#181818;--surface:#202021;--text:#e3e3e5;--muted:#8e8e93;--faint:#68686d;
+ --line:#29292b;--line-strong:#3a3a3d;--hover:#222224;--active:#2d2d30;--accent:#e3e3e5;
+ --panel:#202021;--panel-soft:#202021;--danger-soft:#2a1d1c;--danger-line:#693d39;
+ --warning-soft:#33291b;--warning-text:#e7b96a;--scrim:#00000080;
+ --shadow:0 16px 48px rgba(0,0,0,.34);--composer-shadow:0 8px 28px rgba(0,0,0,.22)
+}
+:root[data-theme="dark"] .send{color:#181818!important}:root[data-theme="dark"] .status-dot{box-shadow:0 0 0 2px #181818}:root[data-theme="dark"] .composer:focus-within{box-shadow:0 8px 30px rgba(0,0,0,.3)}:root[data-theme="dark"] .permission,:root[data-theme="dark"] .grants-panel{box-shadow:0 24px 72px rgba(0,0,0,.45)}
 @media(max-width:1050px){.shell{grid-template-columns:240px}.message-user{margin-left:10%}}
