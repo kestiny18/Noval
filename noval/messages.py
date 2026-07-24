@@ -83,12 +83,72 @@ ContentBlock = Union[TextBlock, ToolCallBlock, ToolResultBlock]
 
 
 @dataclass(frozen=True)
+class ReplayScope:
+    """Safe routing identity for opaque Provider replay state."""
+
+    adapter: str
+    connection_id: str
+    configured_model_id: str
+    provider_model: str
+    transport_revision: int
+    adapter_schema_version: int
+    credential_epoch: str = "legacy"
+
+    def __post_init__(self) -> None:
+        for name in (
+            "adapter",
+            "connection_id",
+            "configured_model_id",
+            "provider_model",
+            "credential_epoch",
+        ):
+            if not isinstance(getattr(self, name), str) or not getattr(self, name):
+                raise MessageFormatError(
+                    f"replay_scope.{name} must be a non-empty string"
+                )
+        for name in ("transport_revision", "adapter_schema_version"):
+            value = getattr(self, name)
+            if (
+                not isinstance(value, int)
+                or isinstance(value, bool)
+                or value < 1
+            ):
+                raise MessageFormatError(f"replay_scope.{name} must be positive")
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "adapter": self.adapter,
+            "connection_id": self.connection_id,
+            "configured_model_id": self.configured_model_id,
+            "provider_model": self.provider_model,
+            "transport_revision": self.transport_revision,
+            "adapter_schema_version": self.adapter_schema_version,
+            "credential_epoch": self.credential_epoch,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "ReplayScope":
+        if not isinstance(data, dict):
+            raise MessageFormatError("replay_scope must be an object")
+        return cls(
+            adapter=data.get("adapter"),
+            connection_id=data.get("connection_id"),
+            configured_model_id=data.get("configured_model_id"),
+            provider_model=data.get("provider_model"),
+            transport_revision=data.get("transport_revision"),
+            adapter_schema_version=data.get("adapter_schema_version"),
+            credential_epoch=data.get("credential_epoch", "legacy"),
+        )
+
+
+@dataclass(frozen=True)
 class AdapterReplayState:
-    """Opaque Provider state retained only for its owning adapter."""
+    """Opaque Provider state retained only for its exact owning scope."""
 
     adapter: str
     schema_version: int
     payload: Any
+    scope: Optional[ReplayScope] = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.adapter, str) or not self.adapter:
@@ -106,6 +166,11 @@ class AdapterReplayState:
             "adapter": self.adapter,
             "schema_version": self.schema_version,
             "payload": copy.deepcopy(self.payload),
+            **(
+                {"scope": self.scope.to_dict()}
+                if self.scope is not None
+                else {}
+            ),
         }
 
     @classmethod
@@ -118,7 +183,13 @@ class AdapterReplayState:
             raise MessageFormatError("replay_state.adapter must be a non-empty string")
         if not isinstance(version, int) or isinstance(version, bool) or version < 1:
             raise MessageFormatError("replay_state.schema_version must be a positive integer")
-        return cls(adapter, version, copy.deepcopy(data.get("payload")))
+        scope = data.get("scope")
+        return cls(
+            adapter,
+            version,
+            copy.deepcopy(data.get("payload")),
+            ReplayScope.from_dict(scope) if scope is not None else None,
+        )
 
 
 @dataclass(frozen=True)

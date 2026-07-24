@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -59,7 +60,7 @@ from .context import ContextManager
 from .permissions import PermissionController, PermissionMode, PermissionState
 from .process import ProcessRuntime, SandboxMode, SandboxPolicy, sandbox_status_text
 from .redaction import redact_sensitive_text
-from .messages import ConversationMessage, MessageRole, ToolCallBlock
+from .messages import ConversationMessage, MessageRole, ReplayScope, ToolCallBlock
 from .runtime_log import runtime_log_context, setup_runtime_logging
 from .requests import (
     InMemoryRequestJournal,
@@ -108,6 +109,7 @@ class ClientSpec:
     provider: str
     model: str
     session_id: str
+    replay_scope: ReplayScope
 
 
 class ClientFactory(Protocol):
@@ -1040,6 +1042,7 @@ class NovalRuntime:
         self._event_sink = event_sink
         self._sessions: Dict[str, AgentSession] = {}
         self._lock = threading.RLock()
+        self._credential_epoch = uuid4().hex
         self._closed = False
         self.log_path = (
             setup_runtime_logging(self._config)
@@ -1301,8 +1304,62 @@ class NovalRuntime:
                 metadata=metadata,
             )
 
+        def replay_scope(
+            configured_model_id: str,
+            provider_model: str,
+        ) -> ReplayScope:
+            if model_configuration is None:
+                adapter = (
+                    ANTHROPIC_ADAPTER
+                    if provider == "anthropic"
+                    else OPENAI_ADAPTER
+                )
+                return ReplayScope(
+                    adapter=adapter,
+                    connection_id=f"runtime-{provider}",
+                    configured_model_id=configured_model_id,
+                    provider_model=provider_model,
+                    transport_revision=1,
+                    adapter_schema_version=1,
+                    credential_epoch=self._credential_epoch,
+                )
+            configured = model_configuration.configured_model(
+                configured_model_id
+            )
+            connection = model_configuration.connection(
+                configured.connection_id
+            )
+            adapter = (
+                ANTHROPIC_ADAPTER
+                if connection.adapter == "anthropic"
+                else OPENAI_ADAPTER
+            )
+            credential_epoch = (
+                self._credential_epoch
+                if connection.api_key_env and not connection.api_key
+                else f"stored-r{connection.revision}"
+            )
+            return ReplayScope(
+                adapter=adapter,
+                connection_id=connection.id,
+                configured_model_id=configured.id,
+                provider_model=configured.model,
+                transport_revision=connection.revision,
+                adapter_schema_version=1,
+                credential_epoch=credential_epoch,
+            )
+
+        agent_replay_scope = replay_scope(selected_model_id, model)
+        judge_replay_scope = replay_scope(
+            selected_judge_model_id, judge_model
+        )
         agent_client = self._make_client(
-            "agent", provider, model, resolved_session_id, session_config
+            "agent",
+            provider,
+            model,
+            resolved_session_id,
+            session_config,
+            agent_replay_scope,
         )
         judge_client = self._make_client(
             "completion_judge",
@@ -1310,6 +1367,7 @@ class NovalRuntime:
             judge_model,
             resolved_session_id,
             session_config,
+            judge_replay_scope,
         )
         if session_config.persist_usage:
             usage_store = JsonlUsageStore(
@@ -1435,28 +1493,53 @@ class NovalRuntime:
         model: str,
         session_id: str,
         config: Config,
+        replay_scope: ReplayScope,
     ) -> LLMClient:
         if self._uses_default_client_factory:
-            return self._default_client(config, provider, model)
+            return self._default_client(
+                config, provider, model, replay_scope
+            )
         assert self._client_factory is not None
         return self._client_factory(ClientSpec(
             purpose=purpose,
             provider=provider,
             model=model,
             session_id=session_id,
+            replay_scope=replay_scope,
         ))
 
     @staticmethod
-    def _default_client(config: Config, provider: str, model: str) -> LLMClient:
+    def _default_client(
+        config: Config,
+        provider: str,
+        model: str,
+        replay_scope: ReplayScope,
+    ) -> LLMClient:
+        api_key = config.resolve_api_key()
+        base_url = config.base_url
+        if config.model_configuration is not None:
+            connection = config.model_configuration.connection(
+                replay_scope.connection_id
+            )
+            api_key = connection.api_key
+            if not api_key and connection.api_key_env:
+                api_key = os.environ.get(connection.api_key_env, "")
+            if not api_key:
+                raise SystemExit(
+                    f"API key not found for Connection {connection.id!r}."
+                )
+            provider = connection.adapter
+            base_url = connection.base_url
         return create_provider_client(
             provider,
-            api_key=config.resolve_api_key(),
+            api_key=api_key,
             model=model,
-            base_url=config.base_url,
+            base_url=base_url,
             anthropic_base_url=config.anthropic_base_url,
             timeout=config.request_timeout_seconds,
             max_retries=config.request_max_retries,
             anthropic_max_tokens=config.anthropic_max_tokens,
+            replay_scope=replay_scope,
         )
 
     def get_session(self, session_id: str) -> AgentSession:

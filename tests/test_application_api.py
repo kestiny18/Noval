@@ -1277,10 +1277,11 @@ def test_schema_v2_configuration_persists_ids_outside_session_jsonl(tmp_path):
     )
     settings.write_text(json.dumps(document), encoding="utf-8")
     config = Config.load(settings)
+    factory = RecordingClientFactory(["configured reply"])
 
     with NovalRuntime(
         config,
-        client_factory=RecordingClientFactory(["configured reply"]),
+        client_factory=factory,
     ) as runtime:
         session = runtime.create_session(
             SessionOptions(
@@ -1306,6 +1307,19 @@ def test_schema_v2_configuration_persists_ids_outside_session_jsonl(tmp_path):
         "selected_judge_model_id": "model-deepseek-v4-flash-default",
         "configuration_revision": 1,
     }
+    assert [spec.replay_scope.connection_id for spec in factory.specs] == [
+        "connection-deepseek-default",
+        "connection-deepseek-default",
+    ]
+    assert [spec.replay_scope.configured_model_id for spec in factory.specs] == [
+        "model-deepseek-v4-pro-default",
+        "model-deepseek-v4-flash-default",
+    ]
+    assert all(
+        spec.replay_scope.credential_epoch
+        and "secret" not in spec.replay_scope.credential_epoch
+        for spec in factory.specs
+    )
 
 
 def test_persistent_resume_closes_interrupted_turn_before_continuing(tmp_path):
