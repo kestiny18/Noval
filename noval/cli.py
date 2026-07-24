@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import logging
 import os
 import sys
@@ -9,6 +10,7 @@ from pathlib import Path
 from typing import List, Optional, Sequence
 
 from .api import (
+    ConnectionUpsert,
     EventType,
     NovalError,
     PermissionDecision,
@@ -301,21 +303,145 @@ def _parse_args(argv: Optional[List[str]]) -> argparse.Namespace:
         metavar="SESSION_ID",
         help="resume a session for the current workdir; omit the ID to open the selector",
     )
+    parser.add_argument(
+        "--model-id",
+        help="configured model id for this Session; defaults to the global selection",
+    )
+    parser.add_argument(
+        "--judge-model-id",
+        help="configured judge model id; defaults to --model-id or the global selection",
+    )
+    commands = parser.add_subparsers(dest="command")
+    models = commands.add_parser(
+        "models", help="inspect or update model configuration"
+    )
+    model_commands = models.add_subparsers(
+        dest="models_action", required=True
+    )
+    model_commands.add_parser(
+        "list", help="list safe Provider and Configured Model metadata"
+    )
+    model_commands.add_parser(
+        "validate", help="validate settings and model references"
+    )
+    credential = model_commands.add_parser(
+        "credential", help="replace a Connection credential without echoing it"
+    )
+    credential.add_argument("connection_id")
+    credential.add_argument(
+        "--clear",
+        action="store_true",
+        help="remove the file credential and fall back to its environment variable",
+    )
+    default = model_commands.add_parser(
+        "default", help="select the global default Configured Model"
+    )
+    default.add_argument("configured_model_id")
     return parser.parse_args(argv)
+
+
+def _print_model_configuration(runtime: NovalRuntime) -> None:
+    profiles = runtime.list_provider_profiles()
+    configuration = runtime.get_model_configuration()
+    connections = {
+        connection.id: connection for connection in configuration.connections
+    }
+    print("Provider Profiles")
+    for profile in profiles:
+        suffix = "custom endpoint" if profile.kind == "custom" else "built-in"
+        print(f"  {profile.id:<12} {profile.label} ({suffix})")
+    print("\nConfigured Models")
+    for model in configuration.configured:
+        connection = connections[model.connection_id]
+        default = " [default]" if model.id == configuration.default_model_id else ""
+        credential = "ready" if connection.credential_available else "missing credential"
+        print(
+            f"  {model.id:<36} {model.label} -> {model.model} "
+            f"via {connection.label} ({credential}){default}"
+        )
+
+
+def _run_models_command(args: argparse.Namespace, config: Config) -> None:
+    runtime = NovalRuntime(config, configure_logging=True)
+    try:
+        action = args.models_action
+        if action == "list":
+            _print_model_configuration(runtime)
+            return
+        configuration = runtime.get_model_configuration()
+        if action == "validate":
+            print(
+                "Model configuration is valid "
+                f"(revision {configuration.revision}, "
+                f"{len(configuration.connections)} connections, "
+                f"{len(configuration.configured)} configured models)."
+            )
+            return
+        if action == "default":
+            updated = runtime.set_default_model(
+                args.configured_model_id,
+                expected_configuration_revision=configuration.revision,
+            )
+            print(f"Default model selected: {updated.default_model_id}")
+            return
+        if action == "credential":
+            connection = next(
+                (
+                    item
+                    for item in configuration.connections
+                    if item.id == args.connection_id
+                ),
+                None,
+            )
+            if connection is None:
+                raise SystemExit(
+                    f"Connection does not exist: {args.connection_id}"
+                )
+            api_key = None
+            if not args.clear:
+                api_key = getpass.getpass("API key (input hidden): ").strip()
+                if not api_key:
+                    raise SystemExit("API key cannot be empty; use --clear instead.")
+            runtime.upsert_connection(ConnectionUpsert(
+                expected_configuration_revision=configuration.revision,
+                connection_id=connection.id,
+                expected_connection_revision=connection.revision,
+                label=connection.label,
+                profile_id=connection.profile_id,
+                base_url=connection.base_url,
+                api_key_env=connection.api_key_env,
+                api_key=api_key,
+                clear_api_key=args.clear,
+            ))
+            state = "cleared" if args.clear else "updated"
+            print(f"Credential {state} for Connection {connection.id}.")
+            return
+        raise SystemExit(f"Unsupported models command: {action}")
+    finally:
+        runtime.close()
 
 
 def run_cli(argv: Optional[List[str]] = None) -> None:
     args = _parse_args(argv)
+    config = Config.load()
+    if args.command == "models":
+        try:
+            _run_models_command(args, config)
+        except NovalError as error:
+            raise SystemExit(error.safe_message) from error
+        return
+
     workdir = Path(args.workdir).expanduser().resolve() if args.workdir else Path.cwd()
     if not workdir.is_dir():
         raise SystemExit(f"--workdir is not a valid directory: {workdir}")
 
-    config = Config.load()
     if args.resume is not None and not config.persist_sessions:
         raise SystemExit("--resume requires persist_sessions=true in settings.json")
     options = SessionOptions(
         workdir=str(workdir),
         persistence=SessionPersistence.DEFAULT,
+        selected_model_id=args.model_id,
+        selected_judge_model_id=args.judge_model_id or args.model_id,
         sandbox_mode=SandboxMode(args.sandbox),
         network_access=NetworkAccess(args.sandbox_network),
     )
