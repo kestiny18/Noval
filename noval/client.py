@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import copy
+import ipaddress
 import json
 import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Protocol, Sequence, Tuple
+from urllib.parse import urlsplit
 
 from .messages import (
     AdapterReplayState,
@@ -22,6 +24,18 @@ from .messages import (
 OPENAI_ADAPTER = "openai-compatible"
 ANTHROPIC_ADAPTER = "anthropic-messages"
 ADAPTER_SCHEMA_VERSION = 1
+
+
+def _is_loopback_base_url(value: str) -> bool:
+    host = urlsplit(value).hostname
+    if host is None:
+        return False
+    if host.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 @dataclass(frozen=True)
@@ -384,11 +398,24 @@ class OpenAICompatibleClient:
         if transport is None:
             from openai import OpenAI
 
+            kwargs: Dict[str, Any] = {
+                "base_url": base_url,
+                "api_key": api_key,
+                "timeout": timeout,
+                "max_retries": max_retries,
+            }
+            if _is_loopback_base_url(base_url):
+                import httpx
+
+                # Windows system-proxy settings are not consistently paired
+                # with a loopback bypass in httpx. Local Custom Providers must
+                # never send their endpoint or credential through that proxy.
+                kwargs["http_client"] = httpx.Client(
+                    timeout=timeout,
+                    trust_env=False,
+                )
             transport = OpenAI(
-                base_url=base_url,
-                api_key=api_key,
-                timeout=timeout,
-                max_retries=max_retries,
+                **kwargs,
             )
         self._client = transport
         self.model = model

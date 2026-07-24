@@ -43,7 +43,8 @@ function NavButton({active,icon,onClick,children}:{active:boolean;icon:React.Rea
 
 function ModelSettings(props:Props){
  const configuration=props.models;
- const [connectionId,setConnectionId]=useState(configuration?.connections[0]?.id??"new"),[profileId,setProfileId]=useState("deepseek"),[connectionLabel,setConnectionLabel]=useState(""),[baseUrl,setBaseUrl]=useState(""),[apiKeyEnv,setApiKeyEnv]=useState(""),[apiKey,setApiKey]=useState(""),[clearKey,setClearKey]=useState(false);
+ const initialConnection=configuration?.connections[0];
+ const [connectionId,setConnectionId]=useState(initialConnection?.id??"new"),[profileId,setProfileId]=useState(initialConnection?.profile_id??"deepseek"),[connectionLabel,setConnectionLabel]=useState(initialConnection?.label??""),[baseUrl,setBaseUrl]=useState(initialConnection?.base_url??""),[apiKeyEnv,setApiKeyEnv]=useState(initialConnection?.api_key_env??""),[apiKey,setApiKey]=useState(""),[clearKey,setClearKey]=useState(false);
  const [modelConnectionId,setModelConnectionId]=useState(configuration?.connections[0]?.id??""),[modelLabel,setModelLabel]=useState(""),[providerModel,setProviderModel]=useState(""),[saving,setSaving]=useState(false),[saved,setSaved]=useState("");
  const connection=configuration?.connections.find(item=>item.id===connectionId);
  const profile=props.profiles.find(item=>item.id===profileId);
