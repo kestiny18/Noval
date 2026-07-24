@@ -1247,14 +1247,18 @@ class NovalRuntime:
                 options.selected_model_id
                 or model_configuration.default_model_id
             )
-            if options.selected_judge_model_id is not None:
-                selected_judge_model_id = options.selected_judge_model_id
-            else:
-                selected_judge_model_id = self._judge_configured_model_id(
-                    model_configuration,
-                    selected_model_id,
-                )
             try:
+                if options.selected_judge_model_id is not None:
+                    selected_judge_model_id = (
+                        options.selected_judge_model_id
+                    )
+                else:
+                    selected_judge_model_id = (
+                        self._judge_configured_model_id(
+                            model_configuration,
+                            selected_model_id,
+                        )
+                    )
                 selected_model = model_configuration.configured_model(
                     selected_model_id
                 )
@@ -1269,7 +1273,7 @@ class NovalRuntime:
                 )
             except ModelConfigurationError as error:
                 raise NovalError(
-                    "configured_model_unavailable",
+                    "configured_model_not_found",
                     "The selected Configured Model does not exist.",
                 ) from error
             if selected_connection.adapter != judge_connection.adapter:
@@ -1323,8 +1327,9 @@ class NovalRuntime:
                 try:
                     selection = store.load_model_selection()
                 except SessionMetadataError as error:
+                    store.close()
                     raise NovalError(
-                        "session_model_selection_invalid",
+                        "session_state_invalid",
                         str(error),
                         session_id=session_id,
                     ) from error
@@ -1333,27 +1338,40 @@ class NovalRuntime:
                 configuration_revision = selection.configuration_revision
                 session_selection = selection
                 if model_configuration is not None:
-                    selected_model = model_configuration.configured_model(
-                        selected_model_id
-                    )
-                    selected_judge = model_configuration.configured_model(
-                        selected_judge_model_id
-                    )
-                    selected_connection = model_configuration.connection(
-                        selected_model.connection_id
-                    )
-                    judge_connection = model_configuration.connection(
-                        selected_judge.connection_id
-                    )
-                    if selected_connection.adapter != judge_connection.adapter:
-                        raise NovalError(
-                            "session_model_selection_invalid",
-                            "Agent and judge Configured Models must use the same Adapter.",
-                            session_id=session_id,
+                    try:
+                        selected_model = model_configuration.configured_model(
+                            selected_model_id
                         )
-                    provider = selected_connection.adapter
-                    model = selected_model.model
-                    judge_model = selected_judge.model
+                        selected_judge = (
+                            model_configuration.configured_model(
+                                selected_judge_model_id
+                            )
+                        )
+                        selected_connection = model_configuration.connection(
+                            selected_model.connection_id
+                        )
+                        judge_connection = model_configuration.connection(
+                            selected_judge.connection_id
+                        )
+                    except ModelConfigurationError:
+                        # Session references are intentionally weak. Keep the
+                        # Session repairable and reject only a later Turn.
+                        pass
+                    else:
+                        if (
+                            selected_connection.adapter
+                            != judge_connection.adapter
+                        ):
+                            store.close()
+                            raise NovalError(
+                                "session_state_invalid",
+                                "Agent and judge Configured Models must use "
+                                "the same Adapter.",
+                                session_id=session_id,
+                            )
+                        provider = selected_connection.adapter
+                        model = selected_model.model
+                        judge_model = selected_judge.model
                 else:
                     model = selected_model_id
                     judge_model = selected_judge_model_id
@@ -2010,7 +2028,7 @@ class NovalRuntime:
                 judge_connection = configuration.connection(judge.connection_id)
             except ModelConfigurationError as error:
                 raise NovalError(
-                    "configured_model_unavailable",
+                    "configured_model_not_found",
                     "The selected Configured Model does not exist.",
                     session_id=session.info.session_id,
                 ) from error
@@ -2193,16 +2211,24 @@ class NovalRuntime:
         selection: SessionModelSelection,
         configuration,
     ) -> TurnExecution:
-        agent_binding, agent_provider = self._turn_binding(
-            configuration=configuration,
-            configured_model_id=selection.selected_model_id,
-            legacy_provider=session._session_config.provider,
-        )
-        judge_binding, judge_provider = self._turn_binding(
-            configuration=configuration,
-            configured_model_id=selection.selected_judge_model_id,
-            legacy_provider=session._session_config.provider,
-        )
+        try:
+            agent_binding, agent_provider = self._turn_binding(
+                configuration=configuration,
+                configured_model_id=selection.selected_model_id,
+                legacy_provider=session._session_config.provider,
+            )
+            judge_binding, judge_provider = self._turn_binding(
+                configuration=configuration,
+                configured_model_id=selection.selected_judge_model_id,
+                legacy_provider=session._session_config.provider,
+            )
+        except ModelConfigurationError as error:
+            raise NovalError(
+                "model_configuration_missing",
+                "The Session's selected Configured Model no longer exists. "
+                "Select a replacement before starting another Turn.",
+                session_id=session.info.session_id,
+            ) from error
         if agent_binding.replay_scope.adapter != judge_binding.replay_scope.adapter:
             raise NovalError(
                 "configured_model_adapter_mismatch",

@@ -1771,6 +1771,67 @@ def test_single_model_selection_uses_the_builtin_judge_on_its_connection(
         assert events[-1].payload["active_model_id"] is None
 
 
+def test_deleted_weak_model_reference_keeps_session_repairable(tmp_path):
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    settings = tmp_path / "settings.json"
+    document = packaged_settings()
+    document.update({
+        "sessions_dir": str(tmp_path / "sessions"),
+        "persist_logs": False,
+        "persist_usage": False,
+    })
+    settings.write_text(json.dumps(document), encoding="utf-8")
+    runtime = NovalRuntime(
+        Config.load(settings),
+        client_factory=QueueClientFactory([
+            mock_text("Seeded."),
+            mock_text("Recovered."),
+        ]),
+    )
+    session = runtime.create_session(
+        SessionOptions(
+            workdir=str(workdir),
+            persistence=SessionPersistence.PERSISTENT,
+        )
+    )
+    session.select_model("model-deepseek-v4-flash-default")
+    session.run_turn(TurnRequest("Persist this Session."))
+    session_id = session.info.session_id
+    session.close()
+    runtime.delete_configured_model(
+        "model-deepseek-v4-flash-default",
+        expected_configuration_revision=1,
+    )
+
+    resumed = runtime.resume_session(
+        session_id,
+        SessionOptions(
+            workdir=str(workdir),
+            persistence=SessionPersistence.PERSISTENT,
+        ),
+    )
+
+    assert resumed.info.selected_model_id == (
+        "model-deepseek-v4-flash-default"
+    )
+    with pytest.raises(NovalError) as missing:
+        resumed.run_turn(TurnRequest("This Turn must not silently fall back."))
+    assert missing.value.code == "model_configuration_missing"
+    assert resumed.info.is_open
+
+    repaired = resumed.select_model("model-deepseek-v4-pro-default")
+    result = resumed.run_turn(TurnRequest("Continue after repair."))
+
+    assert repaired.selected_model_id == "model-deepseek-v4-pro-default"
+    assert repaired.selected_judge_model_id == (
+        "model-deepseek-v4-pro-default"
+    )
+    assert result.message.text == "Recovered."
+    resumed.close()
+    runtime.close()
+
+
 def test_persistent_resume_closes_interrupted_turn_before_continuing(tmp_path):
     workdir = tmp_path / "project"
     workdir.mkdir()
