@@ -5,6 +5,7 @@ import { existsSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { mkdir, writeFile as writeTextFile } from "node:fs/promises";
 import { AppearancePreferences, Preferences, ProviderProfile } from "./preferences.js";
+import { sendToRenderer } from "./renderer-events.js";
 import { SidecarSupervisor } from "./sidecar.js";
 import { PROTOCOL_VERSION } from "../shared/protocol.js";
 
@@ -23,7 +24,7 @@ async function requireProject(value:string):Promise<string>{const match=(await p
 async function effectiveProfile():Promise<ProviderProfile>{const value=await sidecar.request<RuntimeConfiguration>("runtime.configuration",{});return {provider:value.provider,model:value.model,judgeModel:value.judge_model,baseUrl:value.base_url,hasApiKey:value.api_key_configured}}
 
 function publishHostState(state:"connected"|"recovering"|"disconnected",detail?:string):void{
-  mainWindow?.webContents.send("noval:event",{protocol_version:PROTOCOL_VERSION,kind:"event",event_id:`host-${Date.now()}`,event:"host.connection",payload:{state,detail}});
+  sendToRenderer(mainWindow,"noval:event",{protocol_version:PROTOCOL_VERSION,kind:"event",event_id:`host-${Date.now()}`,event:"host.connection",payload:{state,detail}});
 }
 
 async function startRuntime():Promise<void>{
@@ -54,6 +55,7 @@ async function createWindow(): Promise<void> {
   mainWindow.webContents.setWindowOpenHandler(() => ({action:"deny"}));
   mainWindow.webContents.on("will-navigate", event => event.preventDefault());
   mainWindow.webContents.on("will-attach-webview", event => event.preventDefault());
+  mainWindow.once("closed",()=>{mainWindow=null});
   const devUrl = process.env.NOVAL_DEV_SERVER_URL;
   if (devUrl) await mainWindow.loadURL(devUrl); else await mainWindow.loadFile(path.join(dirname,"../renderer/index.html"));
   mainWindow.once("ready-to-show",async()=>{
@@ -110,7 +112,7 @@ function registerIpc(): void {
 }
 
 app.whenReady().then(async()=>{
-  Menu.setApplicationMenu(null);preferences=new Preferences();await preferences.load();workspace=preferences.workspace();registerIpc();sidecar.on("event",value=>mainWindow?.webContents.send("noval:event",value));sidecar.on("exit",()=>void recoverRuntime());await startRuntime();const projects=await projectPaths();if(!workspace||!projects.includes(workspace))workspace=projects[0]??null;if(workspace){await preferences.setWorkspace(workspace);await sidecar.request("workspace.select",{workdir:workspace})}await createWindow();publishHostState("connected");
+  Menu.setApplicationMenu(null);preferences=new Preferences();await preferences.load();workspace=preferences.workspace();registerIpc();sidecar.on("event",value=>sendToRenderer(mainWindow,"noval:event",value));sidecar.on("exit",()=>void recoverRuntime());await startRuntime();const projects=await projectPaths();if(!workspace||!projects.includes(workspace))workspace=projects[0]??null;if(workspace){await preferences.setWorkspace(workspace);await sidecar.request("workspace.select",{workdir:workspace})}await createWindow();publishHostState("connected");
 });
 app.on("window-all-closed",()=>app.quit());
 app.on("before-quit",()=>{void sidecar.stop();});
