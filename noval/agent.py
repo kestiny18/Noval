@@ -297,6 +297,7 @@ class Agent:
         system_prompt: Optional[str] = None,
         store: Optional[SessionStore] = None,
         resume_messages: Optional[List[ConversationMessage]] = None,
+        recover_interrupted_turn: bool = False,
         shell_backend: Optional[ShellBackend] = None,
         permissions: Optional[PermissionController] = None,
         context_manager: Optional[ContextManager] = None,
@@ -387,6 +388,11 @@ class Agent:
             self._append_message(msg, persist=False)
         if resume_messages:
             self._answer_pending_tool_calls()
+        if recover_interrupted_turn:
+            self._append_message(assistant_message(
+                "(Previous task was interrupted when Noval closed. "
+                "The Session was preserved; continue from the confirmed state.)"
+            ))
 
     def _append_message(self, msg: ConversationMessage, *, persist: bool = True) -> None:
         """Append to memory and optionally persist non-system messages."""

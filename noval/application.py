@@ -254,6 +254,21 @@ def _transcript_entry(
     )
 
 
+def _has_incomplete_turn(messages: Iterable[ConversationMessage]) -> bool:
+    """Return whether canonical history ends inside a user-initiated turn."""
+    in_user_turn = False
+    for message in messages:
+        if message.role is MessageRole.USER:
+            in_user_turn = True
+        elif (
+            message.role is MessageRole.ASSISTANT
+            and in_user_turn
+            and not message.tool_calls
+        ):
+            in_user_turn = False
+    return in_user_turn
+
+
 def _public_message(message: ConversationMessage) -> ConversationMessage:
     """Drop adapter-private state before a message crosses the host boundary."""
     blocks = tuple(
@@ -1270,6 +1285,7 @@ class NovalRuntime:
         )
 
         resume_messages = None
+        recover_interrupted_turn = False
         resumed_message_count = 0
         context_manager = None
         if store is not None:
@@ -1280,8 +1296,12 @@ class NovalRuntime:
                 session_config.context_budget_tokens,
             )
             if session_id is not None:
+                persisted_records = store.load_records()
+                recover_interrupted_turn = _has_incomplete_turn(
+                    record.message for record in persisted_records
+                )
                 resume_messages = context_manager.restore()
-                resumed_message_count = len(store.load_records())
+                resumed_message_count = len(persisted_records)
         task_store = TaskEventStore(store.task_path()) if store is not None else None
         task_controller = TaskController(
             event_store=task_store,
@@ -1318,6 +1338,7 @@ class NovalRuntime:
             project_memory=load_project_memory(workdir),
             store=store,
             resume_messages=resume_messages,
+            recover_interrupted_turn=recover_interrupted_turn,
             shell_backend=shell_backend,
             permissions=permissions,
             process_runtime=process_runtime,

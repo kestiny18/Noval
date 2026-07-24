@@ -1262,6 +1262,55 @@ def test_persistent_session_can_be_listed_closed_and_resumed(tmp_path):
         ]
 
 
+def test_persistent_resume_closes_interrupted_turn_before_continuing(tmp_path):
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    config = application_config(tmp_path)
+    store = JsonlSessionStore.create(config.sessions_dir(), workdir, config.model)
+    store.append(user_message("Inspect the project"))
+    store.append(assistant_message(
+        "I will inspect the files.",
+        tool_calls=(ToolCallBlock("call-1", "read_file", '{"path":"README.md"}'),),
+    ))
+    session_id = store.session_id
+    store.close()
+
+    with NovalRuntime(
+        config,
+        client_factory=QueueClientFactory([mock_text("Continued safely.")]),
+    ) as runtime:
+        resumed = runtime.resume_session(session_id, SessionOptions(
+            workdir=str(workdir),
+            persistence=SessionPersistence.PERSISTENT,
+        ))
+        restored = resumed.transcript(after_sequence=0, limit=20)
+        assert [entry.role for entry in restored.entries] == [
+            "user", "assistant", "tool", "assistant",
+        ]
+        assert restored.entries[-2].tool_results[0].is_error is True
+        assert "interrupted when Noval closed" in restored.entries[-1].text
+
+        result = resumed.run_turn(TurnRequest("Continue"))
+
+        assert result.status is TurnStatus.COMPLETED
+        assert result.message is not None
+        assert result.message.text == "Continued safely."
+
+    with NovalRuntime(
+        config,
+        client_factory=QueueClientFactory([mock_text("unused")]),
+    ) as runtime:
+        resumed_again = runtime.resume_session(session_id, SessionOptions(
+            workdir=str(workdir),
+            persistence=SessionPersistence.PERSISTENT,
+        ))
+        history = resumed_again.transcript(after_sequence=0, limit=20)
+        assert sum(
+            "interrupted when Noval closed" in entry.text
+            for entry in history.entries
+        ) == 1
+
+
 def test_session_provider_and_model_overrides_are_session_scoped(tmp_path):
     workdir = tmp_path / "project"
     workdir.mkdir()
