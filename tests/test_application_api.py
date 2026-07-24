@@ -142,11 +142,13 @@ class BlockingClient:
 class BlockingClientFactory:
     def __init__(self):
         self.clients = []
+        self.created = threading.Event()
 
     def __call__(self, spec):
         if spec.purpose == "agent":
             client = BlockingClient(reply=spec.session_id)
             self.clients.append(client)
+            self.created.set()
             return client
         return MockClient([])
 
@@ -2083,9 +2085,11 @@ def test_cancel_is_cooperative_and_event_sink_failures_do_not_break_turn(tmp_pat
             target=lambda: results.append(session.run_turn(TurnRequest("wait")))
         )
         worker.start()
-        assert factory.clients[0].entered.wait(2)
+        assert factory.created.wait(2)
+        client = factory.clients[0]
+        assert client.entered.wait(2)
         assert session.cancel_active_turn() is True
-        factory.clients[0].release.set()
+        client.release.set()
         worker.join(2)
 
         assert results[0].status is TurnStatus.STOPPED
