@@ -142,15 +142,23 @@ class BlockingClient:
 class BlockingClientFactory:
     def __init__(self):
         self.clients = []
-        self.created = threading.Event()
+        self._clients_changed = threading.Condition()
 
     def __call__(self, spec):
         if spec.purpose == "agent":
             client = BlockingClient(reply=spec.session_id)
-            self.clients.append(client)
-            self.created.set()
+            with self._clients_changed:
+                self.clients.append(client)
+                self._clients_changed.notify_all()
             return client
         return MockClient([])
+
+    def wait_for_clients(self, count, timeout):
+        with self._clients_changed:
+            return self._clients_changed.wait_for(
+                lambda: len(self.clients) >= count,
+                timeout=timeout,
+            )
 
 
 class QueueClientFactory:
@@ -1600,7 +1608,9 @@ def test_same_session_rejects_a_concurrent_turn_without_queueing(tmp_path):
         target=lambda: results.append(session.run_turn(TurnRequest("first")))
     )
     worker.start()
-    assert factory.clients[0].entered.wait(2)
+    assert factory.wait_for_clients(1, 2)
+    client = factory.clients[0]
+    assert client.entered.wait(2)
 
     started = time.perf_counter()
     with pytest.raises(NovalError) as busy:
@@ -1614,7 +1624,7 @@ def test_same_session_rejects_a_concurrent_turn_without_queueing(tmp_path):
         runtime.close()
     assert runtime_busy.value.code == "runtime_busy"
 
-    factory.clients[0].release.set()
+    client.release.set()
     worker.join(2)
     assert results[0].status is TurnStatus.COMPLETED
     runtime.close()
@@ -1950,8 +1960,10 @@ def test_different_sessions_execute_in_parallel_without_message_leakage(tmp_path
         ]
         for thread in threads:
             thread.start()
-        assert all(client.entered.wait(2) for client in factory.clients)
-        for client in factory.clients:
+        assert factory.wait_for_clients(2, 2)
+        clients = list(factory.clients)
+        assert all(client.entered.wait(2) for client in clients)
+        for client in clients:
             client.release.set()
         for thread in threads:
             thread.join(2)
@@ -2085,7 +2097,7 @@ def test_cancel_is_cooperative_and_event_sink_failures_do_not_break_turn(tmp_pat
             target=lambda: results.append(session.run_turn(TurnRequest("wait")))
         )
         worker.start()
-        assert factory.created.wait(2)
+        assert factory.wait_for_clients(1, 2)
         client = factory.clients[0]
         assert client.entered.wait(2)
         assert session.cancel_active_turn() is True
