@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Callable
 
 from .client import LLMClient
 from .messages import ReplayScope
@@ -26,3 +27,7 @@ class TurnExecution:
     judge: TurnModelBinding
     agent_client: LLMClient = field(repr=False, compare=False)
     judge_client: LLMClient = field(repr=False, compare=False)
+    release_transports: Callable[[], None] = field(
+        repr=False,
+        compare=False,
+    )

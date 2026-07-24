@@ -1170,13 +1170,113 @@ def test_runtime_reuses_transport_but_returns_model_bound_clients(
         first_scope,
     )
 
-    assert first is not second
+    assert first.client is not second.client
     assert calls[0][1]["transport"] is None
-    assert calls[1][1]["transport"] is first._client
-    assert second._client is first._client
+    assert calls[1][1]["transport"] is first.client._client
+    assert second.client._client is first.client._client
     assert calls[2][1]["transport"] is None
-    assert judge._client is not first._client
+    assert judge.client._client is not first.client._client
     runtime.close()
+
+
+def test_retired_transport_closes_after_its_last_turn_reference(
+    tmp_path, monkeypatch
+):
+    settings = tmp_path / "settings.json"
+    document = packaged_settings()
+    document["models"]["connections"][0]["api_key"] = "initial-credential"
+    settings.write_text(json.dumps(document), encoding="utf-8")
+
+    class Transport:
+        def __init__(self):
+            self.close_count = 0
+
+        def close(self):
+            self.close_count += 1
+
+    transports = []
+
+    def fake_create(provider, **kwargs):
+        transport = kwargs["transport"]
+        if transport is None:
+            transport = Transport()
+            transports.append(transport)
+        return SimpleNamespace(_client=transport, model=kwargs["model"])
+
+    monkeypatch.setattr(application_module, "create_provider_client", fake_create)
+    runtime = NovalRuntime(Config.load(settings))
+    first_scope = ReplayScope(
+        "openai-compatible",
+        "connection-deepseek-default",
+        "model-deepseek-v4-pro-default",
+        "deepseek-v4-pro",
+        1,
+        1,
+        "stored-r1",
+    )
+    second_scope = ReplayScope(
+        "openai-compatible",
+        "connection-deepseek-default",
+        "model-deepseek-v4-flash-default",
+        "deepseek-v4-flash",
+        1,
+        1,
+        "stored-r1",
+    )
+    first = runtime._default_client(
+        "agent",
+        runtime._config,
+        "openai-compatible",
+        "deepseek-v4-pro",
+        first_scope,
+    )
+    second = runtime._default_client(
+        "agent",
+        runtime._config,
+        "openai-compatible",
+        "deepseek-v4-flash",
+        second_scope,
+    )
+    retired_transport = transports[0]
+
+    updated = runtime.upsert_connection(ConnectionUpsert(
+        expected_configuration_revision=1,
+        connection_id="connection-deepseek-default",
+        expected_connection_revision=1,
+        label="DeepSeek",
+        profile_id="deepseek",
+        api_key="replacement-credential",
+    ))
+
+    assert updated.revision == 2
+    assert retired_transport.close_count == 0
+    runtime._release_transport_references((first.transport_key,))
+    assert retired_transport.close_count == 0
+
+    current_scope = ReplayScope(
+        "openai-compatible",
+        "connection-deepseek-default",
+        "model-deepseek-v4-pro-default",
+        "deepseek-v4-pro",
+        2,
+        1,
+        "stored-r2",
+    )
+    current = runtime._default_client(
+        "agent",
+        runtime._config,
+        "openai-compatible",
+        "deepseek-v4-pro",
+        current_scope,
+    )
+
+    assert current.client._client is not retired_transport
+    runtime._release_transport_references((second.transport_key,))
+    assert retired_transport.close_count == 1
+    runtime._release_transport_references((current.transport_key,))
+    assert current.client._client.close_count == 0
+    runtime.close()
+    assert current.client._client.close_count == 1
 
 
 def test_default_client_resolves_the_selected_connection_credential_first(
