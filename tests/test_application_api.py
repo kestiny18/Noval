@@ -298,6 +298,14 @@ def test_runtime_configuration_mutations_are_typed_atomic_and_credential_safe(
     )
     settings.write_text(json.dumps(document), encoding="utf-8")
     runtime = NovalRuntime(Config.load(settings))
+    events = []
+    session = runtime.create_session(
+        SessionOptions(
+            workdir=str(tmp_path),
+            persistence=SessionPersistence.EPHEMERAL,
+        ),
+        event_sink=events.append,
+    )
 
     profiles = runtime.list_provider_profiles()
     assert [profile.id for profile in profiles[:-1]] == [
@@ -350,6 +358,20 @@ def test_runtime_configuration_mutations_are_typed_atomic_and_credential_safe(
     persisted = settings.read_text(encoding="utf-8")
     assert secret in persisted
     assert secret not in json.dumps(runtime.configuration().to_dict())
+    configuration_events = [
+        event
+        for event in events
+        if event.type == EventType.MODEL_CONFIGURATION_CHANGED.value
+    ]
+    assert [event.payload["revision"] for event in configuration_events] == [
+        2,
+        3,
+        4,
+    ]
+    assert configuration_events[-1].payload["default_model_id"] == local_model.id
+    assert secret not in json.dumps(
+        [event.to_dict() for event in configuration_events]
+    )
 
     with pytest.raises(NovalError) as stale:
         runtime.set_default_model(
@@ -366,6 +388,7 @@ def test_runtime_configuration_mutations_are_typed_atomic_and_credential_safe(
             expected_configuration_revision=activated.revision,
         )
     assert referenced.value.code == "connection_in_use"
+    session.close()
     runtime.close()
 
 

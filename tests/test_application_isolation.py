@@ -255,6 +255,8 @@ def test_application_api_v2_golden_fixture_round_trips():
         "turn_request": TurnRequest,
         "turn_result": TurnResult,
         "runtime_event": RuntimeEvent,
+        "model_configuration_changed_event": RuntimeEvent,
+        "session_models_selected_event": RuntimeEvent,
         "permission_state": PermissionStateView,
         "permission_request": PermissionRequest,
         "request_inspection": RequestInspection,
