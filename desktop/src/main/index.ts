@@ -6,6 +6,7 @@ import { writeFile } from "node:fs/promises";
 import { AppearancePreferences, Preferences } from "./preferences.js";
 import { sendToRenderer } from "./renderer-events.js";
 import { SidecarSupervisor } from "./sidecar.js";
+import { isConfigurationStartupError } from "./startup-error.js";
 import { PROTOCOL_VERSION } from "../shared/protocol.js";
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -28,11 +29,45 @@ async function startRuntime():Promise<void>{
   await sidecar.start(process.env.NOVAL_SETTINGS_PATH);
 }
 
+function settingsDirectory():string{
+  const configured=process.env.NOVAL_SETTINGS_PATH?.trim();
+  return configured?path.dirname(path.resolve(configured)):path.join(app.getPath("home"),".noval");
+}
+
+async function presentConfigurationStartupError(error:Error):Promise<void>{
+  await sidecar.stop();
+  const choice=await dialog.showMessageBox({
+    type:"error",
+    title:"Noval configuration needs attention",
+    message:"Noval could not start with the current Runtime settings.",
+    detail:error.message,
+    buttons:["Open configuration folder","Quit"],
+    defaultId:0,
+    cancelId:1,
+    noLink:true,
+  });
+  if(choice.response===0){
+    const openError=await shell.openPath(settingsDirectory());
+    if(openError)dialog.showErrorBox(
+      "Configuration folder could not be opened",
+      "Open the .noval folder in your user profile and repair settings.json.",
+    );
+  }
+  app.quit();
+}
+
 async function recoverRuntime():Promise<void>{
   if(recovering)return;recovering=true;publishHostState("recovering");
   for(let attempt=1;attempt<=3;attempt++){
     await new Promise(resolve=>setTimeout(resolve,Math.min(500*2**(attempt-1),2000)));
-    try{await startRuntime();if(workspace)await sidecar.request("workspace.select",{workdir:workspace});publishHostState("connected");recovering=false;return}catch{await sidecar.stop()}
+    try{await startRuntime();if(workspace)await sidecar.request("workspace.select",{workdir:workspace});publishHostState("connected");recovering=false;return}catch(error){
+      await sidecar.stop();
+      if(isConfigurationStartupError(error)){
+        recovering=false;
+        await presentConfigurationStartupError(error);
+        return;
+      }
+    }
   }
   recovering=false;publishHostState("disconnected","Automatic recovery failed. Restart Noval to try again.");
 }
@@ -105,8 +140,20 @@ function registerIpc(): void {
   ipcMain.handle("noval:open-external",async(_e,url:string)=>{if(/^https:\/\/(github\.com|docs\.noval\.)/i.test(url)) await shell.openExternal(url);});
 }
 
-app.whenReady().then(async()=>{
+async function startDesktop():Promise<void>{
   Menu.setApplicationMenu(null);preferences=new Preferences();await preferences.load();workspace=preferences.workspace();registerIpc();sidecar.on("event",value=>sendToRenderer(mainWindow,"noval:event",value));sidecar.on("exit",()=>void recoverRuntime());await startRuntime();const projects=await projectPaths();if(!workspace||!projects.includes(workspace))workspace=projects[0]??null;if(workspace){await preferences.setWorkspace(workspace);await sidecar.request("workspace.select",{workdir:workspace})}await createWindow();publishHostState("connected");
+}
+app.whenReady().then(startDesktop).catch(async(error:unknown)=>{
+  if(isConfigurationStartupError(error)){
+    await presentConfigurationStartupError(error);
+    return;
+  }
+  await sidecar.stop();
+  dialog.showErrorBox(
+    "Noval failed to start",
+    "The Desktop Runtime could not be started. Restart Noval to try again.",
+  );
+  app.quit();
 });
 app.on("window-all-closed",()=>app.quit());
 app.on("before-quit",()=>{void sidecar.stop();});

@@ -50,7 +50,11 @@ class SidecarServer:
             except NovalError as error:
                 self._send(error_response(getattr(locals().get("request", None), "request_id", None), error.code, error.safe_message, retryable=error.retryable))
             except SystemExit as error:
-                self._send(error_response(getattr(locals().get("request", None), "request_id", None), "configuration_error", str(error)))
+                self._send(error_response(
+                    getattr(locals().get("request", None), "request_id", None),
+                    getattr(error, "error_code", "configuration_error"),
+                    str(error),
+                ))
             except (TypeError, ValueError, KeyError) as error:
                 self._send(error_response(getattr(locals().get("request", None), "request_id", None), "invalid_params", str(error)))
             except Exception:

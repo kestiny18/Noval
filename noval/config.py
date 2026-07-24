@@ -18,6 +18,15 @@ from .model_config import (
 # preference, so settings.json cannot override DEFAULT_SYSTEM_PROMPT.
 
 
+class ConfigurationError(SystemExit):
+    """Typed startup failure that remains compatible with CLI SystemExit."""
+
+    def __init__(self, code: str, safe_message: str) -> None:
+        super().__init__(safe_message)
+        self.error_code = code
+        self.safe_message = safe_message
+
+
 def settings_path() -> Path:
     return Path.home() / ".noval" / "settings.json"
 
@@ -69,7 +78,7 @@ class Config:
             merged = load_settings_document(p)
             model_configuration = parse_model_configuration(merged["models"])
         except ModelConfigurationError as exc:
-            raise SystemExit(str(exc)) from None
+            raise ConfigurationError(exc.code, str(exc)) from None
         configured = model_configuration.configured_model(
             model_configuration.default_model_id
         )

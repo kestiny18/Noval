@@ -65,6 +65,30 @@ def test_server_returns_safe_error_without_echoing_input():
     assert secret not in output.getvalue().decode()
 
 
+def test_runtime_start_preserves_typed_settings_schema_failure(tmp_path):
+    settings = tmp_path / "settings.json"
+    settings.write_text(
+        json.dumps({"schema_version": 1, "model": "legacy"}),
+        encoding="utf-8",
+    )
+    output = io.BytesIO()
+    SidecarServer(
+        io.BytesIO(
+            request(
+                "runtime.start",
+                {"settings_path": str(settings)},
+            )
+            + b"\n"
+        ),
+        output,
+    ).serve()
+
+    value = json.loads(output.getvalue())
+    assert value["ok"] is False
+    assert value["error"]["code"] == "unsupported_settings_schema"
+    assert str(settings) in value["error"]["safe_message"]
+
+
 def test_workspace_must_be_selected_before_listing(tmp_path):
     server = SidecarServer(io.BytesIO(), io.BytesIO())
     start_runtime(server, tmp_path)

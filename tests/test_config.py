@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from noval.config import Config
+from noval.config import Config, ConfigurationError
 from noval.model_config import packaged_settings
 
 
@@ -108,9 +108,12 @@ def test_config_rejects_legacy_flat_settings_without_rewriting(tmp_path):
     )
     settings.write_text(original, encoding="utf-8")
 
-    with pytest.raises(SystemExit, match="unsupported_settings_schema"):
+    with pytest.raises(
+        ConfigurationError, match="unsupported_settings_schema"
+    ) as unsupported:
         Config.load(settings)
 
+    assert unsupported.value.error_code == "unsupported_settings_schema"
     assert settings.read_text(encoding="utf-8") == original
 
 
