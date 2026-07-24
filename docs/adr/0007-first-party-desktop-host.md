@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted for implementation on 2026-07-21.
+Accepted for implementation on 2026-07-21. The encrypted Provider-credential
+ownership clause is superseded by ADR-0010; the remaining Desktop process and
+security boundary stays accepted.
 
 ## Context
 
