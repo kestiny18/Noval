@@ -2,7 +2,7 @@ import {FilePenLine,Search,TerminalSquare,Wrench} from "lucide-react";
 import type {TranscriptEntry} from "../shared/protocol";
 
 type ActivityKind="command"|"inspect"|"edit"|"other";
-export type MessageItem={type:"message";key:string;role:TranscriptEntry["role"];text:string;timestamp:string|null};
+export type MessageItem={type:"message";key:string;role:TranscriptEntry["role"];text:string;timestamp:string|null;showMeta:boolean};
 type ActivityDetail={key:string;toolName:string;content:string|null;failed:boolean;pending:boolean};
 export type ActivityItem={type:"activity";key:string;kind:ActivityKind;toolNames:string[];count:number;failed:boolean;pending:boolean;details:ActivityDetail[]};
 export type TimelineItem=MessageItem|ActivityItem;
@@ -12,7 +12,7 @@ export function buildTimeline(entries:TranscriptEntry[]):TimelineItem[]{
  const callIds=new Set(entries.flatMap(entry=>entry.tool_calls.map(call=>call.call_id)));
  const timeline:TimelineItem[]=[];
  for(const entry of entries){
-  if(entry.text)timeline.push({type:"message",key:`message-${entry.sequence}`,role:entry.role,text:entry.text,timestamp:entry.timestamp});
+  if(entry.text)timeline.push({type:"message",key:`message-${entry.sequence}`,role:entry.role,text:entry.text,timestamp:entry.timestamp,showMeta:entry.role==="user"||(entry.role==="assistant"&&entry.tool_calls.length===0)});
   for(const call of entry.tool_calls){
    const result=results.get(call.call_id),activity:ActivityItem={type:"activity",key:`activity-${call.call_id}`,kind:activityKind(call.name),toolNames:[call.name],count:1,failed:Boolean(result?.is_error),pending:!result,details:[{key:call.call_id,toolName:call.name,content:result?.content??null,failed:Boolean(result?.is_error),pending:!result}]};
    appendActivity(timeline,activity);
