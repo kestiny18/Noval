@@ -1,0 +1,21 @@
+.model-selector {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid #dce0e3;
+  border-radius: 8px;
+  background: #fff;
+  color: #8a9198;
+  font-size: 9px;
+}
+
+.model-selector select {
+  max-width: 150px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: #30353a;
+  font-size: 10px;
+}

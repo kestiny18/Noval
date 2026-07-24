@@ -1,32 +1,36 @@
-import {FormEvent,useState} from "react";
-import {ArrowLeft,Check,ChevronRight,CircleUserRound,Cpu,FolderKanban,KeyRound,MonitorCog,Moon,Palette,Settings2,ShieldCheck,Sun,SunMoon} from "lucide-react";
-import type {AppInfo,AppearancePreferences,ProviderProfile} from "../shared/protocol";
+import {FormEvent,useEffect,useMemo,useState} from "react";
+import {ArrowLeft,Check,ChevronRight,CircleUserRound,Cpu,FolderKanban,KeyRound,MonitorCog,Moon,Palette,Plus,ServerCog,Settings2,ShieldCheck,Sun,SunMoon,Trash2} from "lucide-react";
+import type {AppInfo,AppearancePreferences,ConfiguredModelUpsert,ConnectionUpsert,ModelConfigurationInfo,ProviderProfileInfo} from "../shared/protocol";
+import {API_SCHEMA_VERSION} from "../shared/protocol";
 
-type Section="general"|"profile"|"appearance";
+type Section="models"|"profile"|"appearance";
 type Props={
- profile:ProviderProfile;setProfile:(value:ProviderProfile)=>void;apiKey:string;setApiKey:(value:string)=>void;
+ profiles:ProviderProfileInfo[];models:ModelConfigurationInfo|null;
+ upsertConnection:(value:ConnectionUpsert)=>Promise<void>;deleteConnection:(id:string)=>Promise<void>;
+ upsertConfiguredModel:(value:ConfiguredModelUpsert)=>Promise<void>;deleteConfiguredModel:(id:string)=>Promise<void>;
+ setDefaultModel:(id:string)=>Promise<void>;
  appearance:AppearancePreferences;saveAppearance:(value:AppearancePreferences)=>Promise<void>;
  appInfo:AppInfo|null;workspace:string|null;projectCount:number;sessionCount:number;
- saveProvider:(event:FormEvent)=>Promise<boolean>;close:()=>void;error:string|null;dismissError:()=>void;
+ close:()=>void;error:string|null;dismissError:()=>void;
 };
 
 export function SettingsPage(props:Props){
- const [section,setSection]=useState<Section>("general");
+ const [section,setSection]=useState<Section>("models");
  return <div className="settings-shell" data-testid="settings-shell">
   <aside className="settings-sidebar">
    <button className="settings-back" onClick={props.close}><ArrowLeft size={14}/>Back to Noval</button>
    <div className="settings-brand"><span>Noval</span><strong>Settings</strong></div>
    <nav aria-label="Settings sections">
     <p>Desktop</p>
-    <NavButton active={section==="general"} icon={<Settings2 size={15}/>} onClick={()=>setSection("general")}>General</NavButton>
+    <NavButton active={section==="models"} icon={<Settings2 size={15}/>} onClick={()=>setSection("models")}>Models</NavButton>
     <NavButton active={section==="profile"} icon={<CircleUserRound size={15}/>} onClick={()=>setSection("profile")}>Profile</NavButton>
     <NavButton active={section==="appearance"} icon={<Palette size={15}/>} onClick={()=>setSection("appearance")}>Appearance</NavButton>
    </nav>
-   <footer><ShieldCheck size={14}/><span>Preferences stay on this device.</span></footer>
+   <footer><ShieldCheck size={14}/><span>Runtime owns model configuration.</span></footer>
   </aside>
   <main className="settings-content">
    {props.error&&<div className="settings-error" role="alert"><span>{props.error}</span><button onClick={props.dismissError}>Dismiss</button></div>}
-   {section==="general"&&<GeneralSettings {...props}/>}
+   {section==="models"&&<ModelSettings {...props}/>}
    {section==="profile"&&<ProfileSettings {...props}/>}
    {section==="appearance"&&<AppearanceSettings appearance={props.appearance} saveAppearance={props.saveAppearance}/>}
   </main>
@@ -37,46 +41,81 @@ function NavButton({active,icon,onClick,children}:{active:boolean;icon:React.Rea
  return <button className={active?"active":""} aria-current={active?"page":undefined} onClick={onClick}><span>{icon}{children}</span><ChevronRight size={13}/></button>
 }
 
-function GeneralSettings({profile,setProfile,apiKey,setApiKey,saveProvider,appInfo}:Props){
- const [saving,setSaving]=useState(false),[saved,setSaved]=useState(false);
- async function submit(event:FormEvent){setSaving(true);setSaved(false);try{if(await saveProvider(event))setSaved(true)}finally{setSaving(false)}}
- return <form className="settings-page" onSubmit={submit}>
-  <PageHeader eyebrow="DESKTOP" title="General" description="Configure the model connection used by Noval Runtime."/>
-  <SettingsGroup title="Model connection">
-   <SettingRow title="Provider" description="The adapter used for new and resumed Sessions.">
-    <select aria-label="Provider" value={profile.provider} onChange={event=>setProfile({...profile,provider:event.target.value as ProviderProfile["provider"]})}><option value="openai-compatible">OpenAI-compatible</option><option value="anthropic">Anthropic</option></select>
+function ModelSettings(props:Props){
+ const configuration=props.models;
+ const [connectionId,setConnectionId]=useState(configuration?.connections[0]?.id??"new"),[profileId,setProfileId]=useState("deepseek"),[connectionLabel,setConnectionLabel]=useState(""),[baseUrl,setBaseUrl]=useState(""),[apiKeyEnv,setApiKeyEnv]=useState(""),[apiKey,setApiKey]=useState(""),[clearKey,setClearKey]=useState(false);
+ const [modelConnectionId,setModelConnectionId]=useState(configuration?.connections[0]?.id??""),[modelLabel,setModelLabel]=useState(""),[providerModel,setProviderModel]=useState(""),[saving,setSaving]=useState(false),[saved,setSaved]=useState("");
+ const connection=configuration?.connections.find(item=>item.id===connectionId);
+ const profile=props.profiles.find(item=>item.id===profileId);
+ const modelConnection=configuration?.connections.find(item=>item.id===modelConnectionId);
+ const modelProfile=props.profiles.find(item=>item.id===modelConnection?.profile_id);
+ useEffect(()=>{if(!configuration)return;if(!connectionId||(connectionId!=="new"&&!configuration.connections.some(item=>item.id===connectionId)))setConnectionId(configuration.connections[0]?.id??"new");if(!modelConnectionId)setModelConnectionId(configuration.connections[0]?.id??"")},[configuration?.revision]);
+ useEffect(()=>{if(connection){setProfileId(connection.profile_id);setConnectionLabel(connection.label);setBaseUrl(connection.base_url);setApiKeyEnv(connection.api_key_env)}else{setConnectionLabel("");const initial=props.profiles.find(item=>item.id===profileId);setBaseUrl("");setApiKeyEnv("");if(initial?.kind==="builtin")setConnectionLabel(initial.label)}setApiKey("");setClearKey(false)},[connectionId]);
+ useEffect(()=>{if(!modelProfile)return;const first=modelProfile.default_model??modelProfile.models[0]?.id??"";setProviderModel(first);setModelLabel(modelProfile.models.find(item=>item.id===first)?.label??first)},[modelConnectionId,modelProfile?.id]);
+ function chooseProfile(value:string){setProfileId(value);const next=props.profiles.find(item=>item.id===value);if(connectionId==="new"){setConnectionLabel(next?.label??"");setBaseUrl("");setApiKeyEnv("")}}
+ async function saveConnection(event:FormEvent){event.preventDefault();if(!configuration)return;setSaving(true);setSaved("");try{await props.upsertConnection({
+   schema_version:API_SCHEMA_VERSION,expected_configuration_revision:configuration.revision,
+   connection_id:connection?.id,expected_connection_revision:connection?.revision,
+   label:connectionLabel.trim(),profile_id:profileId,
+   base_url:profile?.kind==="custom"?baseUrl.trim():undefined,
+   api_key_env:profile?.kind==="custom"?apiKeyEnv.trim():undefined,
+   api_key:apiKey.trim()||undefined,clear_api_key:clearKey,
+  });setApiKey("");setClearKey(false);setSaved("Connection saved without restarting the Runtime.")}catch{}finally{setSaving(false)}}
+ async function addModel(event:FormEvent){event.preventDefault();if(!configuration)return;setSaving(true);setSaved("");try{await props.upsertConfiguredModel({schema_version:API_SCHEMA_VERSION,expected_configuration_revision:configuration.revision,label:modelLabel.trim(),connection_id:modelConnectionId,model:providerModel.trim()});setSaved("Configured Model added.")}catch{}finally{setSaving(false)}}
+ return <section className="settings-page">
+  <PageHeader eyebrow="RUNTIME" title="Models" description="Manage OpenAI-compatible Connections and reusable model selections. Changes apply to the next Turn without restarting the Runtime."/>
+  <SettingsGroup title="Configured Models">
+   <div className="model-list">{configuration?.configured.map(model=>{const itemConnection=configuration.connections.find(item=>item.id===model.connection_id);return <div className="model-row" key={model.id}>
+    <button type="button" className="model-default" aria-pressed={model.id===configuration.default_model_id} onClick={()=>void props.setDefaultModel(model.id).catch(()=>{})}><span>{model.label}<small>{model.model} via {itemConnection?.label??"Unknown Connection"}</small></span>{model.id===configuration.default_model_id?<strong><Check size={13}/>Default</strong>:<em>Set default</em>}</button>
+    <button type="button" aria-label={`Delete ${model.label}`} disabled={configuration.configured.length===1} onClick={()=>void props.deleteConfiguredModel(model.id).catch(()=>{})}><Trash2 size={14}/></button>
+   </div>})}</div>
+   <form className="model-add" onSubmit={addModel}>
+    <select aria-label="Model Connection" value={modelConnectionId} onChange={event=>setModelConnectionId(event.target.value)}>{configuration?.connections.map(item=><option key={item.id} value={item.id}>{item.label}</option>)}</select>
+    <input aria-label="Configured Model label" required value={modelLabel} onChange={event=>setModelLabel(event.target.value)} placeholder="Display label"/>
+    {modelProfile?.kind==="builtin"?<select aria-label="Provider model" value={providerModel} onChange={event=>{setProviderModel(event.target.value);const item=modelProfile.models.find(model=>model.id===event.target.value);if(item)setModelLabel(item.label)}}>{modelProfile.models.map(item=><option key={item.id} value={item.id}>{item.label}</option>)}</select>:<input aria-label="Provider model" required value={providerModel} onChange={event=>setProviderModel(event.target.value)} placeholder="Model identifier"/>}
+    <button className="settings-primary" disabled={saving||!modelConnectionId}><Plus size={13}/>Add model</button>
+   </form>
+  </SettingsGroup>
+  <SettingsGroup title="Connections">
+   <SettingRow title="Connection" description="Choose an existing Connection or add another endpoint.">
+    <div className="connection-picker"><select aria-label="Connection" value={connectionId} onChange={event=>setConnectionId(event.target.value)}><option value="new">New Connection…</option>{configuration?.connections.map(item=><option key={item.id} value={item.id}>{item.label}</option>)}</select>{connection&&<button type="button" aria-label={`Delete Connection ${connection.label}`} onClick={()=>void props.deleteConnection(connection.id).catch(()=>{})}><Trash2 size={14}/></button>}</div>
    </SettingRow>
-   <SettingRow title="Model" description="Primary model for conversation and tool use."><input aria-label="Model" value={profile.model} onChange={event=>setProfile({...profile,model:event.target.value})}/></SettingRow>
-   <SettingRow title="Judge model" description="Lightweight model used for semantic completion assessment."><input aria-label="Judge model" value={profile.judgeModel} onChange={event=>setProfile({...profile,judgeModel:event.target.value})}/></SettingRow>
-   <SettingRow title="Base URL" description="Provider-compatible API endpoint."><input aria-label="Base URL" value={profile.baseUrl} onChange={event=>setProfile({...profile,baseUrl:event.target.value})}/></SettingRow>
-   <SettingRow title="API key" description="Encrypted with operating-system credential protection.">
-    <div className="credential-field"><KeyRound size={14}/><input aria-label="API key" type="password" autoComplete="off" value={apiKey} placeholder={profile.hasApiKey?"Saved securely — enter a new key to replace":"Enter API key"} onChange={event=>setApiKey(event.target.value)}/></div>
-   </SettingRow>
+   <form className="connection-form" onSubmit={saveConnection}>
+    <SettingRow title="Provider Profile" description="Built-in Profiles lock trusted endpoint metadata."><select aria-label="Provider Profile" disabled={Boolean(connection)} value={profileId} onChange={event=>chooseProfile(event.target.value)}>{props.profiles.map(item=><option key={item.id} value={item.id}>{item.label}</option>)}</select></SettingRow>
+    <SettingRow title="Label" description="A local name used by Configured Models."><input aria-label="Connection label" required value={connectionLabel} onChange={event=>setConnectionLabel(event.target.value)}/></SettingRow>
+    {profile?.kind==="custom"&&<><SettingRow title="Base URL" description="Custom endpoints must use HTTPS, except loopback development servers."><input aria-label="Base URL" required value={baseUrl} onChange={event=>setBaseUrl(event.target.value)}/></SettingRow><SettingRow title="API key environment" description="Optional environment-variable fallback."><input aria-label="API key environment" value={apiKeyEnv} onChange={event=>setApiKeyEnv(event.target.value)}/></SettingRow></>}
+    <SettingRow title="API key" description="Write-only. If entered, it is stored as plaintext in your user-local settings.json. Prefer an environment variable when possible.">
+     <div className="credential-stack"><div className="credential-field"><KeyRound size={14}/><input aria-label="API key" type="password" autoComplete="off" value={apiKey} placeholder={connection?.api_key_configured?"Credential configured — enter to replace":"Enter credential"} onChange={event=>{setApiKey(event.target.value);setClearKey(false)}}/></div>{connection?.api_key_configured&&<label><input type="checkbox" checked={clearKey} onChange={event=>{setClearKey(event.target.checked);if(event.target.checked)setApiKey("")}}/>Clear stored credential</label>}</div>
+    </SettingRow>
+    <div className="settings-save"><span>{saved&&<><Check size={14}/>{saved}</>}</span><button className="settings-primary" disabled={saving}>{saving?"Saving…":"Save Connection"}</button></div>
+   </form>
   </SettingsGroup>
   <SettingsGroup title="Application">
-   <SettingRow title="Desktop version" description="Current preview build."><code>{appInfo?.desktopVersion??"—"}</code></SettingRow>
-   <SettingRow title="Noval Core" description="Embedded Python Runtime version."><code>{appInfo?.coreVersion??"—"}</code></SettingRow>
-   <SettingRow title="Sidecar protocol" description="Typed Electron ↔ Python transport contract."><code>v{appInfo?.protocolVersion??"—"}</code></SettingRow>
+   <SettingRow title="Desktop version" description="Current preview build."><code>{props.appInfo?.desktopVersion??"—"}</code></SettingRow>
+   <SettingRow title="Noval Core" description="Configuration and credential owner."><code>{props.appInfo?.coreVersion??"—"}</code></SettingRow>
+   <SettingRow title="Sidecar protocol" description="Typed Electron ↔ Python transport contract."><code>v{props.appInfo?.protocolVersion??"—"}</code></SettingRow>
   </SettingsGroup>
-  <div className="settings-save"><span>{saved&&<><Check size={14}/>Saved. Runtime restarted with this connection.</>}</span><button className="settings-primary" disabled={saving}>{saving?"Saving…":"Save connection"}</button></div>
- </form>
+ </section>
 }
 
-function ProfileSettings({profile,workspace,projectCount,sessionCount,appInfo}:Props){
+function ProfileSettings({models,workspace,projectCount,sessionCount,appInfo}:Props){
+ const active=useMemo(()=>models?.configured.find(item=>item.id===models.default_model_id),[models]);
+ const connection=models?.connections.find(item=>item.id===active?.connection_id);
  return <section className="settings-page">
   <PageHeader eyebrow="LOCAL PROFILE" title="Private by design" description="A truthful view of the Noval state available on this device. No account or cloud profile is required."/>
   <div className="profile-hero">
-   <div className="profile-mark">N</div><div><span className="profile-status"><i/>Local Runtime connected</span><h2>Noval Desktop</h2><p>Your projects, Sessions, permissions, and provider configuration remain under local Runtime ownership.</p></div>
+   <div className="profile-mark">N</div><div><span className="profile-status"><i/>Local Runtime connected</span><h2>Noval Desktop</h2><p>Your projects, Sessions, permissions, and model configuration remain under local Runtime ownership.</p></div>
   </div>
   <div className="profile-stats">
    <Stat icon={<FolderKanban size={17}/>} value={String(projectCount)} label="Projects"/>
    <Stat icon={<CircleUserRound size={17}/>} value={String(sessionCount)} label="Stored Sessions"/>
-   <Stat icon={<Cpu size={17}/>} value={profile.model} label="Active model"/>
+   <Stat icon={<Cpu size={17}/>} value={active?.label??"—"} label="Default model"/>
   </div>
   <SettingsGroup title="Current environment">
    <SettingRow title="Active workspace" description="The project Noval will use for the next new task."><span className="setting-value truncate" title={workspace??undefined}>{workspace??"No project selected"}</span></SettingRow>
-   <SettingRow title="Provider" description="Effective Runtime adapter."><span className="setting-value">{profile.provider}</span></SettingRow>
-   <SettingRow title="Runtime boundary" description="Electron is the product shell; Python remains the only execution kernel."><span className="privacy-badge"><ShieldCheck size={13}/>Local</span></SettingRow>
+   <SettingRow title="Provider adapter" description="Phase 1 uses the OpenAI-compatible Adapter."><span className="setting-value">{connection?.adapter??"—"}</span></SettingRow>
+   <SettingRow title="Credential status" description="Only availability is exposed to Desktop."><span className="privacy-badge"><ShieldCheck size={13}/>{connection?.credential_available?"Available":"Not configured"}</span></SettingRow>
+   <SettingRow title="Runtime boundary" description="Electron is the product shell; Python remains the only execution kernel."><span className="privacy-badge"><ServerCog size={13}/>Local</span></SettingRow>
    <SettingRow title="Core version" description="Canonical Session and permission owner."><code>{appInfo?.coreVersion??"—"}</code></SettingRow>
   </SettingsGroup>
  </section>

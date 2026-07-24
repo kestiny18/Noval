@@ -3,8 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { existsSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
-import { mkdir, writeFile as writeTextFile } from "node:fs/promises";
-import { AppearancePreferences, Preferences, ProviderProfile } from "./preferences.js";
+import { AppearancePreferences, Preferences } from "./preferences.js";
 import { sendToRenderer } from "./renderer-events.js";
 import { SidecarSupervisor } from "./sidecar.js";
 import { PROTOCOL_VERSION } from "../shared/protocol.js";
@@ -17,23 +16,16 @@ let preferences:Preferences;
 let recovering=false;
 
 interface CoreProject {workdir:string;available:boolean}
-interface RuntimeConfiguration {provider:"openai-compatible"|"anthropic";model:string;judge_model:string;base_url:string;api_key_configured:boolean}
 async function projectPaths():Promise<string[]>{const result=await sidecar.request<{projects:CoreProject[]}>("workspace.list",{});return (await preferences.synchronizeWorkspaces(result.projects.filter(item=>item.available).map(item=>item.workdir))).filter(value=>existsSync(value))}
 async function projectList(){return (await projectPaths()).map(value=>({path:value,name:path.basename(value),active:value===workspace}))}
 async function requireProject(value:string):Promise<string>{const match=(await projectPaths()).find(item=>item===value);if(!match)throw new Error("The project is not registered in Noval Desktop.");return match}
-async function effectiveProfile():Promise<ProviderProfile>{const value=await sidecar.request<RuntimeConfiguration>("runtime.configuration",{});return {provider:value.provider,model:value.model,judgeModel:value.judge_model,baseUrl:value.base_url,hasApiKey:value.api_key_configured}}
 
 function publishHostState(state:"connected"|"recovering"|"disconnected",detail?:string):void{
   sendToRenderer(mainWindow,"noval:event",{protocol_version:PROTOCOL_VERSION,kind:"event",event_id:`host-${Date.now()}`,event:"host.connection",payload:{state,detail}});
 }
 
 async function startRuntime():Promise<void>{
-  const profile=preferences.profile(),apiKey=preferences.apiKey();
-  if(!profile){await sidecar.start(process.env.NOVAL_SETTINGS_PATH);return}
-  const settingsPath=path.join(app.getPath("userData"),"runtime-settings.json");
-  await mkdir(path.dirname(settingsPath),{recursive:true});
-  await writeTextFile(settingsPath,JSON.stringify({provider:profile.provider,model:profile.model,judge_model:profile.judgeModel,base_url:profile.baseUrl||"https://api.openai.com/v1",anthropic_base_url:profile.provider==="anthropic"?profile.baseUrl:"",api_key_env:"NOVAL_DESKTOP_API_KEY"},null,2),{encoding:"utf8",mode:0o600});
-  await sidecar.start(settingsPath,apiKey?{NOVAL_DESKTOP_API_KEY:apiKey}:{});
+  await sidecar.start(process.env.NOVAL_SETTINGS_PATH);
 }
 
 async function recoverRuntime():Promise<void>{
@@ -86,6 +78,7 @@ function registerIpc(): void {
   ipcMain.handle("noval:create-session",(_e,options={})=>sidecar.request("session.create",{options}));
   ipcMain.handle("noval:resume-session",(_e,id:string)=>sidecar.request("session.resume",{session_id:id}));
   ipcMain.handle("noval:rename-session",(_e,id:string,title:string)=>sidecar.request("session.rename",{session_id:id,title}));
+  ipcMain.handle("noval:session-models",async(_e,id:string,modelId:string,judgeModelId:string)=>(await sidecar.request<{session:unknown}>("session.models.select",{session_id:id,selected_model_id:modelId,selected_judge_model_id:judgeModelId})).session);
   ipcMain.handle("noval:transcript",(_e,id:string,after=0)=>sidecar.request("session.transcript",{session_id:id,after_sequence:after,limit:100}));
   ipcMain.handle("noval:transcript-history",(_e,id:string,before?:number)=>sidecar.request("session.transcript_history",{session_id:id,before_sequence:before,limit:24}));
   ipcMain.handle("noval:copy-text",(_e,text:string)=>{if(typeof text!=="string")throw new Error("Only text can be copied.");clipboard.writeText(text)});
@@ -102,12 +95,13 @@ function registerIpc(): void {
     if(!value||!["system","light","dark"].includes(value.theme)||!["comfortable","compact"].includes(value.density))throw new Error("Appearance settings are invalid.");
     await preferences.setAppearance(value);return preferences.appearance();
   });
-  ipcMain.handle("noval:get-provider-profile",()=>effectiveProfile());
-  ipcMain.handle("noval:save-provider-profile",async(_e,value:Omit<ProviderProfile,"hasApiKey">&{apiKey?:string})=>{
-    if(!value||!['openai-compatible','anthropic'].includes(value.provider)||!value.model?.trim()||!value.judgeModel?.trim())throw new Error("Provider and model values are required.");
-    await preferences.setProfile({provider:value.provider,model:value.model.trim(),judgeModel:value.judgeModel.trim(),baseUrl:String(value.baseUrl??"").trim()},value.apiKey?.trim());
-    await sidecar.stop();await startRuntime();if(workspace)await sidecar.request("workspace.select",{workdir:workspace});return effectiveProfile();
-  });
+  ipcMain.handle("noval:model-profiles",async()=>((await sidecar.request<{profiles:unknown[]}>("model.profiles",{})).profiles));
+  ipcMain.handle("noval:model-configuration",()=>sidecar.request("model.configuration",{}));
+  ipcMain.handle("noval:connection-upsert",(_e,value:Record<string,unknown>)=>sidecar.request("model.connection.upsert",value));
+  ipcMain.handle("noval:connection-delete",(_e,id:string,revision:number)=>sidecar.request("model.connection.delete",{connection_id:id,expected_configuration_revision:revision}));
+  ipcMain.handle("noval:configured-upsert",(_e,value:Record<string,unknown>)=>sidecar.request("model.configured.upsert",value));
+  ipcMain.handle("noval:configured-delete",(_e,id:string,revision:number)=>sidecar.request("model.configured.delete",{configured_model_id:id,expected_configuration_revision:revision}));
+  ipcMain.handle("noval:model-default",(_e,id:string,revision:number)=>sidecar.request("model.default.set",{configured_model_id:id,expected_configuration_revision:revision}));
   ipcMain.handle("noval:open-external",async(_e,url:string)=>{if(/^https:\/\/(github\.com|docs\.noval\.)/i.test(url)) await shell.openExternal(url);});
 }
 

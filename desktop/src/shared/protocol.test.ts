@@ -6,5 +6,5 @@ it("accepts a versioned response", () => {
 });
 
 it("rejects protocol major drift", () => {
-  expect(() => EnvelopeSchema.parse({protocol_version: 2, kind:"response", request_id:"r1", ok:true})).toThrow();
+  expect(() => EnvelopeSchema.parse({protocol_version: 1, kind:"response", request_id:"r1", ok:true})).toThrow();
 });
