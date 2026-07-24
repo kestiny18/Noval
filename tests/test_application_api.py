@@ -17,6 +17,10 @@ from noval.api import (
     ApiFormatError,
     CompletionReport,
     CompletionStatus,
+    ConfiguredModelInfo,
+    ConfiguredModelUpsert,
+    ConnectionInfo,
+    ConnectionUpsert,
     CriterionReport,
     CriterionStatus,
     ErrorInfo,
@@ -24,6 +28,7 @@ from noval.api import (
     EventPage,
     EventType,
     GoalContract,
+    ModelConfigurationInfo,
     NovalError,
     PermissionDecision,
     PermissionRequest,
@@ -196,9 +201,8 @@ def test_runtime_and_session_options_round_trip_and_reject_unknown_requests():
     session = SessionOptions(
         workdir="C:/projects/a",
         persistence=SessionPersistence.EPHEMERAL,
-        provider="anthropic",
-        model="claude",
-        judge_model="judge",
+        selected_model_id="configured-claude",
+        selected_judge_model_id="configured-judge",
         sandbox_mode=SandboxMode.REQUIRED,
         network_access=NetworkAccess.DENY,
     )
@@ -208,17 +212,52 @@ def test_runtime_and_session_options_round_trip_and_reject_unknown_requests():
 
     with pytest.raises(ApiFormatError, match="unknown field"):
         TurnRequest.from_dict({"text": "hello", "surprise": True})
+    with pytest.raises(ApiFormatError, match="unknown field"):
+        SessionOptions.from_dict(
+            {
+                "schema_version": 2,
+                "workdir": "C:/projects/a",
+                "provider": "openai-compatible",
+            }
+        )
+    with pytest.raises(ApiFormatError, match="schema_version must be 2"):
+        RuntimeOptions.from_dict(
+            {"schema_version": 1, "settings_path": None}
+        )
     with pytest.raises(ApiFormatError, match="text"):
         TurnRequest(text="")
 
 
 def test_runtime_configuration_and_project_contracts_are_json_safe():
     configuration = RuntimeConfiguration(
-        provider="openai-compatible",
-        model="agent-model",
-        judge_model="judge-model",
-        base_url="https://example.invalid",
-        api_key_configured=True,
+        models=ModelConfigurationInfo(
+            revision=1,
+            connections=(
+                ConnectionInfo(
+                    id="connection-a",
+                    revision=1,
+                    label="Example",
+                    profile_id="custom",
+                    adapter="openai-compatible",
+                    base_url="https://example.invalid",
+                    api_key_env="EXAMPLE_API_KEY",
+                    api_key_configured=True,
+                    credential_available=True,
+                ),
+            ),
+            configured=(
+                ConfiguredModelInfo(
+                    id="configured-agent",
+                    label="Agent",
+                    connection_id="connection-a",
+                    model="agent-model",
+                ),
+            ),
+            default_model_id="configured-agent",
+        ),
+        max_steps=40,
+        max_tool_output_chars=8000,
+        persist_sessions=True,
     )
     project = PersistedProjectInfo(
         workdir="C:/projects/a",
@@ -235,6 +274,91 @@ def test_runtime_configuration_and_project_contracts_are_json_safe():
     ) == project
 
 
+def test_runtime_configuration_mutations_are_typed_atomic_and_credential_safe(
+    tmp_path,
+):
+    settings = tmp_path / "settings.json"
+    document = packaged_settings()
+    document.update(
+        {
+            "sessions_dir": str(tmp_path / "sessions"),
+            "persist_logs": False,
+            "persist_usage": False,
+        }
+    )
+    settings.write_text(json.dumps(document), encoding="utf-8")
+    runtime = NovalRuntime(Config.load(settings))
+
+    profiles = runtime.list_provider_profiles()
+    assert [profile.id for profile in profiles[:-1]] == [
+        "deepseek",
+        "qwen",
+        "moonshot",
+        "zhipu",
+        "openai",
+        "google",
+    ]
+    assert profiles[-1].id == "custom"
+    assert all("base_url" not in profile.to_dict() for profile in profiles)
+    secret = "credential-never-returned"
+    request = ConnectionUpsert(
+        expected_configuration_revision=1,
+        label="Local gateway",
+        profile_id="custom",
+        base_url="http://127.0.0.1:9000/v1",
+        api_key_env="LOCAL_GATEWAY_API_KEY",
+        api_key=secret,
+    )
+    assert secret not in repr(request)
+
+    after_connection = runtime.upsert_connection(request)
+    custom_connection = next(
+        connection
+        for connection in after_connection.connections
+        if connection.label == "Local gateway"
+    )
+    assert after_connection.revision == 2
+    assert custom_connection.api_key_configured is True
+    assert secret not in json.dumps(after_connection.to_dict())
+
+    after_model = runtime.upsert_configured_model(
+        ConfiguredModelUpsert(
+            expected_configuration_revision=after_connection.revision,
+            label="Local model",
+            connection_id=custom_connection.id,
+            model="local-model",
+        )
+    )
+    local_model = next(
+        model for model in after_model.configured if model.label == "Local model"
+    )
+    activated = runtime.set_default_model(
+        local_model.id,
+        expected_configuration_revision=after_model.revision,
+    )
+    assert activated.default_model_id == local_model.id
+    persisted = settings.read_text(encoding="utf-8")
+    assert secret in persisted
+    assert secret not in json.dumps(runtime.configuration().to_dict())
+
+    with pytest.raises(NovalError) as stale:
+        runtime.set_default_model(
+            local_model.id,
+            expected_configuration_revision=1,
+        )
+    assert stale.value.code == "configuration_conflict"
+    assert stale.value.retryable is True
+    assert secret not in stale.value.safe_message
+
+    with pytest.raises(NovalError) as referenced:
+        runtime.delete_connection(
+            custom_connection.id,
+            expected_configuration_revision=activated.revision,
+        )
+    assert referenced.value.code == "connection_in_use"
+    runtime.close()
+
+
 def test_runtime_observes_effective_configuration_and_stored_projects(tmp_path):
     config = application_config(tmp_path)
     workdir = tmp_path / "project"
@@ -247,10 +371,10 @@ def test_runtime_observes_effective_configuration_and_stored_projects(tmp_path):
     observed = runtime.configuration()
     projects = runtime.list_persisted_projects()
 
-    assert observed.provider == config.provider
-    assert observed.model == config.model
-    assert observed.judge_model == config.judge_model
-    assert observed.api_key_configured is True
+    assert observed.models.default_model_id == config.model
+    assert observed.models.connections[0].adapter == config.provider
+    assert observed.models.connections[0].credential_available is True
+    assert observed.max_steps == config.max_steps
     assert [project.workdir for project in projects] == [str(workdir.resolve())]
     assert projects[0].session_count == 1
     runtime.close()
@@ -261,8 +385,10 @@ def test_session_info_and_permission_contracts_are_json_safe():
         session_id="s1",
         workdir="C:/projects/a",
         persistence=SessionPersistence.PERSISTENT,
-        provider="openai-compatible",
-        model="deepseek",
+        selected_model_id="configured-deepseek",
+        selected_judge_model_id="configured-judge",
+        active_model_id="configured-deepseek",
+        active_judge_model_id="configured-judge",
         is_open=True,
         title="Investigate runtime",
         message_count=12,
@@ -1283,17 +1409,16 @@ def test_persistent_session_can_be_listed_closed_and_resumed(tmp_path):
         first = runtime.create_session(SessionOptions(
             workdir=str(workdir),
             persistence=SessionPersistence.PERSISTENT,
-            provider="openai-compatible",
-            model="persisted-agent",
-            judge_model="persisted-judge",
+            selected_model_id="persisted-agent",
+            selected_judge_model_id="persisted-judge",
         ))
         session_id = first.info.session_id
         first.run_turn(TurnRequest("first question"))
         persisted = runtime.list_persisted_sessions(str(workdir))
         assert [item.session_id for item in persisted] == [session_id]
         assert persisted[0].is_open is True
-        assert persisted[0].provider == "openai-compatible"
-        assert persisted[0].model == "persisted-agent"
+        assert persisted[0].selected_model_id == "persisted-agent"
+        assert persisted[0].selected_judge_model_id == "persisted-judge"
 
     second_factory = RecordingClientFactory(["second reply"])
     with NovalRuntime(config, client_factory=second_factory) as runtime:
@@ -1432,7 +1557,7 @@ def test_persistent_resume_closes_interrupted_turn_before_continuing(tmp_path):
         ) == 1
 
 
-def test_session_provider_and_model_overrides_are_session_scoped(tmp_path):
+def test_session_model_selection_overrides_are_session_scoped(tmp_path):
     workdir = tmp_path / "project"
     workdir.mkdir()
     factory = RecordingClientFactory(["one", "two"])
@@ -1445,9 +1570,8 @@ def test_session_provider_and_model_overrides_are_session_scoped(tmp_path):
         override_session = runtime.create_session(SessionOptions(
             workdir=str(workdir),
             persistence=SessionPersistence.EPHEMERAL,
-            provider="anthropic",
-            model="agent-override",
-            judge_model="judge-override",
+            selected_model_id="agent-override",
+            selected_judge_model_id="judge-override",
         ))
         default_session.run_turn(TurnRequest("one"))
         override_session.run_turn(TurnRequest("two"))
@@ -1455,8 +1579,8 @@ def test_session_provider_and_model_overrides_are_session_scoped(tmp_path):
     assert [(spec.purpose, spec.provider, spec.model) for spec in factory.specs] == [
         ("agent", "openai-compatible", "agent-default"),
         ("completion_judge", "openai-compatible", "judge-default"),
-        ("agent", "anthropic", "agent-override"),
-        ("completion_judge", "anthropic", "judge-override"),
+        ("agent", "openai-compatible", "agent-override"),
+        ("completion_judge", "openai-compatible", "judge-override"),
     ]
 
 
@@ -1585,6 +1709,92 @@ def test_model_switch_during_turn_changes_only_the_next_turn(tmp_path):
     ]
     assert session._store.load_model_selection().selected_model_id == (
         "model-deepseek-v4-flash-default"
+    )
+    session.close()
+    runtime.close()
+
+
+def test_connection_change_during_turn_changes_only_next_transport_revision(
+    tmp_path,
+):
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    settings = tmp_path / "settings.json"
+    document = packaged_settings()
+    document.update(
+        {
+            "sessions_dir": str(tmp_path / "sessions"),
+            "persist_logs": False,
+            "persist_usage": False,
+        }
+    )
+    settings.write_text(json.dumps(document), encoding="utf-8")
+
+    class RevisionFactory:
+        def __init__(self):
+            self.specs = []
+            self.first = BlockingClient("first reply")
+            self.agent_count = 0
+
+        def __call__(self, spec):
+            self.specs.append(spec)
+            if spec.purpose != "agent":
+                return MockClient([])
+            self.agent_count += 1
+            if self.agent_count == 1:
+                return self.first
+            return MockClient([mock_text("second reply")])
+
+    factory = RevisionFactory()
+    runtime = NovalRuntime(Config.load(settings), client_factory=factory)
+    session = runtime.create_session(
+        SessionOptions(
+            workdir=str(workdir),
+            persistence=SessionPersistence.PERSISTENT,
+        )
+    )
+    results = []
+    worker = threading.Thread(
+        target=lambda: results.append(
+            session.run_turn(TurnRequest("first question"))
+        )
+    )
+    worker.start()
+    assert factory.first.entered.wait(2)
+    active = session._active_execution
+    assert active.agent.transport_revision == 1
+
+    changed = runtime.upsert_connection(
+        ConnectionUpsert(
+            expected_configuration_revision=1,
+            connection_id="connection-deepseek-default",
+            expected_connection_revision=1,
+            label="DeepSeek",
+            profile_id="deepseek",
+            api_key="replacement-credential",
+        )
+    )
+
+    assert changed.revision == 2
+    assert session._active_execution is active
+    assert active.agent.transport_revision == 1
+    factory.first.release.set()
+    worker.join(3)
+    assert results[0].message.text == "first reply"
+
+    second = session.run_turn(TurnRequest("second question"))
+
+    assert second.message.text == "second reply"
+    agent_specs = [
+        spec for spec in factory.specs if spec.purpose == "agent"
+    ]
+    assert [spec.replay_scope.transport_revision for spec in agent_specs] == [
+        1,
+        2,
+    ]
+    assert "replacement-credential" not in repr(agent_specs)
+    assert "replacement-credential" not in json.dumps(
+        runtime.configuration().to_dict()
     )
     session.close()
     runtime.close()

@@ -81,9 +81,14 @@ def test_runtime_exposes_safe_configuration_and_project_inventory(tmp_path):
     configuration = server.dispatch(parse_request(request("runtime.configuration")))
     projects = server.dispatch(parse_request(request("workspace.list")))
 
-    assert configuration["provider"] in {"openai-compatible", "anthropic"}
-    assert configuration["model"]
-    assert isinstance(configuration["api_key_configured"], bool)
+    assert configuration["models"]["default_model_id"]
+    assert configuration["models"]["connections"][0]["adapter"] == (
+        "openai-compatible"
+    )
+    assert isinstance(
+        configuration["models"]["connections"][0]["credential_available"],
+        bool,
+    )
     assert "api_key" not in configuration
     assert isinstance(projects["projects"], list)
     server.close()

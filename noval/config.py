@@ -59,6 +59,7 @@ class Config:
     model_configuration: Optional[ModelConfiguration] = field(
         default=None, repr=False
     )
+    settings_path_setting: str = ""
     raw: Dict[str, Any] = field(default_factory=dict, repr=False)
 
     @classmethod
@@ -145,6 +146,7 @@ class Config:
             anthropic_base_url="",
             anthropic_max_tokens=merged["anthropic_max_tokens"],
             model_configuration=model_configuration,
+            settings_path_setting=str(p),
             raw=merged,
         )
 

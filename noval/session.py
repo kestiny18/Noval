@@ -142,8 +142,9 @@ class SessionMeta:
     last_active: str       # Derived from the .jsonl mtime instead of stored.
     title: str
     message_count: int
-    model: str
-    provider: str = ""
+    selected_model_id: str
+    selected_judge_model_id: str
+    configuration_revision: int
 
 
 @dataclass(frozen=True)
@@ -626,18 +627,19 @@ def _read_session_meta(path: Path) -> Optional[SessionMeta]:
     title_value = sidecar.get("title")
     title = title_value if isinstance(title_value, str) and title_value.strip() else None
     application = sidecar.get("application")
-    model = ""
-    provider = ""
+    selected_model_id = ""
+    selected_judge_model_id = ""
+    configuration_revision = 0
     if isinstance(application, dict):
         selected = application.get("selected_model_id")
-        legacy_model = application.get("model")
-        legacy_provider = application.get("provider")
+        selected_judge = application.get("selected_judge_model_id")
+        revision = application.get("configuration_revision")
         if isinstance(selected, str):
-            model = selected
-        elif isinstance(legacy_model, str):
-            model = legacy_model
-        if isinstance(legacy_provider, str):
-            provider = legacy_provider
+            selected_model_id = selected
+        if isinstance(selected_judge, str):
+            selected_judge_model_id = selected_judge
+        if isinstance(revision, int) and not isinstance(revision, bool):
+            configuration_revision = revision
     if title is None:
         title = _derive_title(first_user) if first_user else "(empty session)"
     return SessionMeta(
@@ -646,8 +648,9 @@ def _read_session_meta(path: Path) -> Optional[SessionMeta]:
         last_active,
         title,
         msg_count,
-        model,
-        provider=provider,
+        selected_model_id,
+        selected_judge_model_id,
+        configuration_revision,
     )
 
 

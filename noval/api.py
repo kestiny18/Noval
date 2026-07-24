@@ -15,7 +15,7 @@ from .messages import ConversationMessage, ToolCallBlock
 from .permissions import PermissionMode
 from .process import NetworkAccess, SandboxMode
 
-API_SCHEMA_VERSION = 1
+API_SCHEMA_VERSION = 2
 JSONValue = Any
 
 
@@ -150,6 +150,12 @@ def _string(value: Any, label: str, *, optional: bool = False) -> Optional[str]:
     if not isinstance(value, str) or not value.strip():
         suffix = " or null" if optional else ""
         raise ApiFormatError(f"{label} must be a non-empty string{suffix}")
+    return value
+
+
+def _text_string(value: Any, label: str) -> str:
+    if not isinstance(value, str):
+        raise ApiFormatError(f"{label} must be a string")
     return value
 
 
@@ -726,28 +732,233 @@ class CompletionReport:
 
 
 @dataclass(frozen=True)
-class RuntimeConfiguration:
-    """Safe, credential-free view of the Runtime's effective configuration."""
-
-    provider: str
-    model: str
-    judge_model: str
-    base_url: str
-    api_key_configured: bool
+class ProviderModelInfo:
+    id: str
+    label: str
+    recommended: bool = False
 
     def __post_init__(self) -> None:
-        for name in ("provider", "model", "judge_model", "base_url"):
-            _string(getattr(self, name), name)
-        _boolean(self.api_key_configured, "api_key_configured")
+        _identifier(self.id, "id")
+        _string(self.label, "label")
+        _boolean(self.recommended, "recommended")
+
+    def to_dict(self) -> Dict[str, JSONValue]:
+        return {
+            "id": self.id,
+            "label": self.label,
+            "recommended": self.recommended,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "ProviderModelInfo":
+        obj = _object(data, "provider_model")
+        return cls(
+            id=_identifier(obj.get("id"), "id"),
+            label=_string(obj.get("label"), "label") or "",
+            recommended=_boolean(obj.get("recommended", False), "recommended"),
+        )
+
+
+@dataclass(frozen=True)
+class ProviderProfileInfo:
+    id: str
+    label: str
+    kind: str
+    models: Tuple[ProviderModelInfo, ...] = ()
+    default_model: Optional[str] = None
+    adapter: Optional[str] = None
+    requires_base_url: bool = False
+
+    def __post_init__(self) -> None:
+        _identifier(self.id, "id")
+        _string(self.label, "label")
+        if self.kind not in {"builtin", "custom"}:
+            raise ApiFormatError("kind must be builtin or custom")
+        if self.default_model is not None:
+            _identifier(self.default_model, "default_model")
+        if self.adapter is not None:
+            _string(self.adapter, "adapter")
+        _boolean(self.requires_base_url, "requires_base_url")
 
     def to_dict(self) -> Dict[str, JSONValue]:
         return {
             "schema_version": API_SCHEMA_VERSION,
-            "provider": self.provider,
-            "model": self.model,
-            "judge_model": self.judge_model,
+            "id": self.id,
+            "label": self.label,
+            "kind": self.kind,
+            "models": [model.to_dict() for model in self.models],
+            "default_model": self.default_model,
+            "adapter": self.adapter,
+            "requires_base_url": self.requires_base_url,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "ProviderProfileInfo":
+        obj = _object(data, "provider_profile")
+        _schema(obj, "provider_profile")
+        raw_models = obj.get("models", [])
+        if not isinstance(raw_models, list):
+            raise ApiFormatError("models must be an array")
+        return cls(
+            id=_identifier(obj.get("id"), "id"),
+            label=_string(obj.get("label"), "label") or "",
+            kind=_string(obj.get("kind"), "kind") or "",
+            models=tuple(
+                ProviderModelInfo.from_dict(item) for item in raw_models
+            ),
+            default_model=_string(
+                obj.get("default_model"), "default_model", optional=True
+            ),
+            adapter=_string(obj.get("adapter"), "adapter", optional=True),
+            requires_base_url=_boolean(
+                obj.get("requires_base_url", False), "requires_base_url"
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class ConnectionInfo:
+    id: str
+    revision: int
+    label: str
+    profile_id: str
+    adapter: str
+    base_url: str
+    api_key_env: str
+    api_key_configured: bool
+    credential_available: bool
+
+    def __post_init__(self) -> None:
+        _identifier(self.id, "id")
+        _integer(self.revision, "revision", minimum=1)
+        _string(self.label, "label")
+        _identifier(self.profile_id, "profile_id")
+        _string(self.adapter, "adapter")
+        _string(self.base_url, "base_url")
+        if not isinstance(self.api_key_env, str):
+            raise ApiFormatError("api_key_env must be a string")
+        _boolean(self.api_key_configured, "api_key_configured")
+        _boolean(self.credential_available, "credential_available")
+
+    def to_dict(self) -> Dict[str, JSONValue]:
+        return {
+            "id": self.id,
+            "revision": self.revision,
+            "label": self.label,
+            "profile_id": self.profile_id,
+            "adapter": self.adapter,
             "base_url": self.base_url,
+            "api_key_env": self.api_key_env,
             "api_key_configured": self.api_key_configured,
+            "credential_available": self.credential_available,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "ConnectionInfo":
+        obj = _object(data, "connection")
+        return cls(
+            id=_identifier(obj.get("id"), "id"),
+            revision=_integer(obj.get("revision"), "revision", minimum=1),
+            label=_string(obj.get("label"), "label") or "",
+            profile_id=_identifier(obj.get("profile_id"), "profile_id"),
+            adapter=_string(obj.get("adapter"), "adapter") or "",
+            base_url=_string(obj.get("base_url"), "base_url") or "",
+            api_key_env=_text_string(
+                obj.get("api_key_env", ""), "api_key_env"
+            ),
+            api_key_configured=_boolean(
+                obj.get("api_key_configured"), "api_key_configured"
+            ),
+            credential_available=_boolean(
+                obj.get("credential_available"), "credential_available"
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class ConfiguredModelInfo:
+    id: str
+    label: str
+    connection_id: str
+    model: str
+
+    def to_dict(self) -> Dict[str, JSONValue]:
+        return {
+            "id": self.id,
+            "label": self.label,
+            "connection_id": self.connection_id,
+            "model": self.model,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "ConfiguredModelInfo":
+        obj = _object(data, "configured_model")
+        return cls(
+            id=_identifier(obj.get("id"), "id"),
+            label=_string(obj.get("label"), "label") or "",
+            connection_id=_identifier(
+                obj.get("connection_id"), "connection_id"
+            ),
+            model=_string(obj.get("model"), "model") or "",
+        )
+
+
+@dataclass(frozen=True)
+class ModelConfigurationInfo:
+    revision: int
+    connections: Tuple[ConnectionInfo, ...]
+    configured: Tuple[ConfiguredModelInfo, ...]
+    default_model_id: str
+
+    def to_dict(self) -> Dict[str, JSONValue]:
+        return {
+            "schema_version": API_SCHEMA_VERSION,
+            "revision": self.revision,
+            "connections": [
+                connection.to_dict() for connection in self.connections
+            ],
+            "configured": [model.to_dict() for model in self.configured],
+            "default_model_id": self.default_model_id,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "ModelConfigurationInfo":
+        obj = _object(data, "model_configuration")
+        _schema(obj, "model_configuration")
+        connections = obj.get("connections")
+        configured = obj.get("configured")
+        if not isinstance(connections, list) or not isinstance(configured, list):
+            raise ApiFormatError("connections and configured must be arrays")
+        return cls(
+            revision=_integer(obj.get("revision"), "revision", minimum=1),
+            connections=tuple(
+                ConnectionInfo.from_dict(item) for item in connections
+            ),
+            configured=tuple(
+                ConfiguredModelInfo.from_dict(item) for item in configured
+            ),
+            default_model_id=_identifier(
+                obj.get("default_model_id"), "default_model_id"
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class RuntimeConfiguration:
+    """Safe, credential-free view of stable Runtime preferences and models."""
+
+    models: ModelConfigurationInfo
+    max_steps: int
+    max_tool_output_chars: int
+    persist_sessions: bool
+
+    def to_dict(self) -> Dict[str, JSONValue]:
+        return {
+            "schema_version": API_SCHEMA_VERSION,
+            "models": self.models.to_dict(),
+            "max_steps": self.max_steps,
+            "max_tool_output_chars": self.max_tool_output_chars,
+            "persist_sessions": self.persist_sessions,
         }
 
     @classmethod
@@ -755,13 +966,194 @@ class RuntimeConfiguration:
         obj = _object(data, "runtime_configuration")
         _schema(obj, "runtime_configuration")
         return cls(
-            provider=_string(obj.get("provider"), "provider") or "",
-            model=_string(obj.get("model"), "model") or "",
-            judge_model=_string(obj.get("judge_model"), "judge_model") or "",
-            base_url=_string(obj.get("base_url"), "base_url") or "",
-            api_key_configured=_boolean(
-                obj.get("api_key_configured"), "api_key_configured"
+            models=ModelConfigurationInfo.from_dict(obj.get("models")),
+            max_steps=_integer(obj.get("max_steps"), "max_steps", minimum=1),
+            max_tool_output_chars=_integer(
+                obj.get("max_tool_output_chars"),
+                "max_tool_output_chars",
+                minimum=1,
             ),
+            persist_sessions=_boolean(
+                obj.get("persist_sessions"), "persist_sessions"
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class ConnectionUpsert:
+    expected_configuration_revision: int
+    label: str
+    profile_id: str
+    connection_id: Optional[str] = None
+    expected_connection_revision: Optional[int] = None
+    base_url: Optional[str] = None
+    api_key_env: Optional[str] = None
+    api_key: Optional[str] = field(default=None, repr=False)
+    clear_api_key: bool = False
+
+    def __post_init__(self) -> None:
+        _integer(
+            self.expected_configuration_revision,
+            "expected_configuration_revision",
+            minimum=1,
+        )
+        _string(self.label, "label")
+        _identifier(self.profile_id, "profile_id")
+        if self.connection_id is not None:
+            _identifier(self.connection_id, "connection_id")
+        if self.expected_connection_revision is not None:
+            _integer(
+                self.expected_connection_revision,
+                "expected_connection_revision",
+                minimum=1,
+            )
+        if self.base_url is not None:
+            _string(self.base_url, "base_url")
+        if self.api_key_env is not None:
+            _string(self.api_key_env, "api_key_env")
+        if self.api_key is not None:
+            _string(self.api_key, "api_key")
+        _boolean(self.clear_api_key, "clear_api_key")
+        if self.api_key is not None and self.clear_api_key:
+            raise ApiFormatError(
+                "api_key and clear_api_key are mutually exclusive"
+            )
+
+    def to_dict(self) -> Dict[str, JSONValue]:
+        result: Dict[str, JSONValue] = {
+            "schema_version": API_SCHEMA_VERSION,
+            "expected_configuration_revision": (
+                self.expected_configuration_revision
+            ),
+            "connection_id": self.connection_id,
+            "expected_connection_revision": self.expected_connection_revision,
+            "label": self.label,
+            "profile_id": self.profile_id,
+            "base_url": self.base_url,
+            "api_key_env": self.api_key_env,
+            "clear_api_key": self.clear_api_key,
+        }
+        if self.api_key is not None:
+            result["api_key"] = self.api_key
+        return result
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "ConnectionUpsert":
+        obj = _request_fields(
+            data,
+            "connection_upsert",
+            allowed={
+                "schema_version",
+                "expected_configuration_revision",
+                "connection_id",
+                "expected_connection_revision",
+                "label",
+                "profile_id",
+                "base_url",
+                "api_key_env",
+                "api_key",
+                "clear_api_key",
+            },
+        )
+        _schema(obj, "connection_upsert")
+        return cls(
+            expected_configuration_revision=_integer(
+                obj.get("expected_configuration_revision"),
+                "expected_configuration_revision",
+                minimum=1,
+            ),
+            connection_id=_string(
+                obj.get("connection_id"), "connection_id", optional=True
+            ),
+            expected_connection_revision=(
+                _integer(
+                    obj.get("expected_connection_revision"),
+                    "expected_connection_revision",
+                    minimum=1,
+                )
+                if obj.get("expected_connection_revision") is not None
+                else None
+            ),
+            label=_string(obj.get("label"), "label") or "",
+            profile_id=_string(obj.get("profile_id"), "profile_id") or "",
+            base_url=_string(
+                obj.get("base_url"), "base_url", optional=True
+            ),
+            api_key_env=_string(
+                obj.get("api_key_env"), "api_key_env", optional=True
+            ),
+            api_key=_string(
+                obj.get("api_key"), "api_key", optional=True
+            ),
+            clear_api_key=_boolean(
+                obj.get("clear_api_key", False), "clear_api_key"
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class ConfiguredModelUpsert:
+    expected_configuration_revision: int
+    label: str
+    connection_id: str
+    model: str
+    configured_model_id: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        _integer(
+            self.expected_configuration_revision,
+            "expected_configuration_revision",
+            minimum=1,
+        )
+        _string(self.label, "label")
+        _identifier(self.connection_id, "connection_id")
+        _string(self.model, "model")
+        if self.configured_model_id is not None:
+            _identifier(self.configured_model_id, "configured_model_id")
+
+    def to_dict(self) -> Dict[str, JSONValue]:
+        return {
+            "schema_version": API_SCHEMA_VERSION,
+            "expected_configuration_revision": (
+                self.expected_configuration_revision
+            ),
+            "configured_model_id": self.configured_model_id,
+            "label": self.label,
+            "connection_id": self.connection_id,
+            "model": self.model,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "ConfiguredModelUpsert":
+        obj = _request_fields(
+            data,
+            "configured_model_upsert",
+            allowed={
+                "schema_version",
+                "expected_configuration_revision",
+                "configured_model_id",
+                "label",
+                "connection_id",
+                "model",
+            },
+        )
+        _schema(obj, "configured_model_upsert")
+        return cls(
+            expected_configuration_revision=_integer(
+                obj.get("expected_configuration_revision"),
+                "expected_configuration_revision",
+                minimum=1,
+            ),
+            configured_model_id=_string(
+                obj.get("configured_model_id"),
+                "configured_model_id",
+                optional=True,
+            ),
+            label=_string(obj.get("label"), "label") or "",
+            connection_id=_identifier(
+                obj.get("connection_id"), "connection_id"
+            ),
+            model=_string(obj.get("model"), "model") or "",
         )
 
 
@@ -833,9 +1225,8 @@ class RuntimeOptions:
 class SessionOptions:
     workdir: str
     persistence: SessionPersistence = SessionPersistence.DEFAULT
-    provider: Optional[str] = None
-    model: Optional[str] = None
-    judge_model: Optional[str] = None
+    selected_model_id: Optional[str] = None
+    selected_judge_model_id: Optional[str] = None
     sandbox_mode: SandboxMode = SandboxMode.AUTO
     network_access: NetworkAccess = NetworkAccess.INHERIT
 
@@ -843,7 +1234,7 @@ class SessionOptions:
         _string(self.workdir, "workdir")
         if not isinstance(self.persistence, SessionPersistence):
             raise ApiFormatError("persistence must be SessionPersistence")
-        for name in ("provider", "model", "judge_model"):
+        for name in ("selected_model_id", "selected_judge_model_id"):
             value = getattr(self, name)
             if value is not None:
                 _string(value, name)
@@ -857,9 +1248,8 @@ class SessionOptions:
             "schema_version": API_SCHEMA_VERSION,
             "workdir": self.workdir,
             "persistence": self.persistence.value,
-            "provider": self.provider,
-            "model": self.model,
-            "judge_model": self.judge_model,
+            "selected_model_id": self.selected_model_id,
+            "selected_judge_model_id": self.selected_judge_model_id,
             "sandbox_mode": self.sandbox_mode.value,
             "network_access": self.network_access.value,
         }
@@ -870,8 +1260,13 @@ class SessionOptions:
             data,
             "session_options",
             allowed={
-                "schema_version", "workdir", "persistence", "provider", "model",
-                "judge_model", "sandbox_mode", "network_access",
+                "schema_version",
+                "workdir",
+                "persistence",
+                "selected_model_id",
+                "selected_judge_model_id",
+                "sandbox_mode",
+                "network_access",
             },
         )
         _schema(obj, "session_options")
@@ -882,9 +1277,16 @@ class SessionOptions:
                 obj.get("persistence", SessionPersistence.DEFAULT.value),
                 "persistence",
             ),
-            provider=_string(obj.get("provider"), "provider", optional=True),
-            model=_string(obj.get("model"), "model", optional=True),
-            judge_model=_string(obj.get("judge_model"), "judge_model", optional=True),
+            selected_model_id=_string(
+                obj.get("selected_model_id"),
+                "selected_model_id",
+                optional=True,
+            ),
+            selected_judge_model_id=_string(
+                obj.get("selected_judge_model_id"),
+                "selected_judge_model_id",
+                optional=True,
+            ),
             sandbox_mode=_enum(
                 SandboxMode,
                 obj.get("sandbox_mode", SandboxMode.AUTO.value),
@@ -903,19 +1305,30 @@ class SessionInfo:
     session_id: str
     workdir: str
     persistence: SessionPersistence
-    provider: str
-    model: str
+    selected_model_id: str
+    selected_judge_model_id: str
     is_open: bool
+    active_model_id: Optional[str] = None
+    active_judge_model_id: Optional[str] = None
     title: Optional[str] = None
     message_count: int = 0
     last_active: Optional[str] = None
 
     def __post_init__(self) -> None:
-        for name in ("session_id", "workdir", "provider", "model"):
+        for name in (
+            "session_id",
+            "workdir",
+            "selected_model_id",
+            "selected_judge_model_id",
+        ):
             _string(getattr(self, name), name)
         if not isinstance(self.persistence, SessionPersistence):
             raise ApiFormatError("persistence must be SessionPersistence")
         _boolean(self.is_open, "is_open")
+        for name in ("active_model_id", "active_judge_model_id"):
+            value = getattr(self, name)
+            if value is not None:
+                _string(value, name)
         if self.title is not None:
             _bounded_string(
                 self.title,
@@ -932,8 +1345,10 @@ class SessionInfo:
             "session_id": self.session_id,
             "workdir": self.workdir,
             "persistence": self.persistence.value,
-            "provider": self.provider,
-            "model": self.model,
+            "selected_model_id": self.selected_model_id,
+            "selected_judge_model_id": self.selected_judge_model_id,
+            "active_model_id": self.active_model_id,
+            "active_judge_model_id": self.active_judge_model_id,
             "is_open": self.is_open,
             "title": self.title,
             "message_count": self.message_count,
@@ -950,9 +1365,26 @@ class SessionInfo:
             persistence=_enum(
                 SessionPersistence, obj.get("persistence"), "persistence"
             ),
-            provider=_string(obj.get("provider"), "provider") or "",
-            model=_string(obj.get("model"), "model") or "",
+            selected_model_id=_string(
+                obj.get("selected_model_id"), "selected_model_id"
+            )
+            or "",
+            selected_judge_model_id=_string(
+                obj.get("selected_judge_model_id"),
+                "selected_judge_model_id",
+            )
+            or "",
             is_open=_boolean(obj.get("is_open"), "is_open"),
+            active_model_id=_string(
+                obj.get("active_model_id"),
+                "active_model_id",
+                optional=True,
+            ),
+            active_judge_model_id=_string(
+                obj.get("active_judge_model_id"),
+                "active_judge_model_id",
+                optional=True,
+            ),
             title=_string(obj.get("title"), "title", optional=True),
             message_count=_integer(
                 obj.get("message_count", 0), "message_count"

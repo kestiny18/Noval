@@ -44,8 +44,8 @@ class FakeSession:
             session_id=session_id,
             workdir=str(workdir),
             persistence=SessionPersistence.PERSISTENT,
-            provider="openai-compatible",
-            model="agent",
+            selected_model_id="configured-agent",
+            selected_judge_model_id="configured-judge",
             is_open=True,
             message_count=message_count,
         )

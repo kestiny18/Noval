@@ -12,13 +12,17 @@ from collections import deque
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Dict, Iterable, Optional, Protocol, Tuple
+from typing import Callable, Dict, Iterable, NoReturn, Optional, Protocol, Tuple
 from uuid import uuid4
 
 from .agent import Agent, AgentTurnOutcome, detect_environment, load_project_memory
 from .api import (
     CompletionReport,
     CompletionStatus,
+    ConfiguredModelInfo,
+    ConfiguredModelUpsert,
+    ConnectionInfo,
+    ConnectionUpsert,
     ErrorInfo,
     EventPage,
     EventType,
@@ -26,6 +30,8 @@ from .api import (
     PermissionDecision,
     PermissionRequest,
     PermissionStateView,
+    ModelConfigurationInfo,
+    ProviderProfileInfo,
     PersistedProjectInfo,
     RequestInspection,
     RuntimeEvent,
@@ -57,7 +63,17 @@ from .client import (
 )
 from .config import Config
 from .context import ContextManager
-from .model_config import ModelConfigurationError
+from .model_config import (
+    BUILTIN_PROFILE_BY_ID,
+    CUSTOM_PROFILE_ID,
+    OPENAI_COMPATIBLE_ADAPTER,
+    Connection,
+    ConfiguredModel,
+    ModelConfiguration,
+    ModelConfigurationError,
+    ModelConfigurationStore,
+    public_provider_profiles,
+)
 from .permissions import PermissionController, PermissionMode, PermissionState
 from .process import ProcessRuntime, SandboxMode, SandboxPolicy, sandbox_status_text
 from .redaction import redact_sensitive_text
@@ -351,7 +367,21 @@ class AgentSession:
     @property
     def info(self) -> SessionInfo:
         with self._state_lock:
-            return replace(self._base_info, is_open=not self._closed)
+            active = self._active_execution
+            return replace(
+                self._base_info,
+                selected_model_id=self._selection.selected_model_id,
+                selected_judge_model_id=(
+                    self._selection.selected_judge_model_id
+                ),
+                active_model_id=(
+                    active.agent.configured_model_id if active else None
+                ),
+                active_judge_model_id=(
+                    active.judge.configured_model_id if active else None
+                ),
+                is_open=not self._closed,
+            )
 
     def permission_state(self) -> PermissionStateView:
         with self._state_lock:
@@ -1066,6 +1096,18 @@ class NovalRuntime:
         configure_logging: bool = False,
     ):
         self._config = copy.deepcopy(config)
+        self._model_store: Optional[ModelConfigurationStore] = None
+        if (
+            self._config.model_configuration is not None
+            and self._config.settings_path_setting
+        ):
+            self._model_store = ModelConfigurationStore(
+                Path(self._config.settings_path_setting)
+            )
+            self._config = replace(
+                self._config,
+                model_configuration=self._model_store.snapshot(),
+            )
         self._tool_catalog = _clone_tools(tools if tools is not None else all_tools())
         self._uses_default_client_factory = client_factory is None
         self._client_factory = client_factory
@@ -1159,37 +1201,61 @@ class NovalRuntime:
                 if self._config.persist_sessions
                 else SessionPersistence.EPHEMERAL
             )
-        provider = options.provider or self._config.provider
-        model = options.model or self._config.model
-        judge_model = options.judge_model or self._config.judge_model
         model_configuration = self._config.model_configuration
-
-        def configured_id(provider_model: str, purpose: str) -> str:
-            if model_configuration is None:
-                return provider_model
-            matches = [
-                configured.id
-                for configured in model_configuration.configured
-                if configured.model == provider_model
-                and model_configuration.connection(
-                    configured.connection_id
-                ).adapter
-                == provider
-            ]
-            if len(matches) != 1:
+        if model_configuration is None:
+            selected_model_id = (
+                options.selected_model_id or self._config.model
+            )
+            selected_judge_model_id = (
+                options.selected_judge_model_id or self._config.judge_model
+            )
+            provider = self._config.provider
+            model = selected_model_id
+            judge_model = selected_judge_model_id
+        else:
+            selected_model_id = (
+                options.selected_model_id
+                or model_configuration.default_model_id
+            )
+            if options.selected_judge_model_id is not None:
+                selected_judge_model_id = options.selected_judge_model_id
+            else:
+                judge_matches = [
+                    configured.id
+                    for configured in model_configuration.configured
+                    if configured.model == self._config.judge_model
+                ]
+                selected_judge_model_id = (
+                    judge_matches[0]
+                    if len(judge_matches) == 1
+                    else selected_model_id
+                )
+            try:
+                selected_model = model_configuration.configured_model(
+                    selected_model_id
+                )
+                selected_judge = model_configuration.configured_model(
+                    selected_judge_model_id
+                )
+                selected_connection = model_configuration.connection(
+                    selected_model.connection_id
+                )
+                judge_connection = model_configuration.connection(
+                    selected_judge.connection_id
+                )
+            except ModelConfigurationError as error:
                 raise NovalError(
                     "configured_model_unavailable",
-                    f"The {purpose} model does not identify exactly one "
-                    "Configured Model.",
+                    "The selected Configured Model does not exist.",
+                ) from error
+            if selected_connection.adapter != judge_connection.adapter:
+                raise NovalError(
+                    "configured_model_adapter_mismatch",
+                    "Agent and judge Configured Models must use the same Adapter.",
                 )
-            return matches[0]
-
-        selected_model_id = (
-            model_configuration.default_model_id
-            if model_configuration is not None and options.model is None
-            else configured_id(model, "agent")
-        )
-        selected_judge_model_id = configured_id(judge_model, "judge")
+            provider = selected_connection.adapter
+            model = selected_model.model
+            judge_model = selected_judge.model
         configuration_revision = (
             model_configuration.revision
             if model_configuration is not None
@@ -1349,8 +1415,8 @@ class NovalRuntime:
             session_id=resolved_session_id,
             workdir=str(workdir),
             persistence=persistence,
-            provider=provider,
-            model=model,
+            selected_model_id=selected_model_id,
+            selected_judge_model_id=selected_judge_model_id,
             is_open=True,
             title=session_title,
             message_count=resumed_message_count,
@@ -1504,19 +1570,258 @@ class NovalRuntime:
         with self._lock:
             return tuple(session.info for session in self._sessions.values())
 
+    def list_provider_profiles(self) -> Tuple[ProviderProfileInfo, ...]:
+        return tuple(
+            ProviderProfileInfo.from_dict(profile)
+            for profile in public_provider_profiles()
+        )
+
+    def get_model_configuration(self) -> ModelConfigurationInfo:
+        return self.configuration().models
+
+    def _require_model_store(self) -> ModelConfigurationStore:
+        if self._model_store is None:
+            raise NovalError(
+                "model_configuration_read_only",
+                "This Runtime was not created from a settings schema-v2 file.",
+            )
+        return self._model_store
+
+    def _install_model_configuration(
+        self, configuration: ModelConfiguration
+    ) -> ModelConfigurationInfo:
+        default = configuration.configured_model(
+            configuration.default_model_id
+        )
+        connection = configuration.connection(default.connection_id)
+        judge_model = default.model
+        profile = BUILTIN_PROFILE_BY_ID.get(connection.profile_id)
+        if profile is not None:
+            candidates = [
+                configured
+                for configured in configuration.configured
+                if configured.connection_id == connection.id
+                and configured.model == profile.judge_model
+            ]
+            if len(candidates) == 1:
+                judge_model = candidates[0].model
+        with self._lock:
+            self._config = replace(
+                self._config,
+                model_configuration=configuration,
+                provider=connection.adapter,
+                model=default.model,
+                judge_model=judge_model,
+                base_url=connection.base_url,
+                api_key_env=connection.api_key_env,
+                api_key=connection.api_key,
+            )
+        return self.configuration().models
+
+    @staticmethod
+    def _raise_model_configuration_error(
+        error: ModelConfigurationError,
+    ) -> NoReturn:
+        raise NovalError(
+            error.code,
+            error.safe_message,
+            retryable=error.code
+            in {"settings_busy", "configuration_conflict"},
+            details={"path": error.path},
+        ) from error
+
+    def upsert_connection(
+        self, request: ConnectionUpsert
+    ) -> ModelConfigurationInfo:
+        if not isinstance(request, ConnectionUpsert):
+            raise TypeError("request must be ConnectionUpsert")
+        store = self._require_model_store()
+        current = store.snapshot()
+        existing = None
+        if request.connection_id is not None:
+            existing = next(
+                (
+                    connection
+                    for connection in current.connections
+                    if connection.id == request.connection_id
+                ),
+                None,
+            )
+            if existing is None:
+                raise NovalError(
+                    "connection_not_found",
+                    "The requested Connection does not exist.",
+                )
+            if request.expected_connection_revision != existing.revision:
+                raise NovalError(
+                    "connection_conflict",
+                    "The Connection changed after it was read.",
+                    retryable=True,
+                )
+        connection_id = request.connection_id or str(uuid4())
+        profile = BUILTIN_PROFILE_BY_ID.get(request.profile_id)
+        if profile is not None:
+            adapter = profile.adapter
+            base_url = profile.base_url
+            api_key_env = profile.api_key_env
+        elif request.profile_id == CUSTOM_PROFILE_ID:
+            adapter = OPENAI_COMPATIBLE_ADAPTER
+            base_url = request.base_url or (
+                existing.base_url if existing is not None else ""
+            )
+            api_key_env = (
+                request.api_key_env
+                if request.api_key_env is not None
+                else (existing.api_key_env if existing is not None else "")
+            )
+        else:
+            raise NovalError(
+                "unknown_profile",
+                "The requested Provider Profile does not exist.",
+            )
+        api_key = existing.api_key if existing is not None else ""
+        if request.clear_api_key:
+            api_key = ""
+        elif request.api_key is not None:
+            api_key = request.api_key
+        candidate = Connection(
+            id=connection_id,
+            revision=existing.revision if existing is not None else 1,
+            label=request.label,
+            profile_id=request.profile_id,
+            adapter=adapter,
+            base_url=base_url,
+            api_key_env=api_key_env,
+            api_key=api_key,
+        )
+        try:
+            updated = store.upsert_connection(
+                candidate,
+                expected_revision=request.expected_configuration_revision,
+            )
+        except ModelConfigurationError as error:
+            self._raise_model_configuration_error(error)
+        return self._install_model_configuration(updated)
+
+    def delete_connection(
+        self,
+        connection_id: str,
+        *,
+        expected_configuration_revision: int,
+    ) -> ModelConfigurationInfo:
+        store = self._require_model_store()
+        try:
+            updated = store.delete_connection(
+                connection_id,
+                expected_revision=expected_configuration_revision,
+            )
+        except ModelConfigurationError as error:
+            self._raise_model_configuration_error(error)
+        return self._install_model_configuration(updated)
+
+    def upsert_configured_model(
+        self, request: ConfiguredModelUpsert
+    ) -> ModelConfigurationInfo:
+        if not isinstance(request, ConfiguredModelUpsert):
+            raise TypeError("request must be ConfiguredModelUpsert")
+        store = self._require_model_store()
+        candidate = ConfiguredModel(
+            id=request.configured_model_id or str(uuid4()),
+            label=request.label,
+            connection_id=request.connection_id,
+            model=request.model,
+        )
+        try:
+            updated = store.upsert_configured_model(
+                candidate,
+                expected_revision=request.expected_configuration_revision,
+            )
+        except ModelConfigurationError as error:
+            self._raise_model_configuration_error(error)
+        return self._install_model_configuration(updated)
+
+    def delete_configured_model(
+        self,
+        configured_model_id: str,
+        *,
+        expected_configuration_revision: int,
+    ) -> ModelConfigurationInfo:
+        store = self._require_model_store()
+        try:
+            updated = store.delete_configured_model(
+                configured_model_id,
+                expected_revision=expected_configuration_revision,
+            )
+        except ModelConfigurationError as error:
+            self._raise_model_configuration_error(error)
+        return self._install_model_configuration(updated)
+
+    def set_default_model(
+        self,
+        configured_model_id: str,
+        *,
+        expected_configuration_revision: int,
+    ) -> ModelConfigurationInfo:
+        store = self._require_model_store()
+        try:
+            updated = store.set_default_model(
+                configured_model_id,
+                expected_revision=expected_configuration_revision,
+            )
+        except ModelConfigurationError as error:
+            self._raise_model_configuration_error(error)
+        return self._install_model_configuration(updated)
+
     def configuration(self) -> RuntimeConfiguration:
         """Return the effective Runtime configuration without credential values."""
+        configuration = self._config.model_configuration
+        if configuration is None:
+            models = ModelConfigurationInfo(
+                revision=1,
+                connections=(
+                    ConnectionInfo(
+                        id=f"runtime-{self._config.provider}",
+                        revision=1,
+                        label="Runtime default",
+                        profile_id="custom",
+                        adapter=self._config.provider,
+                        base_url=self._config.base_url,
+                        api_key_env=self._config.api_key_env,
+                        api_key_configured=bool(self._config.api_key),
+                        credential_available=self._config.api_key_configured(),
+                    ),
+                ),
+                configured=tuple(
+                    ConfiguredModelInfo(
+                        id=model_name,
+                        label=model_name,
+                        connection_id=f"runtime-{self._config.provider}",
+                        model=model_name,
+                    )
+                    for model_name in dict.fromkeys(
+                        (self._config.model, self._config.judge_model)
+                    )
+                ),
+                default_model_id=self._config.model,
+            )
+        else:
+            models = ModelConfigurationInfo(
+                revision=configuration.revision,
+                connections=tuple(
+                    ConnectionInfo.from_dict(connection.public_dict())
+                    for connection in configuration.connections
+                ),
+                configured=tuple(
+                    ConfiguredModelInfo.from_dict(configured.public_dict())
+                    for configured in configuration.configured
+                ),
+                default_model_id=configuration.default_model_id,
+            )
         return RuntimeConfiguration(
-            provider=self._config.provider,
-            model=self._config.model,
-            judge_model=self._config.judge_model,
-            base_url=(
-                self._config.anthropic_base_url
-                if self._config.provider == "anthropic"
-                and self._config.anthropic_base_url
-                else self._config.base_url
-            ),
-            api_key_configured=self._config.api_key_configured(),
+            models=models,
+            max_steps=self._config.max_steps,
+            max_tool_output_chars=self._config.max_tool_output_chars,
+            persist_sessions=self._config.persist_sessions,
         )
 
     def list_persisted_projects(self) -> Tuple[PersistedProjectInfo, ...]:
@@ -1534,15 +1839,28 @@ class NovalRuntime:
     def list_persisted_sessions(self, workdir: str) -> Tuple[SessionInfo, ...]:
         root = Path(workdir).expanduser().resolve()
         with self._lock:
-            open_ids = set(self._sessions)
+            open_sessions = {
+                session_id: session.info
+                for session_id, session in self._sessions.items()
+            }
         return tuple(
             SessionInfo(
                 session_id=meta.session_id,
                 workdir=str(root),
                 persistence=SessionPersistence.PERSISTENT,
-                provider=meta.provider or self._config.provider,
-                model=meta.model or self._config.model,
-                is_open=meta.session_id in open_ids,
+                selected_model_id=meta.selected_model_id,
+                selected_judge_model_id=meta.selected_judge_model_id,
+                active_model_id=(
+                    open_sessions[meta.session_id].active_model_id
+                    if meta.session_id in open_sessions
+                    else None
+                ),
+                active_judge_model_id=(
+                    open_sessions[meta.session_id].active_judge_model_id
+                    if meta.session_id in open_sessions
+                    else None
+                ),
+                is_open=meta.session_id in open_sessions,
                 title=_observed_session_title(meta.title),
                 message_count=meta.message_count,
                 last_active=meta.last_active,
@@ -1726,12 +2044,12 @@ class NovalRuntime:
         agent_binding, agent_provider = self._turn_binding(
             configuration=configuration,
             configured_model_id=selection.selected_model_id,
-            legacy_provider=session._base_info.provider,
+            legacy_provider=session._session_config.provider,
         )
         judge_binding, judge_provider = self._turn_binding(
             configuration=configuration,
             configured_model_id=selection.selected_judge_model_id,
-            legacy_provider=session._base_info.provider,
+            legacy_provider=session._session_config.provider,
         )
         if agent_binding.replay_scope.adapter != judge_binding.replay_scope.adapter:
             raise NovalError(
