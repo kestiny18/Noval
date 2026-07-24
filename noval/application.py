@@ -134,6 +134,24 @@ class ClientFactory(Protocol):
     def __call__(self, spec: ClientSpec) -> LLMClient: ...
 
 
+_TransportKey = Tuple[object, ...]
+
+
+@dataclass
+class _TransportEntry:
+    transport: object
+    connection_id: str
+    transport_revision: int
+    references: int = 0
+    retired: bool = False
+
+
+@dataclass(frozen=True)
+class _ClientAcquisition:
+    client: LLMClient
+    transport_key: Optional[_TransportKey] = None
+
+
 class _UnboundClient:
     """Construction placeholder; every Provider request requires Turn admission."""
 
@@ -855,6 +873,7 @@ class AgentSession:
                     ),
                     last_active=_utc_now(),
                 )
+            execution.release_transports()
 
     def cancel_active_turn(self) -> bool:
         with self._state_lock:
@@ -1126,7 +1145,7 @@ class NovalRuntime:
         self._sessions: Dict[str, AgentSession] = {}
         self._lock = threading.RLock()
         self._transport_lock = threading.RLock()
-        self._transport_pool: Dict[Tuple[object, ...], object] = {}
+        self._transport_pool: Dict[_TransportKey, _TransportEntry] = {}
         self._credential_epoch = uuid4().hex
         self._closed = False
         self.log_path = (
@@ -1488,19 +1507,21 @@ class NovalRuntime:
         session_id: str,
         config: Config,
         replay_scope: ReplayScope,
-    ) -> LLMClient:
+    ) -> _ClientAcquisition:
         if self._uses_default_client_factory:
             return self._default_client(
                 purpose, config, provider, model, replay_scope
             )
         assert self._client_factory is not None
-        return self._client_factory(ClientSpec(
-            purpose=purpose,
-            provider=provider,
-            model=model,
-            session_id=session_id,
-            replay_scope=replay_scope,
-        ))
+        return _ClientAcquisition(
+            self._client_factory(ClientSpec(
+                purpose=purpose,
+                provider=provider,
+                model=model,
+                session_id=session_id,
+                replay_scope=replay_scope,
+            ))
+        )
 
     def _default_client(
         self,
@@ -1509,7 +1530,7 @@ class NovalRuntime:
         provider: str,
         model: str,
         replay_scope: ReplayScope,
-    ) -> LLMClient:
+    ) -> _ClientAcquisition:
         if config.model_configuration is None:
             api_key = config.resolve_api_key()
             base_url = config.base_url
@@ -1527,7 +1548,7 @@ class NovalRuntime:
                 )
             provider = connection.adapter
             base_url = connection.base_url
-        transport_key: Tuple[object, ...] = (
+        transport_key: _TransportKey = (
             purpose,
             provider,
             replay_scope.connection_id,
@@ -1539,25 +1560,44 @@ class NovalRuntime:
             config.request_max_retries,
             config.anthropic_max_tokens,
         )
-        with self._transport_lock:
-            transport = self._transport_pool.get(transport_key)
-            client = create_provider_client(
-                provider,
-                api_key=api_key,
-                model=model,
-                base_url=base_url,
-                anthropic_base_url=config.anthropic_base_url,
-                timeout=config.request_timeout_seconds,
-                max_retries=config.request_max_retries,
-                anthropic_max_tokens=config.anthropic_max_tokens,
-                replay_scope=replay_scope,
-                transport=transport,
+        with self._lock:
+            current = self._config.model_configuration
+            transport_is_current = bool(
+                current is None
+                or any(
+                    connection.id == replay_scope.connection_id
+                    and connection.revision
+                    == replay_scope.transport_revision
+                    for connection in current.connections
+                )
             )
-            if transport is None:
-                created = getattr(client, "_client", None)
-                if created is not None:
-                    self._transport_pool[transport_key] = created
-            return client
+            with self._transport_lock:
+                entry = self._transport_pool.get(transport_key)
+                client = create_provider_client(
+                    provider,
+                    api_key=api_key,
+                    model=model,
+                    base_url=base_url,
+                    anthropic_base_url=config.anthropic_base_url,
+                    timeout=config.request_timeout_seconds,
+                    max_retries=config.request_max_retries,
+                    anthropic_max_tokens=config.anthropic_max_tokens,
+                    replay_scope=replay_scope,
+                    transport=entry.transport if entry is not None else None,
+                )
+                if entry is None:
+                    created = getattr(client, "_client", None)
+                    if created is None:
+                        return _ClientAcquisition(client)
+                    entry = _TransportEntry(
+                        created,
+                        replay_scope.connection_id,
+                        replay_scope.transport_revision,
+                        retired=not transport_is_current,
+                    )
+                    self._transport_pool[transport_key] = entry
+                entry.references += 1
+                return _ClientAcquisition(client, transport_key)
 
     def get_session(self, session_id: str) -> AgentSession:
         with self._lock:
@@ -1625,7 +1665,66 @@ class NovalRuntime:
                 api_key_env=connection.api_key_env,
                 api_key=connection.api_key,
             )
+            retired = self._retire_obsolete_transports_locked(configuration)
+        self._close_provider_transports(retired)
         return self.configuration().models
+
+    def _retire_obsolete_transports_locked(
+        self,
+        configuration: ModelConfiguration,
+    ) -> Tuple[object, ...]:
+        current_revisions = {
+            connection.id: connection.revision
+            for connection in configuration.connections
+        }
+        retired = []
+        with self._transport_lock:
+            for key, entry in tuple(self._transport_pool.items()):
+                if (
+                    current_revisions.get(entry.connection_id)
+                    == entry.transport_revision
+                ):
+                    continue
+                entry.retired = True
+                if entry.references == 0:
+                    self._transport_pool.pop(key)
+                    retired.append(entry.transport)
+        return tuple(retired)
+
+    def _release_transport_references(
+        self,
+        keys: Tuple[_TransportKey, ...],
+    ) -> None:
+        retired = []
+        with self._transport_lock:
+            for key in keys:
+                entry = self._transport_pool.get(key)
+                if entry is None:
+                    continue
+                entry.references -= 1
+                if entry.references < 0:
+                    raise RuntimeError(
+                        "Provider transport reference count became negative"
+                    )
+                if entry.retired and entry.references == 0:
+                    self._transport_pool.pop(key)
+                    retired.append(entry.transport)
+        self._close_provider_transports(tuple(retired))
+
+    @staticmethod
+    def _close_provider_transports(transports: Tuple[object, ...]) -> None:
+        for transport in {
+            id(item): item for item in transports
+        }.values():
+            close = getattr(transport, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    log.warning(
+                        "Provider transport close failed",
+                        exc_info=True,
+                    )
 
     @staticmethod
     def _raise_model_configuration_error(
@@ -2117,38 +2216,53 @@ class NovalRuntime:
             judge_model=judge_binding.provider_model,
             model_configuration=configuration,
         )
-        agent_client = self._make_client(
-            "agent",
-            agent_provider,
-            agent_binding.provider_model,
-            session.info.session_id,
-            turn_config,
-            agent_binding.replay_scope,
-        )
-        judge_client = self._make_client(
-            "completion_judge",
-            judge_provider,
-            judge_binding.provider_model,
-            session.info.session_id,
-            turn_config,
-            judge_binding.replay_scope,
-        )
-        return TurnExecution(
-            agent=agent_binding,
-            judge=judge_binding,
-            agent_client=self._record_turn_client(
+        acquired_keys = []
+        try:
+            agent_acquisition = self._make_client(
+                "agent",
+                agent_provider,
+                agent_binding.provider_model,
+                session.info.session_id,
+                turn_config,
+                agent_binding.replay_scope,
+            )
+            if agent_acquisition.transport_key is not None:
+                acquired_keys.append(agent_acquisition.transport_key)
+            judge_acquisition = self._make_client(
+                "completion_judge",
+                judge_provider,
+                judge_binding.provider_model,
+                session.info.session_id,
+                turn_config,
+                judge_binding.replay_scope,
+            )
+            if judge_acquisition.transport_key is not None:
+                acquired_keys.append(judge_acquisition.transport_key)
+            agent_client = self._record_turn_client(
                 session,
-                agent_client,
+                agent_acquisition.client,
                 agent_binding,
                 agent_provider,
                 "agent",
-            ),
-            judge_client=self._record_turn_client(
+            )
+            judge_client = self._record_turn_client(
                 session,
-                judge_client,
+                judge_acquisition.client,
                 judge_binding,
                 judge_provider,
                 "completion_judge",
+            )
+        except Exception:
+            self._release_transport_references(tuple(acquired_keys))
+            raise
+        transport_keys = tuple(acquired_keys)
+        return TurnExecution(
+            agent=agent_binding,
+            judge=judge_binding,
+            agent_client=agent_client,
+            judge_client=judge_client,
+            release_transports=lambda: self._release_transport_references(
+                transport_keys
             ),
         )
 
@@ -2211,16 +2325,10 @@ class NovalRuntime:
             session.close()
         with self._transport_lock:
             transports = tuple(
-                {id(item): item for item in self._transport_pool.values()}.values()
+                entry.transport for entry in self._transport_pool.values()
             )
             self._transport_pool.clear()
-        for transport in transports:
-            close = getattr(transport, "close", None)
-            if callable(close):
-                try:
-                    close()
-                except Exception:
-                    log.warning("Provider transport close failed", exc_info=True)
+        self._close_provider_transports(transports)
 
     def __enter__(self) -> "NovalRuntime":
         return self
