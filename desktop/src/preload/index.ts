@@ -6,6 +6,7 @@ const api: NovalDesktopApi = {
   listProjects:()=>ipcRenderer.invoke("noval:list-projects"),projectSessions:path=>ipcRenderer.invoke("noval:project-sessions",path),activateProject:path=>ipcRenderer.invoke("noval:activate-project",path),removeProject:path=>ipcRenderer.invoke("noval:remove-project",path),revealProject:path=>ipcRenderer.invoke("noval:reveal-project",path),
   listSessions:()=>ipcRenderer.invoke("noval:list-sessions"), createSession:options=>ipcRenderer.invoke("noval:create-session",options),
   resumeSession:id=>ipcRenderer.invoke("noval:resume-session",id), renameSession:(id,title)=>ipcRenderer.invoke("noval:rename-session",id,title),
+  selectSessionModels:(id,model,judge)=>ipcRenderer.invoke("noval:session-models",id,model,judge),
   transcript:(id,after)=>ipcRenderer.invoke("noval:transcript",id,after), replayEvents:(id,after)=>ipcRenderer.invoke("noval:events",id,after), startTurn:(id,text)=>ipcRenderer.invoke("noval:start-turn",id,text),
   transcriptHistory:(id,before)=>ipcRenderer.invoke("noval:transcript-history",id,before),
   copyText:text=>ipcRenderer.invoke("noval:copy-text",text),
@@ -16,7 +17,12 @@ const api: NovalDesktopApi = {
   appInfo:()=>ipcRenderer.invoke("noval:app-info"),
   getAppearance:()=>ipcRenderer.invoke("noval:get-appearance"),
   saveAppearance:value=>ipcRenderer.invoke("noval:save-appearance",value),
-  getProviderProfile:()=>ipcRenderer.invoke("noval:get-provider-profile"),
-  saveProviderProfile:profile=>ipcRenderer.invoke("noval:save-provider-profile",profile),
+  listProviderProfiles:()=>ipcRenderer.invoke("noval:model-profiles"),
+  getModelConfiguration:()=>ipcRenderer.invoke("noval:model-configuration"),
+  upsertConnection:value=>ipcRenderer.invoke("noval:connection-upsert",value),
+  deleteConnection:(id,revision)=>ipcRenderer.invoke("noval:connection-delete",id,revision),
+  upsertConfiguredModel:value=>ipcRenderer.invoke("noval:configured-upsert",value),
+  deleteConfiguredModel:(id,revision)=>ipcRenderer.invoke("noval:configured-delete",id,revision),
+  setDefaultModel:(id,revision)=>ipcRenderer.invoke("noval:model-default",id,revision),
 };
 contextBridge.exposeInMainWorld("noval",Object.freeze(api));

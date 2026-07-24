@@ -4,9 +4,29 @@ import {createHash} from "node:crypto";
 import {tmpdir} from "node:os";
 import path from "node:path";
 
+function runtimeSettings(sessionsDir:string,model="deepseek-v4-pro",judgeModel="deepseek-v4-flash"){
+  const root=path.dirname(sessionsDir);
+  return {
+    schema_version:2,
+    models:{
+      revision:1,
+      connections:[{id:"connection-e2e",revision:1,label:"E2E Connection",profile_id:"custom",adapter:"openai-compatible",base_url:"https://api.example.test/v1",api_key:"",api_key_env:"NOVAL_E2E_API_KEY"}],
+      configured:[
+        {id:"model-primary",label:model,connection_id:"connection-e2e",model},
+        {id:"model-judge",label:judgeModel,connection_id:"connection-e2e",model:judgeModel},
+      ],
+      default_model_id:"model-primary",
+    },
+    max_steps:40,max_tool_output_chars:8000,persist_sessions:true,sessions_dir:sessionsDir,
+    persist_logs:true,logs_dir:path.join(root,"logs"),log_retention_days:14,
+    persist_usage:true,usage_dir:path.join(root,"usage"),context_budget_tokens:256000,
+    request_timeout_seconds:120,request_max_retries:2,anthropic_max_tokens:8192,
+  };
+}
+
 test("launches the real Electron host with a persistent single-page project shell",async()=>{
   const userData=await mkdtemp(path.join(tmpdir(),"noval-desktop-e2e-"));
-  const settingsPath=path.join(userData,"noval-settings.json");await writeFile(settingsPath,JSON.stringify({sessions_dir:path.join(userData,"sessions")}),"utf8");
+  const settingsPath=path.join(userData,"noval-settings.json");await writeFile(settingsPath,JSON.stringify(runtimeSettings(path.join(userData,"sessions"))),"utf8");
   const root=path.resolve(import.meta.dirname,"..");
   const executablePath=path.join(root,"node_modules","electron","dist",process.platform==="win32"?"electron.exe":"electron");
   const application=await electron.launch({executablePath,args:[".",`--user-data-dir=${userData}`],cwd:root,env:{...process.env,NOVAL_PYTHON:process.env.NOVAL_PYTHON??"py",NOVAL_SETTINGS_PATH:settingsPath}});
@@ -25,7 +45,7 @@ test("launches the real Electron host with a persistent single-page project shel
 
 test("uses folder state and hover actions for a persisted project",async()=>{
   const userData=await mkdtemp(path.join(tmpdir(),"noval-desktop-tree-e2e-"));
-  const settingsPath=path.join(userData,"noval-settings.json");await writeFile(settingsPath,JSON.stringify({sessions_dir:path.join(userData,"sessions")}),"utf8");
+  const settingsPath=path.join(userData,"noval-settings.json");await writeFile(settingsPath,JSON.stringify(runtimeSettings(path.join(userData,"sessions"))),"utf8");
   const projectPath=path.join(userData,"sample-project");await mkdir(projectPath);
   await writeFile(path.join(userData,"desktop-settings.json"),JSON.stringify({workspace:projectPath,workspaces:[projectPath]}),"utf8");
   const root=path.resolve(import.meta.dirname,".."),executablePath=path.join(root,"node_modules","electron","dist",process.platform==="win32"?"electron.exe":"electron");
@@ -44,25 +64,26 @@ test("discovers projects and Sessions from Noval Core storage",async()=>{
   const commandCall=(id:string)=>({role:"assistant",blocks:[{type:"tool_call",id,name:"run_bash",arguments:'{"command":"echo test"}'}]});
   const commandResult=(id:string)=>({role:"tool",blocks:[{type:"tool_result",call_id:id,content:"done",is_error:false}]});
   await writeFile(path.join(projectStore,"project.json"),JSON.stringify({real_workdir:path.resolve(projectPath),created_at:createdAt}),"utf8");
-  await writeFile(path.join(projectStore,`${sessionId}.jsonl`),`${JSON.stringify({_meta:{schema_version:2,session_id:sessionId,created_at:createdAt,workdir:path.resolve(projectPath),model:"stored-model"}})}\n${JSON.stringify({seq:0,ts:createdAt,message:{role:"user",blocks:[{type:"text",text:"Stored conversation"}]}})}\n${JSON.stringify({seq:1,ts:createdAt,message:{role:"assistant",blocks:[{type:"text",text:markdown}]}})}\n${JSON.stringify({seq:2,ts:createdAt,message:commandCall("call-1")})}\n${JSON.stringify({seq:3,ts:createdAt,message:commandResult("call-1")})}\n${JSON.stringify({seq:4,ts:createdAt,message:commandCall("call-2")})}\n${JSON.stringify({seq:5,ts:createdAt,message:commandResult("call-2")})}\n`,"utf8");
-  await writeFile(path.join(projectStore,"legacy.jsonl"),`${JSON.stringify({_meta:{schema_version:1,session_id:"legacy",created_at:createdAt,workdir:path.resolve(projectPath),model:"legacy-model"}})}\n${JSON.stringify({seq:0,ts:createdAt,msg:{role:"user",content:"Legacy conversation"}})}\n`,"utf8");
-  const settingsPath=path.join(userData,"noval-settings.json");await writeFile(settingsPath,JSON.stringify({sessions_dir:sessionsRoot,provider:"openai-compatible",model:"core-model",judge_model:"core-judge",base_url:"https://core.example.test"}),"utf8");
+  await writeFile(path.join(projectStore,`${sessionId}.jsonl`),`${JSON.stringify({_meta:{schema_version:3,session_id:sessionId,created_at:createdAt,workdir:path.resolve(projectPath)}})}\n${JSON.stringify({seq:0,ts:createdAt,message:{role:"user",blocks:[{type:"text",text:"Stored conversation"}]}})}\n${JSON.stringify({seq:1,ts:createdAt,message:{role:"assistant",blocks:[{type:"text",text:markdown}]}})}\n${JSON.stringify({seq:2,ts:createdAt,message:commandCall("call-1")})}\n${JSON.stringify({seq:3,ts:createdAt,message:commandResult("call-1")})}\n${JSON.stringify({seq:4,ts:createdAt,message:commandCall("call-2")})}\n${JSON.stringify({seq:5,ts:createdAt,message:commandResult("call-2")})}\n`,"utf8");
+  await writeFile(path.join(projectStore,`${sessionId}.meta.json`),JSON.stringify({application:{schema_version:2,selected_model_id:"model-primary",selected_judge_model_id:"model-judge",configuration_revision:1}}),"utf8");
+  await writeFile(path.join(projectStore,"legacy.jsonl"),`${JSON.stringify({_meta:{schema_version:2,session_id:"legacy",created_at:createdAt,workdir:path.resolve(projectPath),model:"legacy-model"}})}\n${JSON.stringify({seq:0,ts:createdAt,message:{role:"user",blocks:[{type:"text",text:"Legacy conversation"}]}})}\n`,"utf8");
+  const settingsPath=path.join(userData,"noval-settings.json");await writeFile(settingsPath,JSON.stringify(runtimeSettings(sessionsRoot,"core-model","core-judge")),"utf8");
   const root=path.resolve(import.meta.dirname,".."),executablePath=path.join(root,"node_modules","electron","dist",process.platform==="win32"?"electron.exe":"electron");
   const application=await electron.launch({executablePath,args:[".",`--user-data-dir=${userData}`],cwd:root,env:{...process.env,DEEPSEEK_API_KEY:"e2e-placeholder",NOVAL_PYTHON:process.env.NOVAL_PYTHON??"py",NOVAL_SETTINGS_PATH:settingsPath}});const page=await application.firstWindow();
-  try{await expect(page.getByRole("button",{name:"core-project",exact:true})).toBeVisible();await expect(page.getByRole("button",{name:/incompatible v1/i})).toHaveCount(0);await expect(page.getByRole("button",{name:"Stored conversation"})).toBeVisible();await page.getByRole("button",{name:"Stored conversation"}).click();await expect(page.getByRole("heading",{name:"Rendered Markdown",level:2})).toBeVisible({timeout:30000});await expect(page.locator("strong",{hasText:"formatted text"})).toBeVisible();const activity=page.getByText("Ran 2 commands");await expect(activity).toBeVisible();await expect(page.getByText("Tool completed")).toHaveCount(0);await activity.click();await expect(page.locator(".activity-details pre").first()).toHaveText("done");const viewport=page.locator(".conversation-viewport");expect(await viewport.evaluate(element=>getComputedStyle(element).scrollbarWidth)).toBe("thin");expect(await viewport.evaluate(element=>{element.scrollTop=element.scrollHeight;return element.scrollTop>0})).toBe(true);const geometry=await page.evaluate(()=>{const last=document.querySelector(".activity-row")?.getBoundingClientRect(),composer=document.querySelector(".composer")?.getBoundingClientRect();return {lastBottom:last?.bottom??0,composerTop:composer?.top??0}});expect(geometry.lastBottom).toBeLessThan(geometry.composerTop);await page.getByRole("button",{name:"Settings"}).click();await expect(page.getByLabel("Model",{exact:true})).toHaveValue("core-model");await expect(page.getByLabel("Judge model")).toHaveValue("core-judge");await expect(page.getByLabel("Base URL")).toHaveValue("https://core.example.test")}
+  try{await expect(page.getByRole("button",{name:"core-project",exact:true})).toBeVisible();await expect(page.getByRole("button",{name:/incompatible v2/i})).toHaveCount(0);await expect(page.getByRole("button",{name:"Stored conversation"})).toBeVisible();await page.getByRole("button",{name:"Stored conversation"}).click();await expect(page.getByRole("heading",{name:"Rendered Markdown",level:2})).toBeVisible({timeout:30000});await expect(page.locator("strong",{hasText:"formatted text"})).toBeVisible();const activity=page.getByText("Ran 2 commands");await expect(activity).toBeVisible();await expect(page.getByText("Tool completed")).toHaveCount(0);await activity.click();await expect(page.locator(".activity-details pre").first()).toHaveText("done");const viewport=page.locator(".conversation-viewport");expect(await viewport.evaluate(element=>getComputedStyle(element).scrollbarWidth)).toBe("thin");expect(await viewport.evaluate(element=>{element.scrollTop=element.scrollHeight;return element.scrollTop>0})).toBe(true);const geometry=await page.evaluate(()=>{const last=document.querySelector(".activity-row")?.getBoundingClientRect(),composer=document.querySelector(".composer")?.getBoundingClientRect();return {lastBottom:last?.bottom??0,composerTop:composer?.top??0}});expect(geometry.lastBottom).toBeLessThan(geometry.composerTop);await page.getByRole("button",{name:"Settings"}).click();await expect(page.getByRole("heading",{name:"Models",exact:true})).toBeVisible();await expect(page.getByText(/core-model via E2E Connection/).first()).toBeVisible();await expect(page.getByText(/core-judge via E2E Connection/).first()).toBeVisible();await expect(page.getByLabel("Base URL")).toHaveValue("https://api.example.test/v1")}
   finally{const process=application.process();const exited=new Promise<void>(resolve=>{if(process.exitCode!==null)resolve();else process.once("exit",()=>resolve())});await page.close();await exited;await rm(userData,{recursive:true,force:true})}
 });
 
 test("renders the focused Settings pages and persists appearance locally",async()=>{
   const userData=await mkdtemp(path.join(tmpdir(),"noval-desktop-settings-e2e-"));
-  const settingsPath=path.join(userData,"noval-settings.json");await writeFile(settingsPath,JSON.stringify({sessions_dir:path.join(userData,"sessions"),provider:"openai-compatible",model:"settings-model",judge_model:"settings-judge"}),"utf8");
+  const settingsPath=path.join(userData,"noval-settings.json");await writeFile(settingsPath,JSON.stringify(runtimeSettings(path.join(userData,"sessions"),"settings-model","settings-judge")),"utf8");
   const root=path.resolve(import.meta.dirname,".."),executablePath=path.join(root,"node_modules","electron","dist",process.platform==="win32"?"electron.exe":"electron");
   const application=await electron.launch({executablePath,args:[".",`--user-data-dir=${userData}`],cwd:root,env:{...process.env,DEEPSEEK_API_KEY:"e2e-placeholder",NOVAL_PYTHON:process.env.NOVAL_PYTHON??"py",NOVAL_SETTINGS_PATH:settingsPath}});const page=await application.firstWindow();
   const screenshotDir=process.env.NOVAL_SETTINGS_SCREENSHOT_DIR;if(screenshotDir)await mkdir(screenshotDir,{recursive:true});
   try{
     await page.getByRole("button",{name:"Settings"}).click();
-    await expect(page.getByRole("heading",{name:"General"})).toBeVisible();
-    await expect(page.getByLabel("Model",{exact:true})).toHaveValue("settings-model");
+    await expect(page.getByRole("heading",{name:"Models",exact:true})).toBeVisible();
+    await expect(page.getByText(/settings-model via E2E Connection/).first()).toBeVisible();
     if(screenshotDir)await page.screenshot({path:path.join(screenshotDir,"settings-general.png")});
     await page.getByRole("button",{name:"Profile"}).click();
     await expect(page.getByRole("heading",{name:"Private by design"})).toBeVisible();
