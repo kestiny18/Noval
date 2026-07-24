@@ -1,6 +1,6 @@
 # Application API
 
-[简体中文](application-api.zh-CN.md) · [ADR-0005](adr/0005-goal-evidence-completion-contract.md) · [ADR-0006](adr/0006-desktop-consumer-observation-boundary.md) · [ADR-0008](adr/0008-current-session-schema-discovery.md) · [ADR-0010](adr/0010-provider-model-configuration-phase-1.md)
+[简体中文](application-api.zh-CN.md) · [ADR-0005](adr/0005-goal-evidence-completion-contract.md) · [ADR-0006](adr/0006-desktop-consumer-observation-boundary.md) · [ADR-0008](adr/0008-current-session-schema-discovery.md) · [ADR-0010](adr/0010-runtime-owned-model-configuration.md)
 
 Noval's Application API keeps operational termination separate from task
 completion:
@@ -50,8 +50,11 @@ transport metadata, Configured Model ids, revisions, and credential
 availability—but never a credential value. Hosts mutate configuration through
 the typed Connection/Configured Model/default-selection methods. A Session
 stores selected Configured Model ids in mutable sidecar metadata, and
-`select_models()` changes only the next Turn; the active Turn retains its
-immutable agent and judge bindings.
+`select_model(configured_model_id)` selects the Runtime-owned agent/judge pair
+for the next Turn. The active Turn retains its immutable bindings. If a weak
+Session reference is later deleted from global configuration, the Session
+remains open for repair and Turn admission fails `model_configuration_missing`
+until the host selects a replacement.
 
 `list_persisted_projects()` derives a stable project inventory from canonical
 Session storage, so hosts do not parse `~/.noval/sessions` or a custom
@@ -205,5 +208,9 @@ PreToolUse and PostToolUse Hooks cannot satisfy completion criteria. See
 - `turn.started` includes `goal_id`; `tool.completed` includes a safe receipt;
   `turn.completed`/`turn.failed` include receipts and completion; idle host
   verification emits `verification.recorded`.
+- `session.models_selected` reports a durable selection and whether an older
+  binding is still active. `model.configuration_changed` carries only the new
+  revision and default Configured Model id; hosts refetch the credential-free
+  configuration projection when needed.
 - A corrupt task-sidecar tail is skipped without rewriting canonical Session
   history.
