@@ -5,6 +5,7 @@ import { EventEmitter } from "node:events";
 import { app } from "electron";
 import path from "node:path";
 import { EnvelopeSchema, PROTOCOL_VERSION, SidecarEvent } from "../shared/protocol.js";
+import { SidecarRequestError } from "./sidecar-error.js";
 
 type Pending = { resolve: (value: unknown) => void; reject: (reason: Error) => void; timer: NodeJS.Timeout };
 
@@ -25,9 +26,14 @@ export class SidecarSupervisor extends EventEmitter {
     this.child.stderr.on("data", data => this.emit("diagnostic", String(data).slice(0, 2000)));
     const child=this.child;
     this.child.once("exit", (_code,signal) => { if(this.child===child)this.child=undefined;this.failPending("Sidecar exited.");if(!this.expectedExits.has(child))this.emit("exit",{signal}); });
-    const hello = await this.request<Record<string, unknown>>("system.hello", {});
-    this.coreVersion = String(hello.core_version ?? "unknown");
-    await this.request("runtime.start", {settings_path: settingsPath ?? null});
+    try {
+      const hello = await this.request<Record<string, unknown>>("system.hello", {});
+      this.coreVersion = String(hello.core_version ?? "unknown");
+      await this.request("runtime.start", {settings_path: settingsPath ?? null});
+    } catch (error) {
+      await this.stop();
+      throw error;
+    }
   }
 
   request<T=unknown>(method: string, params: Record<string, unknown>, timeoutMs = 30000): Promise<T> {
@@ -48,7 +54,12 @@ export class SidecarSupervisor extends EventEmitter {
     if (!parsed.request_id) return;
     const pending = this.pending.get(parsed.request_id); if (!pending) return;
     clearTimeout(pending.timer); this.pending.delete(parsed.request_id);
-    if (parsed.ok) pending.resolve(parsed.result); else pending.reject(new Error(parsed.error?.safe_message ?? "Sidecar request failed."));
+    if (parsed.ok) pending.resolve(parsed.result);
+    else pending.reject(new SidecarRequestError(
+      parsed.error?.code ?? "sidecar_error",
+      parsed.error?.safe_message ?? "Sidecar request failed.",
+      parsed.error?.retryable ?? false,
+    ));
   }
 
   private failPending(message: string): void { for (const [,p] of this.pending) { clearTimeout(p.timer); p.reject(new Error(message)); } this.pending.clear(); }
