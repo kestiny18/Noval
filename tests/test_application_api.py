@@ -1149,22 +1149,122 @@ def test_runtime_reuses_transport_but_returns_model_bound_clients(
     )
 
     first = runtime._default_client(
+        "agent",
         runtime._config,
         "openai-compatible",
         "model-a",
         first_scope,
     )
     second = runtime._default_client(
+        "agent",
         runtime._config,
         "openai-compatible",
         "model-b",
         second_scope,
+    )
+    judge = runtime._default_client(
+        "completion_judge",
+        runtime._config,
+        "openai-compatible",
+        "model-a",
+        first_scope,
     )
 
     assert first is not second
     assert calls[0][1]["transport"] is None
     assert calls[1][1]["transport"] is first._client
     assert second._client is first._client
+    assert calls[2][1]["transport"] is None
+    assert judge._client is not first._client
+    runtime.close()
+
+
+def test_default_client_resolves_the_selected_connection_credential_first(
+    tmp_path, monkeypatch
+):
+    settings = tmp_path / "settings.json"
+    document = packaged_settings()
+    document["models"]["connections"].append(
+        {
+            "id": "connection-selected",
+            "revision": 1,
+            "label": "Selected",
+            "profile_id": "custom",
+            "adapter": "openai-compatible",
+            "base_url": "https://selected.example.invalid/v1",
+            "api_key": "selected-credential",
+            "api_key_env": "",
+        }
+    )
+    document["models"]["configured"].append(
+        {
+            "id": "model-selected",
+            "label": "Selected",
+            "connection_id": "connection-selected",
+            "model": "selected-model",
+        }
+    )
+    settings.write_text(json.dumps(document), encoding="utf-8")
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    calls = []
+
+    def fake_create(provider, **kwargs):
+        calls.append((provider, kwargs))
+        return SimpleNamespace(_client=object())
+
+    monkeypatch.setattr(application_module, "create_provider_client", fake_create)
+    runtime = NovalRuntime(Config.load(settings))
+    scope = ReplayScope(
+        "openai-compatible",
+        "connection-selected",
+        "model-selected",
+        "selected-model",
+        1,
+        1,
+        "stored-r1",
+    )
+
+    runtime._default_client(
+        "agent",
+        runtime._config,
+        "openai-compatible",
+        "selected-model",
+        scope,
+    )
+
+    assert calls[0][1]["api_key"] == "selected-credential"
+    assert calls[0][1]["base_url"] == "https://selected.example.invalid/v1"
+    runtime.close()
+
+
+def test_default_client_reports_a_typed_missing_selected_credential(
+    tmp_path, monkeypatch
+):
+    settings = tmp_path / "settings.json"
+    settings.write_text(json.dumps(packaged_settings()), encoding="utf-8")
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    runtime = NovalRuntime(Config.load(settings))
+    scope = ReplayScope(
+        "openai-compatible",
+        "connection-deepseek-default",
+        "model-deepseek-v4-pro-default",
+        "deepseek-v4-pro",
+        1,
+        1,
+        "runtime-credential-epoch",
+    )
+
+    with pytest.raises(NovalError) as missing:
+        runtime._default_client(
+            "agent",
+            runtime._config,
+            "openai-compatible",
+            "deepseek-v4-pro",
+            scope,
+        )
+
+    assert missing.value.code == "credential_unavailable"
+    assert "DEEPSEEK_API_KEY" not in missing.value.safe_message
     runtime.close()
 
 
