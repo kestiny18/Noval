@@ -191,6 +191,42 @@ def test_openai_client_sets_timeout_and_retries(monkeypatch):
     }
 
 
+def test_openai_loopback_client_bypasses_the_system_proxy(monkeypatch):
+    openai_options = {}
+    httpx_options = {}
+    local_http_client = object()
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            openai_options.update(kwargs)
+
+    class FakeHttpxClient:
+        def __new__(cls, **kwargs):
+            httpx_options.update(kwargs)
+            return local_http_client
+
+    monkeypatch.setitem(
+        sys.modules,
+        "openai",
+        SimpleNamespace(OpenAI=FakeOpenAI),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "httpx",
+        SimpleNamespace(Client=FakeHttpxClient),
+    )
+
+    OpenAICompatibleClient(
+        "http://127.0.0.1:8080/v1",
+        "key",
+        "local-model",
+        timeout=7,
+    )
+
+    assert httpx_options == {"timeout": 7, "trust_env": False}
+    assert openai_options["http_client"] is local_http_client
+
+
 def test_plain_reasoning_is_not_retained_but_usage_is_normalized():
     client, _ = openai_client([
         openai_response(content="answer", reasoning="private final reasoning"),
