@@ -6,12 +6,13 @@ import pytest
 
 from desktop.sidecar.noval_sidecar.protocol import MAX_LINE_BYTES, ProtocolError, parse_request
 from desktop.sidecar.noval_sidecar.server import SidecarServer
+from noval import API_SCHEMA_VERSION
 from noval.model_config import packaged_settings
 
 
 def request(method, params=None, request_id="req-1"):
     return json.dumps({
-        "protocol_version": 1,
+        "protocol_version": 2,
         "kind": "request",
         "request_id": request_id,
         "method": method,
@@ -48,9 +49,10 @@ def test_hello_reports_stable_capabilities():
     parsed = parse_request(request("system.hello"))
     server = SidecarServer(io.BytesIO(), io.BytesIO())
     result = server.dispatch(parsed)
-    assert result["protocol_version"] == 1
+    assert result["protocol_version"] == 2
     assert "sessions" in result["capabilities"]
     assert "transcript_history" in result["capabilities"]
+    assert "model_configuration" in result["capabilities"]
     assert result["core_version"]
 
 
@@ -91,6 +93,42 @@ def test_runtime_exposes_safe_configuration_and_project_inventory(tmp_path):
     )
     assert "api_key" not in configuration
     assert isinstance(projects["projects"], list)
+    server.close()
+
+
+def test_model_configuration_mutations_never_return_credentials(tmp_path):
+    secret = "FAKE_SIDECAR_SECRET_MUST_NOT_RETURN"
+    server = SidecarServer(io.BytesIO(), io.BytesIO())
+    start_runtime(server, tmp_path)
+
+    profiles = server.dispatch(parse_request(request("model.profiles")))
+    configuration = server.dispatch(
+        parse_request(request("model.configuration"))
+    )
+    revision = configuration["revision"]
+    updated = server.dispatch(parse_request(request(
+        "model.connection.upsert",
+        {
+            "schema_version": API_SCHEMA_VERSION,
+            "expected_configuration_revision": revision,
+            "label": "Local gateway",
+            "profile_id": "custom",
+            "base_url": "http://127.0.0.1:8080/v1",
+            "api_key_env": "LOCAL_GATEWAY_KEY",
+            "api_key": secret,
+        },
+    )))
+
+    encoded = json.dumps(updated)
+    assert len(
+        [profile for profile in profiles["profiles"] if profile["kind"] == "builtin"]
+    ) == 6
+    assert profiles["profiles"][-1]["kind"] == "custom"
+    assert secret not in encoded
+    assert '"api_key":' not in encoded
+    assert updated["connections"][-1]["credential_available"] is True
+    settings_text = (tmp_path / "settings.json").read_text(encoding="utf-8")
+    assert secret in settings_text
     server.close()
 
 

@@ -1,4 +1,5 @@
 import ast
+import json
 from pathlib import Path
 
 from noval.api import (
@@ -17,6 +18,7 @@ from noval.api import (
 from noval.cli import _CliStreamRenderer, _cli_permission_handler, run_cli
 from noval.config import Config
 from noval.messages import assistant_message
+from noval.model_config import packaged_settings
 from noval.permissions import PermissionMode
 
 
@@ -129,6 +131,74 @@ def test_cli_runs_turn_through_application_api_without_chdir(monkeypatch, tmp_pa
     assert session.closed is True
     assert runtime.closed is True
     assert "headless reply" in capsys.readouterr().out
+
+
+def test_cli_session_model_flags_use_configured_ids(monkeypatch, tmp_path):
+    session = FakeSession(tmp_path)
+    runtime = FakeRuntime(session)
+    monkeypatch.setattr("noval.cli.Config.load", lambda: cli_config(tmp_path))
+    monkeypatch.setattr(
+        "noval.cli.NovalRuntime", lambda config, **kwargs: runtime
+    )
+    monkeypatch.setattr("noval.cli._read_turn", lambda label: "exit")
+
+    run_cli([
+        "--workdir",
+        str(tmp_path),
+        "--model-id",
+        "agent-selection",
+        "--judge-model-id",
+        "judge-selection",
+    ])
+
+    options = runtime.created[0][0]
+    assert options.selected_model_id == "agent-selection"
+    assert options.selected_judge_model_id == "judge-selection"
+
+
+def test_cli_credential_command_hides_secret_and_updates_settings(
+    monkeypatch, tmp_path, capsys
+):
+    secret = "FAKE_CLI_SECRET_MUST_STAY_HIDDEN"
+    settings_path = tmp_path / "settings.json"
+    document = packaged_settings()
+    document.update({
+        "sessions_dir": str(tmp_path / "sessions"),
+        "logs_dir": str(tmp_path / "logs"),
+        "usage_dir": str(tmp_path / "usage"),
+    })
+    settings_path.write_text(json.dumps(document), encoding="utf-8")
+    config = Config.load(settings_path)
+    connection_id = config.model_configuration.connections[0].id
+    monkeypatch.setattr("noval.cli.Config.load", lambda: config)
+    monkeypatch.setattr("noval.cli.getpass.getpass", lambda prompt: secret)
+
+    run_cli(["models", "credential", connection_id])
+
+    output = capsys.readouterr().out
+    assert secret not in output
+    assert "Credential updated" in output
+    assert secret in settings_path.read_text(encoding="utf-8")
+
+
+def test_cli_models_list_and_validate_are_credential_free(
+    monkeypatch, tmp_path, capsys
+):
+    secret = "FAKE_LIST_SECRET_MUST_STAY_HIDDEN"
+    settings_path = tmp_path / "settings.json"
+    document = packaged_settings()
+    document["models"]["connections"][0]["api_key"] = secret
+    settings_path.write_text(json.dumps(document), encoding="utf-8")
+    config = Config.load(settings_path)
+    monkeypatch.setattr("noval.cli.Config.load", lambda: config)
+
+    run_cli(["models", "list"])
+    run_cli(["models", "validate"])
+
+    output = capsys.readouterr().out
+    assert "Provider Profiles" in output
+    assert "Model configuration is valid" in output
+    assert secret not in output
 
 
 def test_cli_resume_and_permission_slash_command_use_public_session(monkeypatch, tmp_path):

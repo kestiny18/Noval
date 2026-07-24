@@ -10,6 +10,9 @@ from typing import Any, BinaryIO, Callable
 from uuid import uuid4
 
 from noval import (
+    API_SCHEMA_VERSION,
+    ConfiguredModelUpsert,
+    ConnectionUpsert,
     NovalError,
     NovalRuntime,
     PermissionDecision,
@@ -60,6 +63,13 @@ class SidecarServer:
             "system.hello": self._hello,
             "runtime.start": self._runtime_start,
             "runtime.configuration": self._runtime_configuration,
+            "model.profiles": self._model_profiles,
+            "model.configuration": self._model_configuration,
+            "model.connection.upsert": self._model_connection_upsert,
+            "model.connection.delete": self._model_connection_delete,
+            "model.configured.upsert": self._model_configured_upsert,
+            "model.configured.delete": self._model_configured_delete,
+            "model.default.set": self._model_default_set,
             "workspace.list": self._workspace_list,
             "workspace.select": self._workspace_select,
             "workspace.sessions": self._workspace_sessions,
@@ -75,6 +85,7 @@ class SidecarServer:
             "session.allow_tool": self._session_allow_tool,
             "session.revoke_tool": self._session_revoke_tool,
             "session.reset_permissions": self._session_reset_permissions,
+            "session.models.select": self._session_models_select,
             "permission.resolve": self._permission_resolve,
             "turn.start": lambda params: self._turn_start(request.request_id, params),
             "turn.cancel": self._turn_cancel,
@@ -90,7 +101,16 @@ class SidecarServer:
             "core_version": importlib.metadata.version("noval"),
             "python_version": platform.python_version(),
             "platform": sys.platform,
-            "capabilities": ["sessions", "transcript", "transcript_history", "events", "permissions", "visible_streaming", "cancellation"],
+            "capabilities": [
+                "sessions",
+                "transcript",
+                "transcript_history",
+                "events",
+                "permissions",
+                "visible_streaming",
+                "cancellation",
+                "model_configuration",
+            ],
         }
 
     def _runtime_start(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -115,6 +135,60 @@ class SidecarServer:
     def _runtime_configuration(self, params: dict[str, Any]) -> dict[str, Any]:
         return self._runtime_required().configuration().to_dict()
 
+    def _model_profiles(self, params: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "schema_version": API_SCHEMA_VERSION,
+            "profiles": [
+                profile.to_dict()
+                for profile in self._runtime_required().list_provider_profiles()
+            ],
+        }
+
+    def _model_configuration(self, params: dict[str, Any]) -> dict[str, Any]:
+        return self._runtime_required().get_model_configuration().to_dict()
+
+    def _model_connection_upsert(
+        self, params: dict[str, Any]
+    ) -> dict[str, Any]:
+        request = ConnectionUpsert.from_dict(params)
+        return self._runtime_required().upsert_connection(request).to_dict()
+
+    def _model_connection_delete(
+        self, params: dict[str, Any]
+    ) -> dict[str, Any]:
+        return self._runtime_required().delete_connection(
+            self._required_string(params, "connection_id"),
+            expected_configuration_revision=self._required_int(
+                params, "expected_configuration_revision"
+            ),
+        ).to_dict()
+
+    def _model_configured_upsert(
+        self, params: dict[str, Any]
+    ) -> dict[str, Any]:
+        request = ConfiguredModelUpsert.from_dict(params)
+        return self._runtime_required().upsert_configured_model(
+            request
+        ).to_dict()
+
+    def _model_configured_delete(
+        self, params: dict[str, Any]
+    ) -> dict[str, Any]:
+        return self._runtime_required().delete_configured_model(
+            self._required_string(params, "configured_model_id"),
+            expected_configuration_revision=self._required_int(
+                params, "expected_configuration_revision"
+            ),
+        ).to_dict()
+
+    def _model_default_set(self, params: dict[str, Any]) -> dict[str, Any]:
+        return self._runtime_required().set_default_model(
+            self._required_string(params, "configured_model_id"),
+            expected_configuration_revision=self._required_int(
+                params, "expected_configuration_revision"
+            ),
+        ).to_dict()
+
     def _workspace_list(self, params: dict[str, Any]) -> dict[str, Any]:
         projects = self._runtime_required().list_persisted_projects()
         return {"projects": [project.to_dict() for project in projects]}
@@ -134,7 +208,7 @@ class SidecarServer:
     def _options(self, params: dict[str, Any]) -> SessionOptions:
         _, workspace = self._ready()
         data = dict(params.get("options", {}))
-        data.setdefault("schema_version", 1)
+        data.setdefault("schema_version", API_SCHEMA_VERSION)
         data["workdir"] = str(workspace)
         return SessionOptions.from_dict(data)
 
@@ -191,10 +265,21 @@ class SidecarServer:
     def _session_reset_permissions(self, params: dict[str, Any]) -> dict[str, Any]:
         return self._session(params).reset_permissions().to_dict()
 
+    def _session_models_select(self, params: dict[str, Any]) -> dict[str, Any]:
+        session = self._session(params)
+        selection = session.select_models(
+            self._required_string(params, "selected_model_id"),
+            self._required_string(params, "selected_judge_model_id"),
+        )
+        return {
+            "selection": selection.to_dict(),
+            "session": session.info.to_dict(),
+        }
+
     def _turn_start(self, request_id: str, params: dict[str, Any]) -> None:
         session = self._session(params)
         turn = TurnRequest.from_dict({
-            "schema_version": 1,
+            "schema_version": API_SCHEMA_VERSION,
             "text": self._required_string(params, "text"),
             "client_request_id": params.get("client_request_id"),
             "goal": params.get("goal"),
@@ -264,6 +349,13 @@ class SidecarServer:
         value = params.get(key)
         if not isinstance(value, str) or not value.strip():
             raise ValueError(f"{key} must be a non-empty string")
+        return value
+
+    @staticmethod
+    def _required_int(params: dict[str, Any], key: str) -> int:
+        value = params.get(key)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError(f"{key} must be a positive integer")
         return value
 
     def _send(self, value: dict[str, Any]) -> None:
