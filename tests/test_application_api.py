@@ -1611,6 +1611,66 @@ def test_schema_v2_configuration_persists_ids_outside_session_jsonl(tmp_path):
     )
 
 
+def test_single_model_selection_uses_the_builtin_judge_on_its_connection(
+    tmp_path,
+):
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    settings = tmp_path / "settings.json"
+    document = packaged_settings()
+    document["models"]["connections"].append(
+        {
+            "id": "connection-deepseek-secondary",
+            "revision": 1,
+            "label": "DeepSeek secondary",
+            "profile_id": "deepseek",
+            "adapter": "openai-compatible",
+            "base_url": "https://api.deepseek.com",
+            "api_key": "",
+            "api_key_env": "DEEPSEEK_API_KEY",
+        }
+    )
+    document["models"]["configured"].extend(
+        [
+            {
+                "id": "model-secondary-pro",
+                "label": "Secondary Pro",
+                "connection_id": "connection-deepseek-secondary",
+                "model": "deepseek-v4-pro",
+            },
+            {
+                "id": "model-secondary-flash",
+                "label": "Secondary Flash",
+                "connection_id": "connection-deepseek-secondary",
+                "model": "deepseek-v4-flash",
+            },
+        ]
+    )
+    settings.write_text(json.dumps(document), encoding="utf-8")
+    events = []
+
+    with NovalRuntime(Config.load(settings)) as runtime:
+        session = runtime.create_session(
+            SessionOptions(
+                workdir=str(workdir),
+                persistence=SessionPersistence.EPHEMERAL,
+            ),
+            event_sink=events.append,
+        )
+
+        selection = session.select_model("model-secondary-pro")
+
+        assert selection.selected_model_id == "model-secondary-pro"
+        assert (
+            selection.selected_judge_model_id
+            == "model-secondary-flash"
+        )
+        assert session.info.selected_judge_model_id == "model-secondary-flash"
+        assert events[-1].type == EventType.SESSION_MODELS_SELECTED.value
+        assert events[-1].payload["effective_from"] == "next_turn"
+        assert events[-1].payload["active_model_id"] is None
+
+
 def test_persistent_resume_closes_interrupted_turn_before_continuing(tmp_path):
     workdir = tmp_path / "project"
     workdir.mkdir()

@@ -271,10 +271,21 @@ class SidecarServer:
 
     def _session_models_select(self, params: dict[str, Any]) -> dict[str, Any]:
         session = self._session(params)
-        selection = session.select_models(
-            self._required_string(params, "selected_model_id"),
-            self._required_string(params, "selected_judge_model_id"),
+        selected_model_id = self._required_string(
+            params, "selected_model_id"
         )
+        selected_judge_model_id = params.get("selected_judge_model_id")
+        if selected_judge_model_id is None:
+            selection = session.select_model(selected_model_id)
+        else:
+            if not isinstance(selected_judge_model_id, str):
+                raise ValueError(
+                    "selected_judge_model_id must be a string or null"
+                )
+            selection = session.select_models(
+                selected_model_id,
+                selected_judge_model_id,
+            )
         return {
             "selection": selection.to_dict(),
             "session": session.info.to_dict(),

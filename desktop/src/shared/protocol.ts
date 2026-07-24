@@ -67,7 +67,7 @@ export interface NovalDesktopApi {
   createSession(options?: Record<string, unknown>): Promise<{session: SessionInfo; permissions: PermissionState}>;
   resumeSession(sessionId: string): Promise<{session: SessionInfo; permissions: PermissionState}>;
   renameSession(sessionId: string, title: string): Promise<SessionInfo>;
-  selectSessionModels(sessionId:string,modelId:string,judgeModelId:string):Promise<SessionInfo>;
+  selectSessionModel(sessionId:string,modelId:string):Promise<SessionInfo>;
   transcript(sessionId: string, afterSequence?: number): Promise<{entries: TranscriptEntry[]; next_sequence:number; has_more:boolean}>;
   transcriptHistory(sessionId:string,beforeSequence?:number):Promise<TranscriptHistoryPage>;
   copyText(text:string):Promise<void>;

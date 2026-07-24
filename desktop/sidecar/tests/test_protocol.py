@@ -156,6 +156,32 @@ def test_model_configuration_mutations_never_return_credentials(tmp_path):
     server.close()
 
 
+def test_session_model_selection_can_derive_the_runtime_judge(tmp_path):
+    server = SidecarServer(io.BytesIO(), io.BytesIO())
+    start_runtime(server, tmp_path)
+    server.dispatch(parse_request(request(
+        "workspace.select", {"workdir": str(tmp_path)}
+    )))
+    created = server.dispatch(parse_request(request("session.create")))
+    session_id = created["session"]["session_id"]
+
+    selected = server.dispatch(parse_request(request(
+        "session.models.select",
+        {
+            "session_id": session_id,
+            "selected_model_id": "model-deepseek-v4-pro-default",
+        },
+    )))
+
+    assert selected["selection"]["selected_model_id"] == (
+        "model-deepseek-v4-pro-default"
+    )
+    assert selected["selection"]["selected_judge_model_id"] == (
+        "model-deepseek-v4-flash-default"
+    )
+    server.close()
+
+
 def test_workspace_sessions_lists_without_changing_active_workspace(tmp_path):
     first = tmp_path / "first"
     second = tmp_path / "second"
