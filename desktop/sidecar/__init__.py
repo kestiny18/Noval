@@ -1,0 +1,1 @@
+"""Embedded Desktop sidecar sources."""

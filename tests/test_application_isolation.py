@@ -107,13 +107,16 @@ class IsolationClient:
 
 class IsolationFactory:
     def __init__(self):
-        self.labels = iter(("one", "two"))
         self.barrier = threading.Barrier(2)
         self.clients = {}
+        self.session_labels = {}
+
+    def bind_session(self, session_id, label):
+        self.session_labels[session_id] = label
 
     def __call__(self, spec):
         if spec.purpose == "agent":
-            label = next(self.labels)
+            label = self.session_labels[spec.session_id]
             client = IsolationClient(label, self.barrier)
             self.clients[label] = client
             return client
@@ -154,6 +157,8 @@ def test_parallel_sessions_isolate_runtime_state_and_project_discovery(tmp_path)
             ),
             event_sink=two_events.append,
         )
+        factory.bind_session(one.info.session_id, "one")
+        factory.bind_session(two.info.session_id, "two")
         one.set_permission_mode(PermissionMode.FULL_ACCESS)
         threads = [
             threading.Thread(target=lambda: results.setdefault(
@@ -240,8 +245,8 @@ def test_provider_failure_is_terminal_only_for_its_own_session(tmp_path):
     assert healthy_result.message.text == "healthy"
 
 
-def test_application_api_v1_golden_fixture_round_trips():
-    fixture = Path(__file__).parent / "fixtures" / "application_api_v1.json"
+def test_application_api_v2_golden_fixture_round_trips():
+    fixture = Path(__file__).parent / "fixtures" / "application_api_v2.json"
     documents = json.loads(fixture.read_text(encoding="utf-8"))
     readers = {
         "runtime_options": RuntimeOptions,
@@ -250,6 +255,8 @@ def test_application_api_v1_golden_fixture_round_trips():
         "turn_request": TurnRequest,
         "turn_result": TurnResult,
         "runtime_event": RuntimeEvent,
+        "model_configuration_changed_event": RuntimeEvent,
+        "session_models_selected_event": RuntimeEvent,
         "permission_state": PermissionStateView,
         "permission_request": PermissionRequest,
         "request_inspection": RequestInspection,

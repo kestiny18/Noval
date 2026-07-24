@@ -2,17 +2,20 @@
 from __future__ import annotations
 
 import copy
+import ipaddress
 import json
 import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Protocol, Sequence, Tuple
+from urllib.parse import urlsplit
 
 from .messages import (
     AdapterReplayState,
     ConversationMessage,
     MessageProvenance,
     MessageRole,
+    ReplayScope,
     TextBlock,
     ToolCallBlock,
     assistant_message,
@@ -21,6 +24,18 @@ from .messages import (
 OPENAI_ADAPTER = "openai-compatible"
 ANTHROPIC_ADAPTER = "anthropic-messages"
 ADAPTER_SCHEMA_VERSION = 1
+
+
+def _is_loopback_base_url(value: str) -> bool:
+    host = urlsplit(value).hostname
+    if host is None:
+        return False
+    if host.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 @dataclass(frozen=True)
@@ -216,7 +231,44 @@ def _openai_tools(tools: Sequence[ToolDefinition]) -> List[Dict[str, Any]]:
     } for tool in tools]
 
 
-def _openai_messages(messages: Sequence[ConversationMessage]) -> List[Dict[str, Any]]:
+def _default_replay_scope(
+    identity: ProviderIdentity,
+    model: str,
+) -> ReplayScope:
+    return ReplayScope(
+        adapter=identity.adapter,
+        connection_id=identity.provider,
+        configured_model_id=model,
+        provider_model=model,
+        transport_revision=1,
+        adapter_schema_version=identity.adapter_schema_version,
+    )
+
+
+def _client_provider_identity(client: Any) -> ProviderIdentity:
+    identity = getattr(client, "identity", None)
+    if isinstance(identity, ProviderIdentity):
+        return identity
+    anthropic = type(client).__name__ == "AnthropicMessagesClient"
+    adapter = ANTHROPIC_ADAPTER if anthropic else OPENAI_ADAPTER
+    provider = "anthropic" if anthropic else OPENAI_ADAPTER
+    return ProviderIdentity(provider, client.model, adapter)
+
+
+def _client_replay_scope(client: Any) -> ReplayScope:
+    scope = getattr(client, "replay_scope", None)
+    if isinstance(scope, ReplayScope):
+        return scope
+    return _default_replay_scope(
+        _client_provider_identity(client), client.model
+    )
+
+
+def _openai_messages(
+    messages: Sequence[ConversationMessage],
+    replay_scope: ReplayScope,
+    identity: ProviderIdentity,
+) -> List[Dict[str, Any]]:
     wire: List[Dict[str, Any]] = []
     for message in messages:
         if message.role in {MessageRole.SYSTEM, MessageRole.USER}:
@@ -243,6 +295,13 @@ def _openai_messages(messages: Sequence[ConversationMessage]) -> List[Dict[str, 
             } for call in calls]
         replay = message.replay_state
         if replay is not None and replay.adapter == OPENAI_ADAPTER:
+            if replay.scope != replay_scope:
+                raise ProviderError(
+                    ProviderErrorKind.PROTOCOL,
+                    "openai-compatible replay state belongs to another model scope",
+                    retryable=False,
+                    identity=identity,
+                )
             payload = replay.payload
             if replay.schema_version != ADAPTER_SCHEMA_VERSION or not isinstance(payload, dict):
                 raise ProviderError(
@@ -253,6 +312,13 @@ def _openai_messages(messages: Sequence[ConversationMessage]) -> List[Dict[str, 
                 )
             reasoning = payload.get("reasoning_content")
             if reasoning is not None:
+                if not isinstance(reasoning, str):
+                    raise ProviderError(
+                        ProviderErrorKind.PROTOCOL,
+                        "openai-compatible replay state is invalid",
+                        retryable=False,
+                        identity=identity,
+                    )
                 item["reasoning_content"] = reasoning
         wire.append(item)
     return wire
@@ -263,6 +329,7 @@ def _openai_response(
     *,
     default_model: str,
     duration_ms: float,
+    replay_scope: ReplayScope,
 ) -> LLMResponse:
     model = _value(response, "model")
     identity = ProviderIdentity(
@@ -290,6 +357,7 @@ def _openai_response(
                 OPENAI_ADAPTER,
                 ADAPTER_SCHEMA_VERSION,
                 {"reasoning_content": reasoning},
+                replay_scope,
             )
         canonical = assistant_message(
             _value(message, "content"),
@@ -324,16 +392,37 @@ class OpenAICompatibleClient:
         *,
         timeout: float = 120.0,
         max_retries: int = 2,
+        replay_scope: Optional[ReplayScope] = None,
+        transport: Any = None,
     ):
-        from openai import OpenAI
-        self._client = OpenAI(
-            base_url=base_url,
-            api_key=api_key,
-            timeout=timeout,
-            max_retries=max_retries,
-        )
+        if transport is None:
+            from openai import OpenAI
+
+            kwargs: Dict[str, Any] = {
+                "base_url": base_url,
+                "api_key": api_key,
+                "timeout": timeout,
+                "max_retries": max_retries,
+            }
+            if _is_loopback_base_url(base_url):
+                import httpx
+
+                # Windows system-proxy settings are not consistently paired
+                # with a loopback bypass in httpx. Local Custom Providers must
+                # never send their endpoint or credential through that proxy.
+                kwargs["http_client"] = httpx.Client(
+                    timeout=timeout,
+                    trust_env=False,
+                )
+            transport = OpenAI(
+                **kwargs,
+            )
+        self._client = transport
         self.model = model
         self.identity = ProviderIdentity(OPENAI_ADAPTER, model, OPENAI_ADAPTER)
+        self.replay_scope = replay_scope or _default_replay_scope(
+            self.identity, model
+        )
 
     def render_request(
         self,
@@ -348,7 +437,11 @@ class OpenAICompatibleClient:
         provider_tools = _openai_tools(tools)
         payload: Dict[str, Any] = {
             "model": self.model,
-            "messages": _openai_messages(semantic_messages),
+            "messages": _openai_messages(
+                semantic_messages,
+                _client_replay_scope(self),
+                _client_provider_identity(self),
+            ),
         }
         if provider_tools:
             payload.update(tools=provider_tools, tool_choice="auto")
@@ -362,7 +455,9 @@ class OpenAICompatibleClient:
         provider_tools = _openai_tools(tools)
         kwargs: Dict[str, Any] = {
             "model": self.model,
-            "messages": _openai_messages(messages),
+            "messages": _openai_messages(
+                messages, _client_replay_scope(self), self.identity
+            ),
         }
         if provider_tools:
             kwargs.update(tools=provider_tools, tool_choice="auto")
@@ -376,6 +471,7 @@ class OpenAICompatibleClient:
             response,
             default_model=self.model,
             duration_ms=duration_ms,
+            replay_scope=_client_replay_scope(self),
         )
 
     def stream_complete(
@@ -387,7 +483,9 @@ class OpenAICompatibleClient:
         provider_tools = _openai_tools(tools)
         kwargs: Dict[str, Any] = {
             "model": self.model,
-            "messages": _openai_messages(messages),
+            "messages": _openai_messages(
+                messages, _client_replay_scope(self), self.identity
+            ),
             "stream": True,
         }
         if provider_tools:
@@ -493,6 +591,7 @@ class OpenAICompatibleClient:
             response,
             default_model=self.model,
             duration_ms=round((time.perf_counter() - started) * 1000, 1),
+            replay_scope=_client_replay_scope(self),
         )
 
 
@@ -504,10 +603,21 @@ def _anthropic_tools(tools: Sequence[ToolDefinition]) -> List[Dict[str, Any]]:
     } for tool in tools]
 
 
-def _anthropic_replay_blocks(message: ConversationMessage) -> List[Dict[str, Any]]:
+def _anthropic_replay_blocks(
+    message: ConversationMessage,
+    replay_scope: ReplayScope,
+    identity: ProviderIdentity,
+) -> List[Dict[str, Any]]:
     replay = message.replay_state
     if replay is None or replay.adapter != ANTHROPIC_ADAPTER:
         return []
+    if replay.scope != replay_scope:
+        raise ProviderError(
+            ProviderErrorKind.PROTOCOL,
+            "anthropic replay state belongs to another model scope",
+            retryable=False,
+            identity=identity,
+        )
     if replay.schema_version != ADAPTER_SCHEMA_VERSION or not isinstance(replay.payload, dict):
         raise ValueError("anthropic replay state has an unsupported schema")
     blocks = replay.payload.get("blocks")
@@ -529,6 +639,8 @@ def _append_anthropic_message(
 
 def _anthropic_messages(
     messages: Sequence[ConversationMessage],
+    replay_scope: ReplayScope,
+    identity: ProviderIdentity,
 ) -> Tuple[Optional[str], List[Dict[str, Any]]]:
     systems: List[str] = []
     wire: List[Dict[str, Any]] = []
@@ -548,7 +660,7 @@ def _anthropic_messages(
             } for result in message.tool_results]
             _append_anthropic_message(wire, "user", content)
             continue
-        content = _anthropic_replay_blocks(message)
+        content = _anthropic_replay_blocks(message, replay_scope, identity)
         content.extend(
             {"type": "text", "text": block.text}
             for block in message.blocks if isinstance(block, TextBlock)
@@ -584,6 +696,7 @@ def _anthropic_response(
     *,
     default_model: str,
     duration_ms: float,
+    replay_scope: ReplayScope,
 ) -> LLMResponse:
     model = _value(response, "model")
     identity = ProviderIdentity(
@@ -619,6 +732,7 @@ def _anthropic_response(
                 ANTHROPIC_ADAPTER,
                 ADAPTER_SCHEMA_VERSION,
                 {"blocks": replay_blocks},
+                replay_scope,
             )
             if replay_blocks else None
         )
@@ -656,24 +770,32 @@ class AnthropicMessagesClient:
         timeout: float = 120.0,
         max_retries: int = 2,
         max_tokens: int = 8192,
+        replay_scope: Optional[ReplayScope] = None,
+        transport: Any = None,
     ):
-        try:
-            from anthropic import Anthropic
-        except ImportError as error:
-            raise RuntimeError(
-                "Anthropic provider requires the optional dependency: pip install 'noval[anthropic]'"
-            ) from error
-        kwargs: Dict[str, Any] = {
-            "api_key": api_key,
-            "timeout": timeout,
-            "max_retries": max_retries,
-        }
-        if base_url:
-            kwargs["base_url"] = base_url
-        self._client = Anthropic(**kwargs)
+        if transport is None:
+            try:
+                from anthropic import Anthropic
+            except ImportError as error:
+                raise RuntimeError(
+                    "Anthropic provider requires the optional dependency: "
+                    "pip install 'noval[anthropic]'"
+                ) from error
+            kwargs: Dict[str, Any] = {
+                "api_key": api_key,
+                "timeout": timeout,
+                "max_retries": max_retries,
+            }
+            if base_url:
+                kwargs["base_url"] = base_url
+            transport = Anthropic(**kwargs)
+        self._client = transport
         self.model = model
         self.max_tokens = max_tokens
         self.identity = ProviderIdentity("anthropic", model, ANTHROPIC_ADAPTER)
+        self.replay_scope = replay_scope or _default_replay_scope(
+            self.identity, model
+        )
 
     def render_request(
         self,
@@ -685,7 +807,11 @@ class AnthropicMessagesClient:
             ConversationMessage(message.role, message.blocks)
             for message in messages
         ]
-        system, provider_messages = _anthropic_messages(semantic_messages)
+        system, provider_messages = _anthropic_messages(
+            semantic_messages,
+            _client_replay_scope(self),
+            _client_provider_identity(self),
+        )
         payload: Dict[str, Any] = {
             "model": self.model,
             "max_tokens": self.max_tokens,
@@ -704,7 +830,9 @@ class AnthropicMessagesClient:
         tools: Sequence[ToolDefinition],
     ) -> LLMResponse:
         try:
-            system, provider_messages = _anthropic_messages(messages)
+            system, provider_messages = _anthropic_messages(
+                messages, _client_replay_scope(self), self.identity
+            )
         except ProviderError:
             raise
         except (ValueError, json.JSONDecodeError) as error:
@@ -734,6 +862,7 @@ class AnthropicMessagesClient:
             response,
             default_model=self.model,
             duration_ms=duration_ms,
+            replay_scope=_client_replay_scope(self),
         )
 
     def stream_complete(
@@ -743,7 +872,9 @@ class AnthropicMessagesClient:
         on_event: LLMStreamObserver,
     ) -> LLMResponse:
         try:
-            system, provider_messages = _anthropic_messages(messages)
+            system, provider_messages = _anthropic_messages(
+                messages, _client_replay_scope(self), self.identity
+            )
         except ProviderError:
             raise
         except (ValueError, json.JSONDecodeError) as error:
@@ -785,6 +916,7 @@ class AnthropicMessagesClient:
             response,
             default_model=self.model,
             duration_ms=round((time.perf_counter() - started) * 1000, 1),
+            replay_scope=_client_replay_scope(self),
         )
 
 
@@ -798,6 +930,8 @@ def create_provider_client(
     timeout: float = 120.0,
     max_retries: int = 2,
     anthropic_max_tokens: int = 8192,
+    replay_scope: Optional[ReplayScope] = None,
+    transport: Any = None,
 ) -> LLMClient:
     if provider == "anthropic":
         return AnthropicMessagesClient(
@@ -807,6 +941,8 @@ def create_provider_client(
             timeout=timeout,
             max_retries=max_retries,
             max_tokens=anthropic_max_tokens,
+            replay_scope=replay_scope,
+            transport=transport,
         )
     if provider == OPENAI_ADAPTER:
         return OpenAICompatibleClient(
@@ -815,6 +951,8 @@ def create_provider_client(
             model,
             timeout=timeout,
             max_retries=max_retries,
+            replay_scope=replay_scope,
+            transport=transport,
         )
     raise ValueError(f"unsupported provider: {provider!r}")
 

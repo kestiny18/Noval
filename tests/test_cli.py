@@ -1,4 +1,5 @@
 import ast
+import json
 from pathlib import Path
 
 from noval.api import (
@@ -8,16 +9,20 @@ from noval.api import (
     PermissionStateView,
     RuntimeEvent,
     SessionInfo,
+    SessionOptions,
     SessionPersistence,
     StopReason,
     TurnMetrics,
     TurnResult,
     TurnStatus,
 )
+from noval.application import NovalRuntime
 from noval.cli import _CliStreamRenderer, _cli_permission_handler, run_cli
 from noval.config import Config
-from noval.messages import assistant_message
+from noval.messages import assistant_message, user_message
+from noval.model_config import packaged_settings
 from noval.permissions import PermissionMode
+from noval.session import JsonlSessionStore, SessionModelSelection
 
 
 def cli_config(tmp_path):
@@ -44,11 +49,10 @@ class FakeSession:
             session_id=session_id,
             workdir=str(workdir),
             persistence=SessionPersistence.PERSISTENT,
-            provider="openai-compatible",
-            model="agent",
+            selected_model_id="configured-agent",
+            selected_judge_model_id="configured-judge",
             is_open=True,
             message_count=message_count,
-            schema_version=2,
         )
         self.available_tools = ("read_file", "run_bash")
         self.requests = []
@@ -130,6 +134,139 @@ def test_cli_runs_turn_through_application_api_without_chdir(monkeypatch, tmp_pa
     assert session.closed is True
     assert runtime.closed is True
     assert "headless reply" in capsys.readouterr().out
+
+
+def test_cli_session_model_flags_use_configured_ids(monkeypatch, tmp_path):
+    session = FakeSession(tmp_path)
+    runtime = FakeRuntime(session)
+    monkeypatch.setattr("noval.cli.Config.load", lambda: cli_config(tmp_path))
+    monkeypatch.setattr(
+        "noval.cli.NovalRuntime", lambda config, **kwargs: runtime
+    )
+    monkeypatch.setattr("noval.cli._read_turn", lambda label: "exit")
+
+    run_cli([
+        "--workdir",
+        str(tmp_path),
+        "--model-id",
+        "agent-selection",
+        "--judge-model-id",
+        "judge-selection",
+    ])
+
+    options = runtime.created[0][0]
+    assert options.selected_model_id == "agent-selection"
+    assert options.selected_judge_model_id == "judge-selection"
+
+
+def test_cli_credential_command_hides_secret_and_updates_settings(
+    monkeypatch, tmp_path, capsys
+):
+    secret = "FAKE_CLI_SECRET_MUST_STAY_HIDDEN"
+    settings_path = tmp_path / "settings.json"
+    document = packaged_settings()
+    document.update({
+        "sessions_dir": str(tmp_path / "sessions"),
+        "logs_dir": str(tmp_path / "logs"),
+        "usage_dir": str(tmp_path / "usage"),
+    })
+    settings_path.write_text(json.dumps(document), encoding="utf-8")
+    config = Config.load(settings_path)
+    connection_id = config.model_configuration.connections[0].id
+    monkeypatch.setattr("noval.cli.Config.load", lambda: config)
+    monkeypatch.setattr("noval.cli.getpass.getpass", lambda prompt: secret)
+
+    run_cli(["models", "credential", connection_id])
+
+    output = capsys.readouterr().out
+    assert secret not in output
+    assert "Credential updated" in output
+    assert secret in settings_path.read_text(encoding="utf-8")
+
+
+def test_cli_models_list_and_validate_are_credential_free(
+    monkeypatch, tmp_path, capsys
+):
+    secret = "FAKE_LIST_SECRET_MUST_STAY_HIDDEN"
+    settings_path = tmp_path / "settings.json"
+    document = packaged_settings()
+    document["models"]["connections"][0]["api_key"] = secret
+    settings_path.write_text(json.dumps(document), encoding="utf-8")
+    config = Config.load(settings_path)
+    monkeypatch.setattr("noval.cli.Config.load", lambda: config)
+
+    run_cli(["models", "list"])
+    run_cli(["models", "validate"])
+
+    output = capsys.readouterr().out
+    assert "Provider Profiles" in output
+    assert "Model configuration is valid" in output
+    assert secret not in output
+
+
+def test_cli_connections_list_and_persistent_session_model_selection(
+    monkeypatch, tmp_path, capsys
+):
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    settings_path = tmp_path / "settings.json"
+    document = packaged_settings()
+    document.update({
+        "sessions_dir": str(tmp_path / "sessions"),
+        "persist_logs": False,
+        "persist_usage": False,
+    })
+    settings_path.write_text(json.dumps(document), encoding="utf-8")
+    config = Config.load(settings_path)
+    store = JsonlSessionStore.create(
+        config.sessions_dir(),
+        workdir,
+        config.model,
+    )
+    store.set_model_selection(SessionModelSelection(
+        selected_model_id="model-deepseek-v4-pro-default",
+        selected_judge_model_id="model-deepseek-v4-flash-default",
+        configuration_revision=1,
+    ))
+    store.append(user_message("Seed the persisted Session."))
+    session_id = store.session_id
+    store.close()
+    load_config = Config.load
+    monkeypatch.setattr(
+        "noval.cli.Config.load",
+        lambda: load_config(settings_path),
+    )
+
+    run_cli(["connections", "list"])
+    run_cli([
+        "--workdir",
+        str(workdir),
+        "--resume",
+        session_id,
+        "models",
+        "select",
+        "model-deepseek-v4-flash-default",
+    ])
+
+    output = capsys.readouterr().out
+    assert "Connections" in output
+    assert "connection-deepseek-default" in output
+    assert "Session model selected for the next Turn" in output
+    with NovalRuntime(load_config(settings_path)) as verify_runtime:
+        resumed = verify_runtime.resume_session(
+            session_id,
+            SessionOptions(
+                workdir=str(workdir),
+                persistence=SessionPersistence.PERSISTENT,
+            ),
+        )
+        assert resumed.info.selected_model_id == (
+            "model-deepseek-v4-flash-default"
+        )
+        assert resumed.info.selected_judge_model_id == (
+            "model-deepseek-v4-flash-default"
+        )
+        resumed.close()
 
 
 def test_cli_resume_and_permission_slash_command_use_public_session(monkeypatch, tmp_path):

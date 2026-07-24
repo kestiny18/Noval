@@ -1,6 +1,6 @@
 # Application API
 
-[简体中文](application-api.zh-CN.md) · [ADR-0005](adr/0005-goal-evidence-completion-contract.md) · [ADR-0006](adr/0006-desktop-consumer-observation-boundary.md)
+[简体中文](application-api.zh-CN.md) · [ADR-0005](adr/0005-goal-evidence-completion-contract.md) · [ADR-0006](adr/0006-desktop-consumer-observation-boundary.md) · [ADR-0008](adr/0008-current-session-schema-discovery.md) · [ADR-0010](adr/0010-runtime-owned-model-configuration.md)
 
 Noval's Application API keeps operational termination separate from task
 completion:
@@ -25,6 +25,9 @@ from noval import NovalRuntime, SessionOptions, TurnRequest
 
 events = SimpleQueue()
 with NovalRuntime.from_settings(event_sink=events.put) as runtime:
+    configuration = runtime.configuration()
+    profiles = runtime.list_provider_profiles()
+    projects = runtime.list_persisted_projects()
     with runtime.create_session(SessionOptions(workdir="project")) as session:
         history = session.transcript(limit=100)
         session.rename("Architecture review")
@@ -36,6 +39,26 @@ with NovalRuntime.from_settings(event_sink=events.put) as runtime:
         if replay.gap_detected:
             history = session.transcript(limit=100)
 ```
+
+Persisted project and Session inventories contain only canonical files using
+the current Session schema. Unsupported experimental files are not projected
+to hosts.
+
+`configuration()` and `get_model_configuration()` return credential-free
+settings v2 projections. They expose immutable Profile metadata, Connection
+transport metadata, Configured Model ids, revisions, and credential
+availability—but never a credential value. Hosts mutate configuration through
+the typed Connection/Configured Model/default-selection methods. A Session
+stores selected Configured Model ids in mutable sidecar metadata, and
+`select_model(configured_model_id)` selects the Runtime-owned agent/judge pair
+for the next Turn. The active Turn retains its immutable bindings. If a weak
+Session reference is later deleted from global configuration, the Session
+remains open for repair and Turn admission fails `model_configuration_missing`
+until the host selects a replacement.
+
+`list_persisted_projects()` derives a stable project inventory from canonical
+Session storage, so hosts do not parse `~/.noval/sessions` or a custom
+`sessions_dir` themselves.
 
 `transcript()` returns stable one-based sequence numbers and cursor pagination.
 It omits system messages, Provider replay state, provenance, and tool argument
@@ -174,13 +197,20 @@ PreToolUse and PostToolUse Hooks cannot satisfy completion criteria. See
 
 ## Persistence, events, and compatibility
 
-- Canonical Session JSONL remains schema v2 and the only conversation truth.
+- Canonical Session JSONL uses schema v3 and remains the only conversation
+  truth. Model selection lives in mutable application metadata, not the JSONL
+  header.
 - Goal/evidence snapshots use recoverable task-sidecar schema v2; schema-v1
   semantic snapshots remain readable and do not gain fabricated evidence.
-- `TurnRequest.goal`, `TurnResult.receipts`, and `TurnResult.completion` are
-  additive optional API-schema-v1 fields. Existing callers remain valid.
+- Application DTOs use API schema v2 and Sidecar uses protocol v2. These are
+  intentional hard breaks; older settings, Session, API, and protocol schemas
+  are rejected without migration.
 - `turn.started` includes `goal_id`; `tool.completed` includes a safe receipt;
   `turn.completed`/`turn.failed` include receipts and completion; idle host
   verification emits `verification.recorded`.
+- `session.models_selected` reports a durable selection and whether an older
+  binding is still active. `model.configuration_changed` carries only the new
+  revision and default Configured Model id; hosts refetch the credential-free
+  configuration projection when needed.
 - A corrupt task-sidecar tail is skipped without rewriting canonical Session
   history.

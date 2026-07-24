@@ -109,25 +109,27 @@ export DEEPSEEK_API_KEY="your-key"
 python -m noval --workdir /path/to/project
 ```
 
-Anthropic support is optional:
+Phase 1 configuration is intentionally OpenAI-compatible only. Inspect the
+packaged Profiles and validate your local settings with:
 
-```bash
-python -m pip install -e ".[anthropic]"
+```powershell
+python -m noval models list
+python -m noval models validate
 ```
 
-Then configure `~/.noval/settings.json`:
+Desktop can write a Connection API key directly to
+`~/.noval/settings.json`. The field is write-only in Desktop and public APIs,
+but the file value is plaintext under the current user's filesystem
+permissions. Prefer the Profile's environment variable when practical. The
+CLI also accepts hidden credential input:
 
-```json
-{
-  "provider": "anthropic",
-  "model": "your-agent-model",
-  "judge_model": "your-judge-model",
-  "api_key_env": "ANTHROPIC_API_KEY",
-  "anthropic_max_tokens": 8192
-}
+```powershell
+python -m noval models credential connection-deepseek-default
 ```
 
-Do not place real credentials in `settings.example.json` or any tracked file.
+Settings schema v2 is a deliberate hard break for this internal release; older
+settings are rejected rather than migrated. Do not place real credentials in
+`settings.example.json` or any tracked file.
 
 ## Embedding Noval
 

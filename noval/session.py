@@ -5,7 +5,7 @@ See DESIGN.md decision 18. The contract is:
     stored append-only.
   - **Derived state**: system identity, environment, and project instructions
     are rebuilt from the current environment instead of being stored.
-  - **Shape**: schema v2 uses one `.jsonl` file per session, with
+  - **Shape**: schema v3 uses one `.jsonl` file per session, with
     `{seq, ts, message}` envelopes after an initial `{_meta}` record. Timestamps
     stay in the envelope and never enter canonical messages or provider input.
 
@@ -22,6 +22,9 @@ import os
 import re
 import secrets
 import sys
+import tempfile
+import threading
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -31,7 +34,8 @@ from .messages import ConversationMessage, MessageFormatError, MessageRole
 
 log = logging.getLogger("noval.session")
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+SESSION_APPLICATION_METADATA_SCHEMA_VERSION = 2
 _TITLE_MAXLEN = 60
 _SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
@@ -58,9 +62,14 @@ class PersistentSessionStore(SessionStore, SessionMetadataStore, Protocol):
     def load_record_page(
         self, after_seq: int, limit: int
     ) -> Tuple[List["SessionRecord"], bool]: ...
+    def load_record_history(
+        self, before_seq: Optional[int], limit: int
+    ) -> Tuple[List["SessionRecord"], bool]: ...
     def context_path(self) -> Path: ...
     def task_path(self) -> Path: ...
     def request_path(self) -> Path: ...
+    def set_model_selection(self, selection: "SessionModelSelection") -> None: ...
+    def load_model_selection(self) -> "SessionModelSelection": ...
     def close(self) -> None: ...
 
 
@@ -73,6 +82,58 @@ class SessionRecord:
     message: ConversationMessage
 
 
+class SessionMetadataError(ValueError):
+    """A safe failure for missing or invalid mutable Session application state."""
+
+    def __init__(self, session_id: str, message: str):
+        self.session_id = session_id
+        super().__init__(f"Session {session_id} model selection {message}")
+
+
+@dataclass(frozen=True)
+class SessionModelSelection:
+    """Mutable configured-model ids stored outside canonical conversation truth."""
+
+    selected_model_id: str
+    selected_judge_model_id: str
+    configuration_revision: int
+
+    def __post_init__(self) -> None:
+        for name in ("selected_model_id", "selected_judge_model_id"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not _SESSION_ID_RE.fullmatch(value):
+                raise ValueError(f"{name} must be a valid opaque id")
+        if (
+            not isinstance(self.configuration_revision, int)
+            or isinstance(self.configuration_revision, bool)
+            or self.configuration_revision < 1
+        ):
+            raise ValueError("configuration_revision must be an integer at least 1")
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "schema_version": SESSION_APPLICATION_METADATA_SCHEMA_VERSION,
+            "selected_model_id": self.selected_model_id,
+            "selected_judge_model_id": self.selected_judge_model_id,
+            "configuration_revision": self.configuration_revision,
+        }
+
+    @classmethod
+    def from_dict(cls, value: Any) -> "SessionModelSelection":
+        if not isinstance(value, dict):
+            raise ValueError("must be an object")
+        if value.get("schema_version") != SESSION_APPLICATION_METADATA_SCHEMA_VERSION:
+            raise ValueError(
+                "must use application metadata schema "
+                f"v{SESSION_APPLICATION_METADATA_SCHEMA_VERSION}"
+            )
+        return cls(
+            selected_model_id=value.get("selected_model_id"),
+            selected_judge_model_id=value.get("selected_judge_model_id"),
+            configuration_revision=value.get("configuration_revision"),
+        )
+
+
 @dataclass
 class SessionMeta:
     """Message-free session summary for the --resume selector."""
@@ -81,10 +142,19 @@ class SessionMeta:
     last_active: str       # Derived from the .jsonl mtime instead of stored.
     title: str
     message_count: int
-    model: str
-    compatible: bool = True
-    schema_version: Optional[int] = SCHEMA_VERSION
-    provider: str = ""
+    selected_model_id: str
+    selected_judge_model_id: str
+    configuration_revision: int
+
+
+@dataclass(frozen=True)
+class PersistedProjectMeta:
+    """Project inventory derived from message-bearing Session directories."""
+
+    workdir: str
+    created_at: str
+    session_count: int
+    available: bool
 
 
 class UnsupportedSessionVersion(ValueError):
@@ -178,9 +248,31 @@ def _atomic_write(path: Path, text: str) -> None:
     Append-only logs do not use this path. It is reserved for small files that
     are replaced as a whole, such as project.json and metadata sidecars.
     """
-    tmp = path.parent / (path.name + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, path)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        try:
+            os.chmod(temporary_path, 0o600)
+        except OSError:
+            pass
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, path)
+        if os.name != "nt":
+            directory = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+    finally:
+        try:
+            temporary_path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def _derive_title(user_content: str) -> str:
@@ -233,6 +325,7 @@ class JsonlSessionStore:
         self._header_written = False
         self._fh = None  # type: ignore[assignment]  # Lazily opened append handle.
         self._pending_metadata: Optional[Dict[str, Any]] = None
+        self._metadata_lock = threading.RLock()
         self._lease = _WriterLease(
             self._dir / "locks" / f"{session_id}.lock",
             session_id,
@@ -300,7 +393,6 @@ class JsonlSessionStore:
                 "session_id": self.session_id,
                 "created_at": _now_iso(),
                 "workdir": str(self.workdir.resolve()),
-                "model": self.model,
             }}
             self._fh.write(json.dumps(header, ensure_ascii=False) + "\n")
             self._fh.flush()
@@ -323,27 +415,42 @@ class JsonlSessionStore:
 
     def load_metadata(self) -> Dict[str, Any]:
         """Read the sidecar, treating missing or corrupt content as empty."""
-        if self._pending_metadata is not None:
-            return dict(self._pending_metadata)
-        return _read_json_object(self._meta_path)
+        with self._metadata_lock:
+            if self._pending_metadata is not None:
+                return dict(self._pending_metadata)
+            return _read_json_object(self._meta_path)
 
     def update_metadata(self, updates: Dict[str, Any]) -> None:
         """Merge sidecar updates while preserving lazy creation for new sessions."""
-        data = self.load_metadata()
-        data.update(updates)
-        self._pending_metadata = data
-        if self._path.exists():
-            self._flush_metadata()
+        with self._metadata_lock:
+            data = self.load_metadata()
+            data.update(updates)
+            self._pending_metadata = data
+            if self._path.exists():
+                self._flush_metadata()
+
+    def set_model_selection(self, selection: SessionModelSelection) -> None:
+        """Persist mutable model selection without rewriting canonical JSONL."""
+        self.update_metadata({"application": selection.to_dict()})
+
+    def load_model_selection(self) -> SessionModelSelection:
+        """Load required v3 selection state and fail without implicit fallback."""
+        application = self.load_metadata().get("application")
+        try:
+            return SessionModelSelection.from_dict(application)
+        except (TypeError, ValueError) as exc:
+            raise SessionMetadataError(self.session_id, str(exc)) from None
 
     def _flush_metadata(self) -> None:
-        if self._pending_metadata is None:
-            return
-        self._dir.mkdir(parents=True, exist_ok=True)
-        _atomic_write(
-            self._meta_path,
-            json.dumps(self._pending_metadata, ensure_ascii=False),
-        )
-        self._pending_metadata = None
+        with self._metadata_lock:
+            if self._pending_metadata is None:
+                return
+            self._dir.mkdir(parents=True, exist_ok=True)
+            _atomic_write(
+                self._meta_path,
+                json.dumps(self._pending_metadata, ensure_ascii=False),
+            )
+            self._pending_metadata = None
 
     def context_path(self) -> Path:
         """Return the derived context checkpoint path, separate from raw messages."""
@@ -390,6 +497,37 @@ class JsonlSessionStore:
                 return records[:limit], True
         return records, False
 
+    def load_record_history(
+        self,
+        before_seq: Optional[int],
+        limit: int,
+    ) -> Tuple[List[SessionRecord], bool]:
+        """Return the newest bounded records before an exclusive sequence."""
+        records = deque(maxlen=limit + 1)
+        for rec in _iter_records(self._path):
+            if "_meta" in rec:
+                continue
+            seq = rec.get("seq")
+            ts = rec.get("ts")
+            raw_message = rec.get("message")
+            if not isinstance(seq, int) or not isinstance(ts, str):
+                continue
+            if before_seq is not None and seq >= before_seq:
+                continue
+            try:
+                message = ConversationMessage.from_dict(raw_message)
+            except MessageFormatError:
+                log.warning(
+                    "skipping corrupt canonical session message: %s seq=%s",
+                    self._path,
+                    seq,
+                )
+                continue
+            records.append(SessionRecord(seq=seq, ts=ts, message=message))
+        has_more = len(records) > limit
+        page = list(records)
+        return (page[-limit:] if has_more else page), has_more
+
     def load(self) -> List[ConversationMessage]:
         return [record.message for record in self.load_records()]
 
@@ -420,26 +558,58 @@ def list_sessions(base_dir: Path, workdir: Path) -> List[SessionMeta]:
     return metas
 
 
+def list_persisted_projects(base_dir: Path) -> List[PersistedProjectMeta]:
+    """List projects recorded by canonical Session storage in stable order."""
+    root = Path(base_dir)
+    if not root.is_dir():
+        return []
+    projects: List[PersistedProjectMeta] = []
+    for project_dir in root.iterdir():
+        if not project_dir.is_dir():
+            continue
+        data = _read_json_object(project_dir / "project.json")
+        workdir = data.get("real_workdir")
+        created_at = data.get("created_at")
+        if not isinstance(workdir, str) or not workdir.strip():
+            continue
+        if not isinstance(created_at, str) or not created_at.strip():
+            continue
+        session_count = sum(
+            1
+            for path in project_dir.glob("*.jsonl")
+            if _session_schema_version(path) == SCHEMA_VERSION
+        )
+        if session_count < 1:
+            continue
+        projects.append(PersistedProjectMeta(
+            workdir=workdir,
+            created_at=created_at,
+            session_count=session_count,
+            available=Path(workdir).expanduser().is_dir(),
+        ))
+    projects.sort(key=lambda item: (item.created_at, item.workdir.casefold()))
+    return projects
+
+
 def _read_session_meta(path: Path) -> Optional[SessionMeta]:
     """Read a summary from metadata, the first user message, and file mtime."""
+    if _session_schema_version(path) != SCHEMA_VERSION:
+        return None
     session_id = path.stem
     created_at = ""
     model = ""
     first_user = ""
     msg_count = 0
-    schema_version: Optional[int] = None
     for rec in _iter_records(path):
         if "_meta" in rec:
             m = rec["_meta"]
             if not isinstance(m, dict):
                 continue
-            schema_version = m.get("schema_version")
             created_at = m.get("created_at", "")
-            model = m.get("model", "")
             session_id = m.get("session_id", session_id)
             continue
         raw_message = rec.get("message")
-        if schema_version == SCHEMA_VERSION and isinstance(raw_message, dict):
+        if isinstance(raw_message, dict):
             try:
                 message = ConversationMessage.from_dict(raw_message)
             except MessageFormatError:
@@ -447,31 +617,40 @@ def _read_session_meta(path: Path) -> Optional[SessionMeta]:
             msg_count += 1
             if not first_user and message.role is MessageRole.USER:
                 first_user = message.text
-        elif "msg" in rec or "message" in rec:
-            msg_count += 1
     try:
         last_active = datetime.fromtimestamp(path.stat().st_mtime).astimezone().isoformat(timespec="seconds")
     except OSError:
         last_active = created_at
 
     # Prefer a custom sidecar title; otherwise derive it from the first user message.
-    compatible = schema_version == SCHEMA_VERSION
     sidecar = _read_json_object(path.parent / (path.stem + ".meta.json"))
     title_value = sidecar.get("title")
     title = title_value if isinstance(title_value, str) and title_value.strip() else None
     application = sidecar.get("application")
-    provider = (
-        application.get("provider", "")
-        if isinstance(application, dict) and isinstance(application.get("provider", ""), str)
-        else ""
-    )
-    if not compatible:
-        title = f"[incompatible v{schema_version if schema_version is not None else '?'}] {title or path.stem}"
-    elif title is None:
+    selected_model_id = ""
+    selected_judge_model_id = ""
+    configuration_revision = 0
+    if isinstance(application, dict):
+        selected = application.get("selected_model_id")
+        selected_judge = application.get("selected_judge_model_id")
+        revision = application.get("configuration_revision")
+        if isinstance(selected, str):
+            selected_model_id = selected
+        if isinstance(selected_judge, str):
+            selected_judge_model_id = selected_judge
+        if isinstance(revision, int) and not isinstance(revision, bool):
+            configuration_revision = revision
+    if title is None:
         title = _derive_title(first_user) if first_user else "(empty session)"
     return SessionMeta(
-        session_id, created_at, last_active, title, msg_count, model,
-        compatible=compatible, schema_version=schema_version, provider=provider,
+        session_id,
+        created_at,
+        last_active,
+        title,
+        msg_count,
+        selected_model_id,
+        selected_judge_model_id,
+        configuration_revision,
     )
 
 

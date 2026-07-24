@@ -297,6 +297,7 @@ class Agent:
         system_prompt: Optional[str] = None,
         store: Optional[SessionStore] = None,
         resume_messages: Optional[List[ConversationMessage]] = None,
+        recover_interrupted_turn: bool = False,
         shell_backend: Optional[ShellBackend] = None,
         permissions: Optional[PermissionController] = None,
         context_manager: Optional[ContextManager] = None,
@@ -387,6 +388,29 @@ class Agent:
             self._append_message(msg, persist=False)
         if resume_messages:
             self._answer_pending_tool_calls()
+        if recover_interrupted_turn:
+            self._append_message(assistant_message(
+                "(Previous task was interrupted when Noval closed. "
+                "The Session was preserved; continue from the confirmed state.)"
+            ))
+
+    def bind_turn_clients(
+        self,
+        agent_client: LLMClient,
+        agent_model: str,
+        judge_client: LLMClient,
+        judge_model: str,
+    ) -> None:
+        """Apply one admitted TurnExecution before any model request."""
+        self.client = agent_client
+        self.config = replace(
+            self.config,
+            model=agent_model,
+            judge_model=judge_model,
+        )
+        if self.context_manager is not None:
+            self.context_manager.bind_turn_client(agent_client, agent_model)
+        self.task_controller.bind_turn_judge(judge_client, judge_model)
 
     def _append_message(self, msg: ConversationMessage, *, persist: bool = True) -> None:
         """Append to memory and optionally persist non-system messages."""
@@ -1122,30 +1146,23 @@ def _choose_resume_session(sessions: List[SessionMeta]) -> Optional[str]:
     shown = sessions[:20]
     print("\nResumable sessions:")
     for i, s in enumerate(shown, 1):
-        compatibility = "" if s.compatible else "  [incompatible]"
         print(
             f"  {i}. {s.title}  [{s.session_id}]  {s.last_active}  "
-            f"{s.message_count} messages{compatibility}"
+            f"{s.message_count} messages"
         )
     ans = input("Select a number or session ID (Enter=latest, n=new): ").strip()
     if not ans:
-        selected = next((session for session in shown if session.compatible), None)
-        return selected.session_id if selected is not None else None
+        return shown[0].session_id
     if ans.lower() in ("n", "new"):
         return None
     if ans.isdigit():
         idx = int(ans)
         if 1 <= idx <= len(shown):
-            selected = shown[idx - 1]
-            if not selected.compatible:
-                raise SystemExit(f"Session {selected.session_id} uses an incompatible schema and cannot be resumed")
-            return selected.session_id
+            return shown[idx - 1].session_id
     matches = [
         s for s in sessions if s.session_id.startswith(ans)
     ]
     if len(matches) == 1:
-        if not matches[0].compatible:
-            raise SystemExit(f"Session {matches[0].session_id} uses an incompatible schema and cannot be resumed")
         return matches[0].session_id
     raise SystemExit(f"Invalid session selection: {ans}")
 

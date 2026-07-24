@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -11,13 +12,17 @@ from collections import deque
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Dict, Iterable, Optional, Protocol, Tuple
+from typing import Callable, Dict, Iterable, NoReturn, Optional, Protocol, Tuple
 from uuid import uuid4
 
 from .agent import Agent, AgentTurnOutcome, detect_environment, load_project_memory
 from .api import (
     CompletionReport,
     CompletionStatus,
+    ConfiguredModelInfo,
+    ConfiguredModelUpsert,
+    ConnectionInfo,
+    ConnectionUpsert,
     ErrorInfo,
     EventPage,
     EventType,
@@ -25,8 +30,12 @@ from .api import (
     PermissionDecision,
     PermissionRequest,
     PermissionStateView,
+    ModelConfigurationInfo,
+    ProviderProfileInfo,
+    PersistedProjectInfo,
     RequestInspection,
     RuntimeEvent,
+    RuntimeConfiguration,
     RuntimeOptions,
     SESSION_TITLE_MAX_LENGTH,
     SessionInfo,
@@ -38,6 +47,7 @@ from .api import (
     TurnResult,
     TurnStatus,
     TranscriptEntry,
+    TranscriptHistoryPage,
     TranscriptPage,
     TranscriptToolCall,
     TranscriptToolResult,
@@ -53,10 +63,21 @@ from .client import (
 )
 from .config import Config
 from .context import ContextManager
+from .model_config import (
+    BUILTIN_PROFILE_BY_ID,
+    CUSTOM_PROFILE_ID,
+    OPENAI_COMPATIBLE_ADAPTER,
+    Connection,
+    ConfiguredModel,
+    ModelConfiguration,
+    ModelConfigurationError,
+    ModelConfigurationStore,
+    public_provider_profiles,
+)
 from .permissions import PermissionController, PermissionMode, PermissionState
 from .process import ProcessRuntime, SandboxMode, SandboxPolicy, sandbox_status_text
 from .redaction import redact_sensitive_text
-from .messages import ConversationMessage, MessageRole, ToolCallBlock
+from .messages import ConversationMessage, MessageRole, ReplayScope, ToolCallBlock
 from .runtime_log import runtime_log_context, setup_runtime_logging
 from .requests import (
     InMemoryRequestJournal,
@@ -70,7 +91,10 @@ from .session import (
     JsonlSessionStore,
     PersistentSessionStore,
     SessionLockedError,
+    SessionMetadataError,
     SessionMetadataStore,
+    SessionModelSelection,
+    list_persisted_projects,
     list_sessions,
 )
 from .shell import resolve_shell_backend
@@ -82,6 +106,7 @@ from .task import (
     TaskEventStore,
 )
 from .tools import Tool, all_tools
+from .turn import TurnExecution, TurnModelBinding
 from .usage import JsonlUsageStore, MeteredLLMClient
 
 
@@ -102,10 +127,36 @@ class ClientSpec:
     provider: str
     model: str
     session_id: str
+    replay_scope: ReplayScope
 
 
 class ClientFactory(Protocol):
     def __call__(self, spec: ClientSpec) -> LLMClient: ...
+
+
+_TransportKey = Tuple[object, ...]
+
+
+@dataclass
+class _TransportEntry:
+    transport: object
+    connection_id: str
+    transport_revision: int
+    references: int = 0
+    retired: bool = False
+
+
+@dataclass(frozen=True)
+class _ClientAcquisition:
+    client: LLMClient
+    transport_key: Optional[_TransportKey] = None
+
+
+class _UnboundClient:
+    """Construction placeholder; every Provider request requires Turn admission."""
+
+    def complete(self, messages, tools):
+        raise RuntimeError("model client is not bound to an admitted Turn")
 
 
 EventSink = Callable[[RuntimeEvent], None]
@@ -250,6 +301,21 @@ def _transcript_entry(
     )
 
 
+def _has_incomplete_turn(messages: Iterable[ConversationMessage]) -> bool:
+    """Return whether canonical history ends inside a user-initiated turn."""
+    in_user_turn = False
+    for message in messages:
+        if message.role is MessageRole.USER:
+            in_user_turn = True
+        elif (
+            message.role is MessageRole.ASSISTANT
+            and in_user_turn
+            and not message.tool_calls
+        ):
+            in_user_turn = False
+    return in_user_turn
+
+
 def _public_message(message: ConversationMessage) -> ConversationMessage:
     """Drop adapter-private state before a message crosses the host boundary."""
     blocks = tuple(
@@ -293,6 +359,8 @@ class AgentSession:
         permission_handler: Optional[PermissionHandler],
         tool_names: Tuple[str, ...],
         request_journal: RequestJournal,
+        selection: SessionModelSelection,
+        session_config: Config,
     ):
         self._runtime = runtime
         self._base_info = info
@@ -304,20 +372,61 @@ class AgentSession:
         self._permission_handler = permission_handler
         self._tool_names = tool_names
         self._request_journal = request_journal
+        self._request_sequence = RequestSequence()
+        self._selection = selection
+        self._session_config = session_config
         self._state_lock = threading.RLock()
         self._closed = False
         self._active_turn_id: Optional[str] = None
+        self._active_execution: Optional[TurnExecution] = None
         self._event_sequence = 0
         self._events = deque(maxlen=_EVENT_BUFFER_MAX_EVENTS)
 
     @property
     def info(self) -> SessionInfo:
         with self._state_lock:
-            return replace(self._base_info, is_open=not self._closed)
+            active = self._active_execution
+            return replace(
+                self._base_info,
+                selected_model_id=self._selection.selected_model_id,
+                selected_judge_model_id=(
+                    self._selection.selected_judge_model_id
+                ),
+                active_model_id=(
+                    active.agent.configured_model_id if active else None
+                ),
+                active_judge_model_id=(
+                    active.judge.configured_model_id if active else None
+                ),
+                is_open=not self._closed,
+            )
 
     def permission_state(self) -> PermissionStateView:
         with self._state_lock:
             return self._permission_state_locked()
+
+    def select_models(
+        self,
+        selected_model_id: str,
+        selected_judge_model_id: str,
+    ) -> SessionModelSelection:
+        """Select configured ids for the next Turn, including while one is active."""
+        return self._runtime._select_session_models(
+            self,
+            selected_model_id,
+            selected_judge_model_id,
+        )
+
+    def select_model(
+        self,
+        configured_model_id: str,
+    ) -> SessionModelSelection:
+        """Select a primary model and its Runtime-owned judge for the next Turn."""
+        return self._runtime._select_session_models(
+            self,
+            configured_model_id,
+            None,
+        )
 
     def rename(self, title: str) -> SessionInfo:
         """Set bounded display metadata without rewriting conversation history."""
@@ -474,6 +583,85 @@ class AgentSession:
             has_more=len(entries) > limit,
         )
 
+    def transcript_history(
+        self,
+        *,
+        before_sequence: Optional[int] = None,
+        limit: int = 24,
+    ) -> TranscriptHistoryPage:
+        """Return the newest safe transcript entries before an exclusive cursor."""
+        if (
+            before_sequence is not None
+            and (
+                not isinstance(before_sequence, int)
+                or isinstance(before_sequence, bool)
+                or before_sequence < 1
+            )
+        ):
+            raise ValueError("before_sequence must be null or an integer >= 1")
+        if (
+            not isinstance(limit, int)
+            or isinstance(limit, bool)
+            or limit < 1
+            or limit > _TRANSCRIPT_PAGE_LIMIT
+        ):
+            raise ValueError(
+                f"limit must be an integer between 1 and {_TRANSCRIPT_PAGE_LIMIT}"
+            )
+        with self._state_lock:
+            if self._closed:
+                raise NovalError(
+                    "session_closed",
+                    "Session is closed.",
+                    session_id=self._base_info.session_id,
+                )
+            if self._store is not None:
+                records, has_more = self._store.load_record_history(
+                    before_sequence - 1 if before_sequence is not None else None,
+                    limit,
+                )
+                page_entries = tuple(
+                    entry
+                    for record in records
+                    if (
+                        entry := _transcript_entry(
+                            record.seq + 1,
+                            record.ts,
+                            record.message,
+                        )
+                    )
+                    is not None
+                )
+            else:
+                projected = tuple(
+                    entry
+                    for sequence, message in enumerate(
+                        (
+                            item
+                            for item in self._agent.messages
+                            if item.role is not MessageRole.SYSTEM
+                        ),
+                        start=1,
+                    )
+                    if (
+                        entry := _transcript_entry(sequence, None, message)
+                    )
+                    is not None
+                    and (
+                        before_sequence is None
+                        or entry.sequence < before_sequence
+                    )
+                )
+                has_more = len(projected) > limit
+                page_entries = projected[-limit:]
+        return TranscriptHistoryPage(
+            entries=page_entries,
+            previous_sequence=(
+                page_entries[0].sequence if page_entries else before_sequence
+            ),
+            has_more=has_more,
+        )
+
     def replay_events(
         self,
         *,
@@ -581,7 +769,7 @@ class AgentSession:
         if not isinstance(request, TurnRequest):
             raise TypeError("request must be TurnRequest")
         turn_id = "turn-" + uuid4().hex
-        self._runtime._admit_turn(self, turn_id)
+        execution = self._runtime._admit_turn(self, turn_id)
         started = time.perf_counter()
         log_scope = runtime_log_context(
             session_id=self._base_info.session_id,
@@ -599,6 +787,8 @@ class AgentSession:
                 payload={
                     "client_request_id": request.client_request_id,
                     "goal_id": request.goal.goal_id if request.goal else None,
+                    "selected_model_id": execution.agent.configured_model_id,
+                    "selected_judge_model_id": execution.judge.configured_model_id,
                 },
             )
             agent_turn_started = True
@@ -674,6 +864,7 @@ class AgentSession:
             with self._state_lock:
                 if self._active_turn_id == turn_id:
                     self._active_turn_id = None
+                    self._active_execution = None
                 self._base_info = replace(
                     self._base_info,
                     message_count=sum(
@@ -682,6 +873,7 @@ class AgentSession:
                     ),
                     last_active=_utc_now(),
                 )
+            execution.release_transports()
 
     def cancel_active_turn(self) -> bool:
         with self._state_lock:
@@ -896,6 +1088,22 @@ class AgentSession:
                 "runtime event sink failed type=%s", event.type, exc_info=True
             )
 
+    def _publish_model_configuration_changed(
+        self,
+        configuration: ModelConfigurationInfo,
+    ) -> None:
+        with self._state_lock:
+            if self._closed:
+                return
+            event = self._new_event_locked(
+                EventType.MODEL_CONFIGURATION_CHANGED.value,
+                payload={
+                    "revision": configuration.revision,
+                    "default_model_id": configuration.default_model_id,
+                },
+            )
+        self._dispatch_event(event)
+
     def close(self) -> None:
         with self._state_lock:
             if self._closed:
@@ -934,12 +1142,27 @@ class NovalRuntime:
         configure_logging: bool = False,
     ):
         self._config = copy.deepcopy(config)
+        self._model_store: Optional[ModelConfigurationStore] = None
+        if (
+            self._config.model_configuration is not None
+            and self._config.settings_path_setting
+        ):
+            self._model_store = ModelConfigurationStore(
+                Path(self._config.settings_path_setting)
+            )
+            self._config = replace(
+                self._config,
+                model_configuration=self._model_store.snapshot(),
+            )
         self._tool_catalog = _clone_tools(tools if tools is not None else all_tools())
         self._uses_default_client_factory = client_factory is None
         self._client_factory = client_factory
         self._event_sink = event_sink
         self._sessions: Dict[str, AgentSession] = {}
         self._lock = threading.RLock()
+        self._transport_lock = threading.RLock()
+        self._transport_pool: Dict[_TransportKey, _TransportEntry] = {}
+        self._credential_epoch = uuid4().hex
         self._closed = False
         self.log_path = (
             setup_runtime_logging(self._config)
@@ -1024,9 +1247,69 @@ class NovalRuntime:
                 if self._config.persist_sessions
                 else SessionPersistence.EPHEMERAL
             )
-        provider = options.provider or self._config.provider
-        model = options.model or self._config.model
-        judge_model = options.judge_model or self._config.judge_model
+        model_configuration = self._config.model_configuration
+        if model_configuration is None:
+            selected_model_id = (
+                options.selected_model_id or self._config.model
+            )
+            selected_judge_model_id = (
+                options.selected_judge_model_id or self._config.judge_model
+            )
+            provider = self._config.provider
+            model = selected_model_id
+            judge_model = selected_judge_model_id
+        else:
+            selected_model_id = (
+                options.selected_model_id
+                or model_configuration.default_model_id
+            )
+            try:
+                if options.selected_judge_model_id is not None:
+                    selected_judge_model_id = (
+                        options.selected_judge_model_id
+                    )
+                else:
+                    selected_judge_model_id = (
+                        self._judge_configured_model_id(
+                            model_configuration,
+                            selected_model_id,
+                        )
+                    )
+                selected_model = model_configuration.configured_model(
+                    selected_model_id
+                )
+                selected_judge = model_configuration.configured_model(
+                    selected_judge_model_id
+                )
+                selected_connection = model_configuration.connection(
+                    selected_model.connection_id
+                )
+                judge_connection = model_configuration.connection(
+                    selected_judge.connection_id
+                )
+            except ModelConfigurationError as error:
+                raise NovalError(
+                    "configured_model_not_found",
+                    "The selected Configured Model does not exist.",
+                ) from error
+            if selected_connection.adapter != judge_connection.adapter:
+                raise NovalError(
+                    "configured_model_adapter_mismatch",
+                    "Agent and judge Configured Models must use the same Adapter.",
+                )
+            provider = selected_connection.adapter
+            model = selected_model.model
+            judge_model = selected_judge.model
+        configuration_revision = (
+            model_configuration.revision
+            if model_configuration is not None
+            else 1
+        )
+        session_selection = SessionModelSelection(
+            selected_model_id=selected_model_id,
+            selected_judge_model_id=selected_judge_model_id,
+            configuration_revision=configuration_revision,
+        )
 
         store: Optional[PersistentSessionStore]
         session_title: Optional[str] = None
@@ -1056,20 +1339,58 @@ class NovalRuntime:
             resolved_session_id = store.session_id
             store_metadata = store.load_metadata()
             session_title = _observed_session_title(store_metadata.get("title"))
-            application_metadata = store_metadata.get("application")
-            if session_id is not None and isinstance(application_metadata, dict):
-                if options.provider is None:
-                    stored_provider = application_metadata.get("provider")
-                    if isinstance(stored_provider, str) and stored_provider:
-                        provider = stored_provider
-                if options.model is None:
-                    stored_model = application_metadata.get("model")
-                    if isinstance(stored_model, str) and stored_model:
-                        model = stored_model
-                if options.judge_model is None:
-                    stored_judge = application_metadata.get("judge_model")
-                    if isinstance(stored_judge, str) and stored_judge:
-                        judge_model = stored_judge
+            if session_id is not None:
+                try:
+                    selection = store.load_model_selection()
+                except SessionMetadataError as error:
+                    store.close()
+                    raise NovalError(
+                        "session_state_invalid",
+                        str(error),
+                        session_id=session_id,
+                    ) from error
+                selected_model_id = selection.selected_model_id
+                selected_judge_model_id = selection.selected_judge_model_id
+                configuration_revision = selection.configuration_revision
+                session_selection = selection
+                if model_configuration is not None:
+                    try:
+                        selected_model = model_configuration.configured_model(
+                            selected_model_id
+                        )
+                        selected_judge = (
+                            model_configuration.configured_model(
+                                selected_judge_model_id
+                            )
+                        )
+                        selected_connection = model_configuration.connection(
+                            selected_model.connection_id
+                        )
+                        judge_connection = model_configuration.connection(
+                            selected_judge.connection_id
+                        )
+                    except ModelConfigurationError:
+                        # Session references are intentionally weak. Keep the
+                        # Session repairable and reject only a later Turn.
+                        pass
+                    else:
+                        if (
+                            selected_connection.adapter
+                            != judge_connection.adapter
+                        ):
+                            store.close()
+                            raise NovalError(
+                                "session_state_invalid",
+                                "Agent and judge Configured Models must use "
+                                "the same Adapter.",
+                                session_id=session_id,
+                            )
+                        provider = selected_connection.adapter
+                        model = selected_model.model
+                        judge_model = selected_judge.model
+                else:
+                    model = selected_model_id
+                    judge_model = selected_judge_model_id
         else:
             if session_id is not None:
                 raise NovalError(
@@ -1087,14 +1408,7 @@ class NovalRuntime:
             judge_model=judge_model,
         )
         if store is not None and session_id is None:
-            store.update_metadata({
-                "application": {
-                    "schema_version": 1,
-                    "provider": provider,
-                    "model": model,
-                    "judge_model": judge_model,
-                }
-            })
+            store.set_model_selection(session_selection)
 
         with self._lock:
             if resolved_session_id in self._sessions:
@@ -1126,67 +1440,12 @@ class NovalRuntime:
             JsonlRequestJournal(store.request_path(), resolved_session_id)
             if store is not None else InMemoryRequestJournal()
         )
-        request_sequence = RequestSequence()
         session_holder: Dict[str, AgentSession] = {}
-
-        def request_context() -> RequestContext:
-            session = session_holder.get("session")
-            metadata: Dict[str, object] = {}
-            if session is not None:
-                manager = session._agent.context_manager
-                checkpoint = manager.checkpoint if manager is not None else None
-                if checkpoint is not None:
-                    metadata = {
-                        "checkpoint_id": checkpoint.checkpoint_id,
-                        "source_through_seq": checkpoint.source_through_seq,
-                    }
-            return RequestContext(
-                session_id=resolved_session_id,
-                turn_id=session._active_turn() if session is not None else None,
-                metadata=metadata,
-            )
-
-        agent_client = self._make_client(
-            "agent", provider, model, resolved_session_id, session_config
-        )
-        judge_client = self._make_client(
-            "completion_judge",
-            provider,
-            judge_model,
-            resolved_session_id,
-            session_config,
-        )
-        if session_config.persist_usage:
-            usage_store = JsonlUsageStore(
-                session_config.usage_dir(), resolved_session_id
-            )
-            agent_client = MeteredLLMClient(
-                agent_client, usage_store, model, purpose="agent"
-            )
-            judge_client = MeteredLLMClient(
-                judge_client,
-                usage_store,
-                judge_model,
-                purpose="completion_judge",
-            )
-        agent_client = RequestRecordingClient(
-            agent_client,
-            request_journal,
-            request_context,
-            purpose="agent",
-            identity=_client_identity(agent_client, provider, model),
-            sequence=request_sequence,
-        )
-        judge_client = RequestRecordingClient(
-            judge_client,
-            request_journal,
-            request_context,
-            purpose="completion_judge",
-            identity=_client_identity(judge_client, provider, judge_model),
-            sequence=request_sequence,
-        )
+        agent_client: LLMClient = _UnboundClient()
+        judge_client: LLMClient = _UnboundClient()
 
         resume_messages = None
+        recover_interrupted_turn = False
         resumed_message_count = 0
         context_manager = None
         if store is not None:
@@ -1197,8 +1456,12 @@ class NovalRuntime:
                 session_config.context_budget_tokens,
             )
             if session_id is not None:
+                persisted_records = store.load_records()
+                recover_interrupted_turn = _has_incomplete_turn(
+                    record.message for record in persisted_records
+                )
                 resume_messages = context_manager.restore()
-                resumed_message_count = len(store.load_records())
+                resumed_message_count = len(persisted_records)
         task_store = TaskEventStore(store.task_path()) if store is not None else None
         task_controller = TaskController(
             event_store=task_store,
@@ -1210,12 +1473,11 @@ class NovalRuntime:
             session_id=resolved_session_id,
             workdir=str(workdir),
             persistence=persistence,
-            provider=provider,
-            model=model,
+            selected_model_id=selected_model_id,
+            selected_judge_model_id=selected_judge_model_id,
             is_open=True,
             title=session_title,
             message_count=resumed_message_count,
-            schema_version=2 if store is not None else None,
         )
         selected_sink = event_sink if event_sink is not None else self._event_sink
 
@@ -1236,6 +1498,7 @@ class NovalRuntime:
             project_memory=load_project_memory(workdir),
             store=store,
             resume_messages=resume_messages,
+            recover_interrupted_turn=recover_interrupted_turn,
             shell_backend=shell_backend,
             permissions=permissions,
             process_runtime=process_runtime,
@@ -1255,6 +1518,8 @@ class NovalRuntime:
             permission_handler=permission_handler,
             tool_names=tuple(tool.name for tool in self._tool_catalog),
             request_journal=request_journal,
+            selection=session_selection,
+            session_config=session_config,
         )
         session_holder["session"] = session
         with self._lock:
@@ -1275,29 +1540,98 @@ class NovalRuntime:
         model: str,
         session_id: str,
         config: Config,
-    ) -> LLMClient:
+        replay_scope: ReplayScope,
+    ) -> _ClientAcquisition:
         if self._uses_default_client_factory:
-            return self._default_client(config, provider, model)
+            return self._default_client(
+                purpose, config, provider, model, replay_scope
+            )
         assert self._client_factory is not None
-        return self._client_factory(ClientSpec(
-            purpose=purpose,
-            provider=provider,
-            model=model,
-            session_id=session_id,
-        ))
-
-    @staticmethod
-    def _default_client(config: Config, provider: str, model: str) -> LLMClient:
-        return create_provider_client(
-            provider,
-            api_key=config.resolve_api_key(),
-            model=model,
-            base_url=config.base_url,
-            anthropic_base_url=config.anthropic_base_url,
-            timeout=config.request_timeout_seconds,
-            max_retries=config.request_max_retries,
-            anthropic_max_tokens=config.anthropic_max_tokens,
+        return _ClientAcquisition(
+            self._client_factory(ClientSpec(
+                purpose=purpose,
+                provider=provider,
+                model=model,
+                session_id=session_id,
+                replay_scope=replay_scope,
+            ))
         )
+
+    def _default_client(
+        self,
+        purpose: str,
+        config: Config,
+        provider: str,
+        model: str,
+        replay_scope: ReplayScope,
+    ) -> _ClientAcquisition:
+        if config.model_configuration is None:
+            api_key = config.resolve_api_key()
+            base_url = config.base_url
+        else:
+            connection = config.model_configuration.connection(
+                replay_scope.connection_id
+            )
+            api_key = connection.api_key
+            if not api_key and connection.api_key_env:
+                api_key = os.environ.get(connection.api_key_env, "")
+            if not api_key:
+                raise NovalError(
+                    "credential_unavailable",
+                    "The selected Connection has no available credential.",
+                )
+            provider = connection.adapter
+            base_url = connection.base_url
+        transport_key: _TransportKey = (
+            purpose,
+            provider,
+            replay_scope.connection_id,
+            replay_scope.transport_revision,
+            replay_scope.credential_epoch,
+            base_url,
+            config.anthropic_base_url,
+            config.request_timeout_seconds,
+            config.request_max_retries,
+            config.anthropic_max_tokens,
+        )
+        with self._lock:
+            current = self._config.model_configuration
+            transport_is_current = bool(
+                current is None
+                or any(
+                    connection.id == replay_scope.connection_id
+                    and connection.revision
+                    == replay_scope.transport_revision
+                    for connection in current.connections
+                )
+            )
+            with self._transport_lock:
+                entry = self._transport_pool.get(transport_key)
+                client = create_provider_client(
+                    provider,
+                    api_key=api_key,
+                    model=model,
+                    base_url=base_url,
+                    anthropic_base_url=config.anthropic_base_url,
+                    timeout=config.request_timeout_seconds,
+                    max_retries=config.request_max_retries,
+                    anthropic_max_tokens=config.anthropic_max_tokens,
+                    replay_scope=replay_scope,
+                    transport=entry.transport if entry is not None else None,
+                )
+                if entry is None:
+                    created = getattr(client, "_client", None)
+                    if created is None:
+                        return _ClientAcquisition(client)
+                    entry = _TransportEntry(
+                        created,
+                        replay_scope.connection_id,
+                        replay_scope.transport_revision,
+                        retired=not transport_is_current,
+                    )
+                    self._transport_pool[transport_key] = entry
+                entry.references += 1
+                return _ClientAcquisition(client, transport_key)
 
     def get_session(self, session_id: str) -> AgentSession:
         with self._lock:
@@ -1319,23 +1653,363 @@ class NovalRuntime:
         with self._lock:
             return tuple(session.info for session in self._sessions.values())
 
+    def list_provider_profiles(self) -> Tuple[ProviderProfileInfo, ...]:
+        return tuple(
+            ProviderProfileInfo.from_dict(profile)
+            for profile in public_provider_profiles()
+        )
+
+    def get_model_configuration(self) -> ModelConfigurationInfo:
+        return self.configuration().models
+
+    def _require_model_store(self) -> ModelConfigurationStore:
+        if self._model_store is None:
+            raise NovalError(
+                "model_configuration_read_only",
+                "This Runtime was not created from a settings schema-v2 file.",
+            )
+        return self._model_store
+
+    def _install_model_configuration(
+        self, configuration: ModelConfiguration
+    ) -> ModelConfigurationInfo:
+        default = configuration.configured_model(
+            configuration.default_model_id
+        )
+        connection = configuration.connection(default.connection_id)
+        judge_model = default.model
+        profile = BUILTIN_PROFILE_BY_ID.get(connection.profile_id)
+        if profile is not None:
+            candidates = [
+                configured
+                for configured in configuration.configured
+                if configured.connection_id == connection.id
+                and configured.model == profile.judge_model
+            ]
+            if len(candidates) == 1:
+                judge_model = candidates[0].model
+        with self._lock:
+            self._config = replace(
+                self._config,
+                model_configuration=configuration,
+                provider=connection.adapter,
+                model=default.model,
+                judge_model=judge_model,
+                base_url=connection.base_url,
+                api_key_env=connection.api_key_env,
+                api_key=connection.api_key,
+            )
+            retired = self._retire_obsolete_transports_locked(configuration)
+            sessions = tuple(self._sessions.values())
+        self._close_provider_transports(retired)
+        observed = self.configuration().models
+        for session in sessions:
+            session._publish_model_configuration_changed(observed)
+        return observed
+
+    def _retire_obsolete_transports_locked(
+        self,
+        configuration: ModelConfiguration,
+    ) -> Tuple[object, ...]:
+        current_revisions = {
+            connection.id: connection.revision
+            for connection in configuration.connections
+        }
+        retired = []
+        with self._transport_lock:
+            for key, entry in tuple(self._transport_pool.items()):
+                if (
+                    current_revisions.get(entry.connection_id)
+                    == entry.transport_revision
+                ):
+                    continue
+                entry.retired = True
+                if entry.references == 0:
+                    self._transport_pool.pop(key)
+                    retired.append(entry.transport)
+        return tuple(retired)
+
+    def _release_transport_references(
+        self,
+        keys: Tuple[_TransportKey, ...],
+    ) -> None:
+        retired = []
+        with self._transport_lock:
+            for key in keys:
+                entry = self._transport_pool.get(key)
+                if entry is None:
+                    continue
+                entry.references -= 1
+                if entry.references < 0:
+                    raise RuntimeError(
+                        "Provider transport reference count became negative"
+                    )
+                if entry.retired and entry.references == 0:
+                    self._transport_pool.pop(key)
+                    retired.append(entry.transport)
+        self._close_provider_transports(tuple(retired))
+
+    @staticmethod
+    def _close_provider_transports(transports: Tuple[object, ...]) -> None:
+        for transport in {
+            id(item): item for item in transports
+        }.values():
+            close = getattr(transport, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    log.warning(
+                        "Provider transport close failed",
+                        exc_info=True,
+                    )
+
+    @staticmethod
+    def _raise_model_configuration_error(
+        error: ModelConfigurationError,
+    ) -> NoReturn:
+        raise NovalError(
+            error.code,
+            error.safe_message,
+            retryable=error.code
+            in {"settings_busy", "configuration_conflict"},
+            details={"path": error.path},
+        ) from error
+
+    def upsert_connection(
+        self, request: ConnectionUpsert
+    ) -> ModelConfigurationInfo:
+        if not isinstance(request, ConnectionUpsert):
+            raise TypeError("request must be ConnectionUpsert")
+        store = self._require_model_store()
+        current = store.snapshot()
+        existing = None
+        if request.connection_id is not None:
+            existing = next(
+                (
+                    connection
+                    for connection in current.connections
+                    if connection.id == request.connection_id
+                ),
+                None,
+            )
+            if existing is None:
+                raise NovalError(
+                    "connection_not_found",
+                    "The requested Connection does not exist.",
+                )
+            if request.expected_connection_revision != existing.revision:
+                raise NovalError(
+                    "connection_conflict",
+                    "The Connection changed after it was read.",
+                    retryable=True,
+                )
+        connection_id = request.connection_id or str(uuid4())
+        profile = BUILTIN_PROFILE_BY_ID.get(request.profile_id)
+        if profile is not None:
+            adapter = profile.adapter
+            base_url = profile.base_url
+            api_key_env = profile.api_key_env
+        elif request.profile_id == CUSTOM_PROFILE_ID:
+            adapter = OPENAI_COMPATIBLE_ADAPTER
+            base_url = request.base_url or (
+                existing.base_url if existing is not None else ""
+            )
+            api_key_env = (
+                request.api_key_env
+                if request.api_key_env is not None
+                else (existing.api_key_env if existing is not None else "")
+            )
+        else:
+            raise NovalError(
+                "unknown_profile",
+                "The requested Provider Profile does not exist.",
+            )
+        api_key = existing.api_key if existing is not None else ""
+        if request.clear_api_key:
+            api_key = ""
+        elif request.api_key is not None:
+            api_key = request.api_key
+        candidate = Connection(
+            id=connection_id,
+            revision=existing.revision if existing is not None else 1,
+            label=request.label,
+            profile_id=request.profile_id,
+            adapter=adapter,
+            base_url=base_url,
+            api_key_env=api_key_env,
+            api_key=api_key,
+        )
+        try:
+            updated = store.upsert_connection(
+                candidate,
+                expected_revision=request.expected_configuration_revision,
+            )
+        except ModelConfigurationError as error:
+            self._raise_model_configuration_error(error)
+        return self._install_model_configuration(updated)
+
+    def delete_connection(
+        self,
+        connection_id: str,
+        *,
+        expected_configuration_revision: int,
+    ) -> ModelConfigurationInfo:
+        store = self._require_model_store()
+        try:
+            updated = store.delete_connection(
+                connection_id,
+                expected_revision=expected_configuration_revision,
+            )
+        except ModelConfigurationError as error:
+            self._raise_model_configuration_error(error)
+        return self._install_model_configuration(updated)
+
+    def upsert_configured_model(
+        self, request: ConfiguredModelUpsert
+    ) -> ModelConfigurationInfo:
+        if not isinstance(request, ConfiguredModelUpsert):
+            raise TypeError("request must be ConfiguredModelUpsert")
+        store = self._require_model_store()
+        candidate = ConfiguredModel(
+            id=request.configured_model_id or str(uuid4()),
+            label=request.label,
+            connection_id=request.connection_id,
+            model=request.model,
+        )
+        try:
+            updated = store.upsert_configured_model(
+                candidate,
+                expected_revision=request.expected_configuration_revision,
+            )
+        except ModelConfigurationError as error:
+            self._raise_model_configuration_error(error)
+        return self._install_model_configuration(updated)
+
+    def delete_configured_model(
+        self,
+        configured_model_id: str,
+        *,
+        expected_configuration_revision: int,
+    ) -> ModelConfigurationInfo:
+        store = self._require_model_store()
+        try:
+            updated = store.delete_configured_model(
+                configured_model_id,
+                expected_revision=expected_configuration_revision,
+            )
+        except ModelConfigurationError as error:
+            self._raise_model_configuration_error(error)
+        return self._install_model_configuration(updated)
+
+    def set_default_model(
+        self,
+        configured_model_id: str,
+        *,
+        expected_configuration_revision: int,
+    ) -> ModelConfigurationInfo:
+        store = self._require_model_store()
+        try:
+            updated = store.set_default_model(
+                configured_model_id,
+                expected_revision=expected_configuration_revision,
+            )
+        except ModelConfigurationError as error:
+            self._raise_model_configuration_error(error)
+        return self._install_model_configuration(updated)
+
+    def configuration(self) -> RuntimeConfiguration:
+        """Return the effective Runtime configuration without credential values."""
+        configuration = self._config.model_configuration
+        if configuration is None:
+            models = ModelConfigurationInfo(
+                revision=1,
+                connections=(
+                    ConnectionInfo(
+                        id=f"runtime-{self._config.provider}",
+                        revision=1,
+                        label="Runtime default",
+                        profile_id="custom",
+                        adapter=self._config.provider,
+                        base_url=self._config.base_url,
+                        api_key_env=self._config.api_key_env,
+                        api_key_configured=bool(self._config.api_key),
+                        credential_available=self._config.api_key_configured(),
+                    ),
+                ),
+                configured=tuple(
+                    ConfiguredModelInfo(
+                        id=model_name,
+                        label=model_name,
+                        connection_id=f"runtime-{self._config.provider}",
+                        model=model_name,
+                    )
+                    for model_name in dict.fromkeys(
+                        (self._config.model, self._config.judge_model)
+                    )
+                ),
+                default_model_id=self._config.model,
+            )
+        else:
+            models = ModelConfigurationInfo(
+                revision=configuration.revision,
+                connections=tuple(
+                    ConnectionInfo.from_dict(connection.public_dict())
+                    for connection in configuration.connections
+                ),
+                configured=tuple(
+                    ConfiguredModelInfo.from_dict(configured.public_dict())
+                    for configured in configuration.configured
+                ),
+                default_model_id=configuration.default_model_id,
+            )
+        return RuntimeConfiguration(
+            models=models,
+            max_steps=self._config.max_steps,
+            max_tool_output_chars=self._config.max_tool_output_chars,
+            persist_sessions=self._config.persist_sessions,
+        )
+
+    def list_persisted_projects(self) -> Tuple[PersistedProjectInfo, ...]:
+        """Project inventory projected from canonical Session storage."""
+        return tuple(
+            PersistedProjectInfo(
+                workdir=project.workdir,
+                created_at=project.created_at,
+                session_count=project.session_count,
+                available=project.available,
+            )
+            for project in list_persisted_projects(self._config.sessions_dir())
+        )
+
     def list_persisted_sessions(self, workdir: str) -> Tuple[SessionInfo, ...]:
         root = Path(workdir).expanduser().resolve()
         with self._lock:
-            open_ids = set(self._sessions)
+            open_sessions = {
+                session_id: session.info
+                for session_id, session in self._sessions.items()
+            }
         return tuple(
             SessionInfo(
                 session_id=meta.session_id,
                 workdir=str(root),
                 persistence=SessionPersistence.PERSISTENT,
-                provider=meta.provider or self._config.provider,
-                model=meta.model or self._config.model,
-                is_open=meta.session_id in open_ids,
+                selected_model_id=meta.selected_model_id,
+                selected_judge_model_id=meta.selected_judge_model_id,
+                active_model_id=(
+                    open_sessions[meta.session_id].active_model_id
+                    if meta.session_id in open_sessions
+                    else None
+                ),
+                active_judge_model_id=(
+                    open_sessions[meta.session_id].active_judge_model_id
+                    if meta.session_id in open_sessions
+                    else None
+                ),
+                is_open=meta.session_id in open_sessions,
                 title=_observed_session_title(meta.title),
                 message_count=meta.message_count,
                 last_active=meta.last_active,
-                compatible=meta.compatible,
-                schema_version=meta.schema_version,
             )
             for meta in list_sessions(self._config.sessions_dir(), root)
         )
@@ -1346,7 +2020,301 @@ class NovalRuntime:
             if current is session:
                 del self._sessions[session.info.session_id]
 
-    def _admit_turn(self, session: AgentSession, turn_id: str) -> None:
+    def _select_session_models(
+        self,
+        session: AgentSession,
+        selected_model_id: str,
+        selected_judge_model_id: Optional[str],
+    ) -> SessionModelSelection:
+        with self._lock:
+            configuration = self._config.model_configuration
+            if configuration is None:
+                raise NovalError(
+                    "model_configuration_unavailable",
+                    "This Runtime was not created from settings schema v2.",
+                    session_id=session.info.session_id,
+                )
+            try:
+                if selected_judge_model_id is None:
+                    selected_judge_model_id = (
+                        self._judge_configured_model_id(
+                            configuration,
+                            selected_model_id,
+                        )
+                    )
+                agent = configuration.configured_model(selected_model_id)
+                judge = configuration.configured_model(selected_judge_model_id)
+                agent_connection = configuration.connection(agent.connection_id)
+                judge_connection = configuration.connection(judge.connection_id)
+            except ModelConfigurationError as error:
+                raise NovalError(
+                    "configured_model_not_found",
+                    "The selected Configured Model does not exist.",
+                    session_id=session.info.session_id,
+                ) from error
+            if agent_connection.adapter != judge_connection.adapter:
+                raise NovalError(
+                    "configured_model_adapter_mismatch",
+                    "Agent and judge Configured Models must use the same Adapter.",
+                    session_id=session.info.session_id,
+                )
+            selection = SessionModelSelection(
+                selected_model_id=agent.id,
+                selected_judge_model_id=judge.id,
+                configuration_revision=configuration.revision,
+            )
+            with session._state_lock:
+                if session._closed:
+                    raise NovalError(
+                        "session_closed",
+                        "Session is closed.",
+                        session_id=session.info.session_id,
+                    )
+                if session._store is not None:
+                    session._store.set_model_selection(selection)
+                session._selection = selection
+                active = session._active_execution
+                event = session._new_event_locked(
+                    EventType.SESSION_MODELS_SELECTED.value,
+                    payload={
+                        "selection": selection.to_dict(),
+                        "active_model_id": (
+                            active.agent.configured_model_id
+                            if active is not None else None
+                        ),
+                        "active_judge_model_id": (
+                            active.judge.configured_model_id
+                            if active is not None else None
+                        ),
+                        "effective_from": "next_turn",
+                    },
+                )
+        session._dispatch_event(event)
+        return selection
+
+    @staticmethod
+    def _judge_configured_model_id(
+        configuration: ModelConfiguration,
+        selected_model_id: str,
+    ) -> str:
+        selected = configuration.configured_model(selected_model_id)
+        connection = configuration.connection(selected.connection_id)
+        profile = BUILTIN_PROFILE_BY_ID.get(connection.profile_id)
+        if profile is None:
+            return selected.id
+        matches = [
+            configured.id
+            for configured in configuration.configured
+            if (
+                configured.connection_id == connection.id
+                and configured.model == profile.judge_model
+            )
+        ]
+        return matches[0] if len(matches) == 1 else selected.id
+
+    def _turn_binding(
+        self,
+        *,
+        configuration,
+        configured_model_id: str,
+        legacy_provider: str,
+    ) -> Tuple[TurnModelBinding, str]:
+        if configuration is None:
+            replay_adapter = (
+                ANTHROPIC_ADAPTER
+                if legacy_provider == "anthropic"
+                else OPENAI_ADAPTER
+            )
+            scope = ReplayScope(
+                adapter=replay_adapter,
+                connection_id=f"runtime-{legacy_provider}",
+                configured_model_id=configured_model_id,
+                provider_model=configured_model_id,
+                transport_revision=1,
+                adapter_schema_version=1,
+                credential_epoch=self._credential_epoch,
+            )
+            return (
+                TurnModelBinding(
+                    configured_model_id=configured_model_id,
+                    connection_id=scope.connection_id,
+                    adapter=legacy_provider,
+                    provider_model=configured_model_id,
+                    transport_revision=1,
+                    configuration_revision=1,
+                    replay_scope=scope,
+                ),
+                legacy_provider,
+            )
+        configured = configuration.configured_model(configured_model_id)
+        connection = configuration.connection(configured.connection_id)
+        replay_adapter = (
+            ANTHROPIC_ADAPTER
+            if connection.adapter == "anthropic"
+            else OPENAI_ADAPTER
+        )
+        credential_epoch = (
+            self._credential_epoch
+            if connection.api_key_env and not connection.api_key
+            else f"stored-r{connection.revision}"
+        )
+        scope = ReplayScope(
+            adapter=replay_adapter,
+            connection_id=connection.id,
+            configured_model_id=configured.id,
+            provider_model=configured.model,
+            transport_revision=connection.revision,
+            adapter_schema_version=1,
+            credential_epoch=credential_epoch,
+        )
+        return (
+            TurnModelBinding(
+                configured_model_id=configured.id,
+                connection_id=connection.id,
+                adapter=connection.adapter,
+                provider_model=configured.model,
+                transport_revision=connection.revision,
+                configuration_revision=configuration.revision,
+                replay_scope=scope,
+            ),
+            connection.adapter,
+        )
+
+    def _request_context_for(self, session: AgentSession) -> RequestContext:
+        metadata: Dict[str, object] = {}
+        manager = session._agent.context_manager
+        checkpoint = manager.checkpoint if manager is not None else None
+        if checkpoint is not None:
+            metadata = {
+                "checkpoint_id": checkpoint.checkpoint_id,
+                "source_through_seq": checkpoint.source_through_seq,
+            }
+        return RequestContext(
+            session_id=session.info.session_id,
+            turn_id=session._active_turn(),
+            metadata=metadata,
+        )
+
+    def _record_turn_client(
+        self,
+        session: AgentSession,
+        client: LLMClient,
+        binding: TurnModelBinding,
+        provider: str,
+        purpose: str,
+    ) -> LLMClient:
+        decorated = client
+        if session._session_config.persist_usage:
+            decorated = MeteredLLMClient(
+                decorated,
+                JsonlUsageStore(
+                    session._session_config.usage_dir(),
+                    session.info.session_id,
+                ),
+                binding.provider_model,
+                purpose=purpose,
+            )
+        return RequestRecordingClient(
+            decorated,
+            session._request_journal,
+            lambda: self._request_context_for(session),
+            purpose=purpose,
+            identity=_client_identity(
+                decorated, provider, binding.provider_model
+            ),
+            sequence=session._request_sequence,
+        )
+
+    def _build_turn_execution(
+        self,
+        session: AgentSession,
+        selection: SessionModelSelection,
+        configuration,
+    ) -> TurnExecution:
+        try:
+            agent_binding, agent_provider = self._turn_binding(
+                configuration=configuration,
+                configured_model_id=selection.selected_model_id,
+                legacy_provider=session._session_config.provider,
+            )
+            judge_binding, judge_provider = self._turn_binding(
+                configuration=configuration,
+                configured_model_id=selection.selected_judge_model_id,
+                legacy_provider=session._session_config.provider,
+            )
+        except ModelConfigurationError as error:
+            raise NovalError(
+                "model_configuration_missing",
+                "The Session's selected Configured Model no longer exists. "
+                "Select a replacement before starting another Turn.",
+                session_id=session.info.session_id,
+            ) from error
+        if agent_binding.replay_scope.adapter != judge_binding.replay_scope.adapter:
+            raise NovalError(
+                "configured_model_adapter_mismatch",
+                "Agent and judge Configured Models must use the same Adapter.",
+                session_id=session.info.session_id,
+            )
+        turn_config = replace(
+            copy.deepcopy(session._session_config),
+            provider=agent_provider,
+            model=agent_binding.provider_model,
+            judge_model=judge_binding.provider_model,
+            model_configuration=configuration,
+        )
+        acquired_keys = []
+        try:
+            agent_acquisition = self._make_client(
+                "agent",
+                agent_provider,
+                agent_binding.provider_model,
+                session.info.session_id,
+                turn_config,
+                agent_binding.replay_scope,
+            )
+            if agent_acquisition.transport_key is not None:
+                acquired_keys.append(agent_acquisition.transport_key)
+            judge_acquisition = self._make_client(
+                "completion_judge",
+                judge_provider,
+                judge_binding.provider_model,
+                session.info.session_id,
+                turn_config,
+                judge_binding.replay_scope,
+            )
+            if judge_acquisition.transport_key is not None:
+                acquired_keys.append(judge_acquisition.transport_key)
+            agent_client = self._record_turn_client(
+                session,
+                agent_acquisition.client,
+                agent_binding,
+                agent_provider,
+                "agent",
+            )
+            judge_client = self._record_turn_client(
+                session,
+                judge_acquisition.client,
+                judge_binding,
+                judge_provider,
+                "completion_judge",
+            )
+        except Exception:
+            self._release_transport_references(tuple(acquired_keys))
+            raise
+        transport_keys = tuple(acquired_keys)
+        return TurnExecution(
+            agent=agent_binding,
+            judge=judge_binding,
+            agent_client=agent_client,
+            judge_client=judge_client,
+            release_transports=lambda: self._release_transport_references(
+                transport_keys
+            ),
+        )
+
+    def _admit_turn(
+        self, session: AgentSession, turn_id: str
+    ) -> TurnExecution:
         # Runtime shutdown and Session turn admission share this lock order.
         with self._lock:
             with session._state_lock:
@@ -1357,7 +2325,29 @@ class NovalRuntime:
                         "Runtime is closed.",
                         session_id=session.info.session_id,
                     )
+                configuration = self._config.model_configuration
+                selection = session._selection
                 session._active_turn_id = turn_id
+        try:
+            execution = self._build_turn_execution(
+                session, selection, configuration
+            )
+        except Exception:
+            with session._state_lock:
+                if session._active_turn_id == turn_id:
+                    session._active_turn_id = None
+            raise
+        with session._state_lock:
+            if session._active_turn_id != turn_id:
+                raise RuntimeError("Turn admission state changed unexpectedly")
+            session._active_execution = execution
+            session._agent.bind_turn_clients(
+                execution.agent_client,
+                execution.agent.provider_model,
+                execution.judge_client,
+                execution.judge.provider_model,
+            )
+        return execution
 
     def close(self) -> None:
         with self._lock:
@@ -1379,6 +2369,12 @@ class NovalRuntime:
             self._closed = True
         for session in sessions:
             session.close()
+        with self._transport_lock:
+            transports = tuple(
+                entry.transport for entry in self._transport_pool.values()
+            )
+            self._transport_pool.clear()
+        self._close_provider_transports(transports)
 
     def __enter__(self) -> "NovalRuntime":
         return self

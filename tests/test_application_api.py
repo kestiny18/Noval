@@ -5,6 +5,7 @@ import time
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -16,6 +17,10 @@ from noval.api import (
     ApiFormatError,
     CompletionReport,
     CompletionStatus,
+    ConfiguredModelInfo,
+    ConfiguredModelUpsert,
+    ConnectionInfo,
+    ConnectionUpsert,
     CriterionReport,
     CriterionStatus,
     ErrorInfo,
@@ -23,11 +28,14 @@ from noval.api import (
     EventPage,
     EventType,
     GoalContract,
+    ModelConfigurationInfo,
     NovalError,
     PermissionDecision,
     PermissionRequest,
     PermissionStateView,
+    PersistedProjectInfo,
     RequestInspection,
+    RuntimeConfiguration,
     RuntimeEvent,
     RuntimeOptions,
     ReceiptKind,
@@ -42,6 +50,7 @@ from noval.api import (
     TurnResult,
     TurnStatus,
     TranscriptEntry,
+    TranscriptHistoryPage,
     TranscriptPage,
     TranscriptToolCall,
     TranscriptToolResult,
@@ -58,14 +67,18 @@ from noval.client import (
     mock_tool_call,
 )
 from noval.config import Config
+from noval.model_config import packaged_settings
 from noval.messages import (
     AdapterReplayState,
+    ReplayScope,
     ToolCallBlock,
     assistant_message,
     tool_result_message,
+    user_message,
 )
 from noval.permissions import PermissionMode
 from noval.process import NetworkAccess, SandboxMode
+from noval.session import JsonlSessionStore, SessionModelSelection
 from noval.tools import Risk, Tool
 
 
@@ -129,13 +142,23 @@ class BlockingClient:
 class BlockingClientFactory:
     def __init__(self):
         self.clients = []
+        self._clients_changed = threading.Condition()
 
     def __call__(self, spec):
         if spec.purpose == "agent":
             client = BlockingClient(reply=spec.session_id)
-            self.clients.append(client)
+            with self._clients_changed:
+                self.clients.append(client)
+                self._clients_changed.notify_all()
             return client
         return MockClient([])
+
+    def wait_for_clients(self, count, timeout):
+        with self._clients_changed:
+            return self._clients_changed.wait_for(
+                lambda: len(self.clients) >= count,
+                timeout=timeout,
+            )
 
 
 class QueueClientFactory:
@@ -188,9 +211,8 @@ def test_runtime_and_session_options_round_trip_and_reject_unknown_requests():
     session = SessionOptions(
         workdir="C:/projects/a",
         persistence=SessionPersistence.EPHEMERAL,
-        provider="anthropic",
-        model="claude",
-        judge_model="judge",
+        selected_model_id="configured-claude",
+        selected_judge_model_id="configured-judge",
         sandbox_mode=SandboxMode.REQUIRED,
         network_access=NetworkAccess.DENY,
     )
@@ -200,8 +222,195 @@ def test_runtime_and_session_options_round_trip_and_reject_unknown_requests():
 
     with pytest.raises(ApiFormatError, match="unknown field"):
         TurnRequest.from_dict({"text": "hello", "surprise": True})
+    with pytest.raises(ApiFormatError, match="unknown field"):
+        SessionOptions.from_dict(
+            {
+                "schema_version": 2,
+                "workdir": "C:/projects/a",
+                "provider": "openai-compatible",
+            }
+        )
+    with pytest.raises(ApiFormatError, match="schema_version must be 2"):
+        RuntimeOptions.from_dict(
+            {"schema_version": 1, "settings_path": None}
+        )
     with pytest.raises(ApiFormatError, match="text"):
         TurnRequest(text="")
+
+
+def test_runtime_configuration_and_project_contracts_are_json_safe():
+    configuration = RuntimeConfiguration(
+        models=ModelConfigurationInfo(
+            revision=1,
+            connections=(
+                ConnectionInfo(
+                    id="connection-a",
+                    revision=1,
+                    label="Example",
+                    profile_id="custom",
+                    adapter="openai-compatible",
+                    base_url="https://example.invalid",
+                    api_key_env="EXAMPLE_API_KEY",
+                    api_key_configured=True,
+                    credential_available=True,
+                ),
+            ),
+            configured=(
+                ConfiguredModelInfo(
+                    id="configured-agent",
+                    label="Agent",
+                    connection_id="connection-a",
+                    model="agent-model",
+                ),
+            ),
+            default_model_id="configured-agent",
+        ),
+        max_steps=40,
+        max_tool_output_chars=8000,
+        persist_sessions=True,
+    )
+    project = PersistedProjectInfo(
+        workdir="C:/projects/a",
+        created_at="2026-07-23T00:00:00Z",
+        session_count=2,
+        available=True,
+    )
+
+    assert RuntimeConfiguration.from_dict(
+        json_round_trip(configuration.to_dict())
+    ) == configuration
+    assert PersistedProjectInfo.from_dict(
+        json_round_trip(project.to_dict())
+    ) == project
+
+
+def test_runtime_configuration_mutations_are_typed_atomic_and_credential_safe(
+    tmp_path,
+):
+    settings = tmp_path / "settings.json"
+    document = packaged_settings()
+    document.update(
+        {
+            "sessions_dir": str(tmp_path / "sessions"),
+            "persist_logs": False,
+            "persist_usage": False,
+        }
+    )
+    settings.write_text(json.dumps(document), encoding="utf-8")
+    runtime = NovalRuntime(Config.load(settings))
+    events = []
+    session = runtime.create_session(
+        SessionOptions(
+            workdir=str(tmp_path),
+            persistence=SessionPersistence.EPHEMERAL,
+        ),
+        event_sink=events.append,
+    )
+
+    profiles = runtime.list_provider_profiles()
+    assert [profile.id for profile in profiles[:-1]] == [
+        "deepseek",
+        "qwen",
+        "moonshot",
+        "zhipu",
+        "openai",
+        "google",
+    ]
+    assert profiles[-1].id == "custom"
+    assert all("base_url" not in profile.to_dict() for profile in profiles)
+    secret = "credential-never-returned"
+    request = ConnectionUpsert(
+        expected_configuration_revision=1,
+        label="Local gateway",
+        profile_id="custom",
+        base_url="http://127.0.0.1:9000/v1",
+        api_key_env="LOCAL_GATEWAY_API_KEY",
+        api_key=secret,
+    )
+    assert secret not in repr(request)
+
+    after_connection = runtime.upsert_connection(request)
+    custom_connection = next(
+        connection
+        for connection in after_connection.connections
+        if connection.label == "Local gateway"
+    )
+    assert after_connection.revision == 2
+    assert custom_connection.api_key_configured is True
+    assert secret not in json.dumps(after_connection.to_dict())
+
+    after_model = runtime.upsert_configured_model(
+        ConfiguredModelUpsert(
+            expected_configuration_revision=after_connection.revision,
+            label="Local model",
+            connection_id=custom_connection.id,
+            model="local-model",
+        )
+    )
+    local_model = next(
+        model for model in after_model.configured if model.label == "Local model"
+    )
+    activated = runtime.set_default_model(
+        local_model.id,
+        expected_configuration_revision=after_model.revision,
+    )
+    assert activated.default_model_id == local_model.id
+    persisted = settings.read_text(encoding="utf-8")
+    assert secret in persisted
+    assert secret not in json.dumps(runtime.configuration().to_dict())
+    configuration_events = [
+        event
+        for event in events
+        if event.type == EventType.MODEL_CONFIGURATION_CHANGED.value
+    ]
+    assert [event.payload["revision"] for event in configuration_events] == [
+        2,
+        3,
+        4,
+    ]
+    assert configuration_events[-1].payload["default_model_id"] == local_model.id
+    assert secret not in json.dumps(
+        [event.to_dict() for event in configuration_events]
+    )
+
+    with pytest.raises(NovalError) as stale:
+        runtime.set_default_model(
+            local_model.id,
+            expected_configuration_revision=1,
+        )
+    assert stale.value.code == "configuration_conflict"
+    assert stale.value.retryable is True
+    assert secret not in stale.value.safe_message
+
+    with pytest.raises(NovalError) as referenced:
+        runtime.delete_connection(
+            custom_connection.id,
+            expected_configuration_revision=activated.revision,
+        )
+    assert referenced.value.code == "connection_in_use"
+    session.close()
+    runtime.close()
+
+
+def test_runtime_observes_effective_configuration_and_stored_projects(tmp_path):
+    config = application_config(tmp_path)
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    store = JsonlSessionStore.create(config.sessions_dir(), workdir, config.model)
+    store.append(user_message("Persist this project"))
+    store.close()
+    runtime = NovalRuntime(config, client_factory=QueueClientFactory([]))
+
+    observed = runtime.configuration()
+    projects = runtime.list_persisted_projects()
+
+    assert observed.models.default_model_id == config.model
+    assert observed.models.connections[0].adapter == config.provider
+    assert observed.models.connections[0].credential_available is True
+    assert observed.max_steps == config.max_steps
+    assert [project.workdir for project in projects] == [str(workdir.resolve())]
+    assert projects[0].session_count == 1
+    runtime.close()
 
 
 def test_session_info_and_permission_contracts_are_json_safe():
@@ -209,14 +418,14 @@ def test_session_info_and_permission_contracts_are_json_safe():
         session_id="s1",
         workdir="C:/projects/a",
         persistence=SessionPersistence.PERSISTENT,
-        provider="openai-compatible",
-        model="deepseek",
+        selected_model_id="configured-deepseek",
+        selected_judge_model_id="configured-judge",
+        active_model_id="configured-deepseek",
+        active_judge_model_id="configured-judge",
         is_open=True,
         title="Investigate runtime",
         message_count=12,
         last_active="2026-07-18T11:00:00Z",
-        compatible=True,
-        schema_version=2,
     )
     state = PermissionStateView(PermissionMode.ASK, ("run_bash",))
     request = PermissionRequest(
@@ -262,6 +471,15 @@ def test_transcript_contracts_round_trip_json_safely():
     )
 
     assert TranscriptPage.from_dict(json_round_trip(page.to_dict())) == page
+
+    history = TranscriptHistoryPage(
+        entries=page.entries[-1:],
+        previous_sequence=3,
+        has_more=True,
+    )
+    assert TranscriptHistoryPage.from_dict(
+        json_round_trip(history.to_dict())
+    ) == history
 
 
 def test_transcript_is_paged_for_persistent_and_ephemeral_sessions(tmp_path):
@@ -319,6 +537,45 @@ def test_transcript_is_paged_for_persistent_and_ephemeral_sessions(tmp_path):
         ephemeral.transcript(limit=201)
     ephemeral.close()
     ephemeral_runtime.close()
+
+
+def test_transcript_history_returns_latest_entries_then_older_pages(tmp_path):
+    runtime = NovalRuntime(
+        application_config(tmp_path),
+        client_factory=QueueClientFactory([
+            mock_text("answer one"),
+            mock_text("answer two"),
+            mock_text("answer three"),
+        ]),
+    )
+    session = runtime.create_session(SessionOptions(
+        workdir=str(tmp_path),
+        persistence=SessionPersistence.PERSISTENT,
+    ))
+    for number in ("one", "two", "three"):
+        session.run_turn(TurnRequest(f"question {number}"))
+
+    latest = session.transcript_history(limit=2)
+    older = session.transcript_history(
+        before_sequence=latest.previous_sequence,
+        limit=2,
+    )
+
+    assert [entry.sequence for entry in latest.entries] == [5, 6]
+    assert [entry.text for entry in latest.entries] == [
+        "question three",
+        "answer three",
+    ]
+    assert latest.previous_sequence == 5
+    assert latest.has_more is True
+    assert [entry.sequence for entry in older.entries] == [3, 4]
+    assert older.previous_sequence == 3
+    assert older.has_more is True
+    assert {entry.sequence for entry in latest.entries}.isdisjoint(
+        entry.sequence for entry in older.entries
+    )
+    session.close()
+    runtime.close()
 
 
 def test_transcript_and_turn_result_exclude_provider_private_state_and_arguments(
@@ -882,6 +1139,258 @@ def test_runtime_creates_ephemeral_session_without_changing_process_state(tmp_pa
     assert dict(os.environ) == before_env
 
 
+def test_runtime_reuses_transport_but_returns_model_bound_clients(
+    tmp_path, monkeypatch
+):
+    calls = []
+
+    def fake_create(provider, **kwargs):
+        transport = kwargs["transport"] or object()
+        client = SimpleNamespace(_client=transport, model=kwargs["model"])
+        calls.append((provider, kwargs, client))
+        return client
+
+    monkeypatch.setattr(application_module, "create_provider_client", fake_create)
+    runtime = NovalRuntime(application_config(tmp_path))
+    first_scope = ReplayScope(
+        "openai-compatible",
+        "connection-a",
+        "configured-a",
+        "model-a",
+        3,
+        1,
+        "stored-r3",
+    )
+    second_scope = ReplayScope(
+        "openai-compatible",
+        "connection-a",
+        "configured-b",
+        "model-b",
+        3,
+        1,
+        "stored-r3",
+    )
+
+    first = runtime._default_client(
+        "agent",
+        runtime._config,
+        "openai-compatible",
+        "model-a",
+        first_scope,
+    )
+    second = runtime._default_client(
+        "agent",
+        runtime._config,
+        "openai-compatible",
+        "model-b",
+        second_scope,
+    )
+    judge = runtime._default_client(
+        "completion_judge",
+        runtime._config,
+        "openai-compatible",
+        "model-a",
+        first_scope,
+    )
+
+    assert first.client is not second.client
+    assert calls[0][1]["transport"] is None
+    assert calls[1][1]["transport"] is first.client._client
+    assert second.client._client is first.client._client
+    assert calls[2][1]["transport"] is None
+    assert judge.client._client is not first.client._client
+    runtime.close()
+
+
+def test_retired_transport_closes_after_its_last_turn_reference(
+    tmp_path, monkeypatch
+):
+    settings = tmp_path / "settings.json"
+    document = packaged_settings()
+    document["models"]["connections"][0]["api_key"] = "initial-credential"
+    settings.write_text(json.dumps(document), encoding="utf-8")
+
+    class Transport:
+        def __init__(self):
+            self.close_count = 0
+
+        def close(self):
+            self.close_count += 1
+
+    transports = []
+
+    def fake_create(provider, **kwargs):
+        transport = kwargs["transport"]
+        if transport is None:
+            transport = Transport()
+            transports.append(transport)
+        return SimpleNamespace(_client=transport, model=kwargs["model"])
+
+    monkeypatch.setattr(application_module, "create_provider_client", fake_create)
+    runtime = NovalRuntime(Config.load(settings))
+    first_scope = ReplayScope(
+        "openai-compatible",
+        "connection-deepseek-default",
+        "model-deepseek-v4-pro-default",
+        "deepseek-v4-pro",
+        1,
+        1,
+        "stored-r1",
+    )
+    second_scope = ReplayScope(
+        "openai-compatible",
+        "connection-deepseek-default",
+        "model-deepseek-v4-flash-default",
+        "deepseek-v4-flash",
+        1,
+        1,
+        "stored-r1",
+    )
+    first = runtime._default_client(
+        "agent",
+        runtime._config,
+        "openai-compatible",
+        "deepseek-v4-pro",
+        first_scope,
+    )
+    second = runtime._default_client(
+        "agent",
+        runtime._config,
+        "openai-compatible",
+        "deepseek-v4-flash",
+        second_scope,
+    )
+    retired_transport = transports[0]
+
+    updated = runtime.upsert_connection(ConnectionUpsert(
+        expected_configuration_revision=1,
+        connection_id="connection-deepseek-default",
+        expected_connection_revision=1,
+        label="DeepSeek",
+        profile_id="deepseek",
+        api_key="replacement-credential",
+    ))
+
+    assert updated.revision == 2
+    assert retired_transport.close_count == 0
+    runtime._release_transport_references((first.transport_key,))
+    assert retired_transport.close_count == 0
+
+    current_scope = ReplayScope(
+        "openai-compatible",
+        "connection-deepseek-default",
+        "model-deepseek-v4-pro-default",
+        "deepseek-v4-pro",
+        2,
+        1,
+        "stored-r2",
+    )
+    current = runtime._default_client(
+        "agent",
+        runtime._config,
+        "openai-compatible",
+        "deepseek-v4-pro",
+        current_scope,
+    )
+
+    assert current.client._client is not retired_transport
+    runtime._release_transport_references((second.transport_key,))
+    assert retired_transport.close_count == 1
+    runtime._release_transport_references((current.transport_key,))
+    assert current.client._client.close_count == 0
+    runtime.close()
+    assert current.client._client.close_count == 1
+
+
+def test_default_client_resolves_the_selected_connection_credential_first(
+    tmp_path, monkeypatch
+):
+    settings = tmp_path / "settings.json"
+    document = packaged_settings()
+    document["models"]["connections"].append(
+        {
+            "id": "connection-selected",
+            "revision": 1,
+            "label": "Selected",
+            "profile_id": "custom",
+            "adapter": "openai-compatible",
+            "base_url": "https://selected.example.invalid/v1",
+            "api_key": "selected-credential",
+            "api_key_env": "",
+        }
+    )
+    document["models"]["configured"].append(
+        {
+            "id": "model-selected",
+            "label": "Selected",
+            "connection_id": "connection-selected",
+            "model": "selected-model",
+        }
+    )
+    settings.write_text(json.dumps(document), encoding="utf-8")
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    calls = []
+
+    def fake_create(provider, **kwargs):
+        calls.append((provider, kwargs))
+        return SimpleNamespace(_client=object())
+
+    monkeypatch.setattr(application_module, "create_provider_client", fake_create)
+    runtime = NovalRuntime(Config.load(settings))
+    scope = ReplayScope(
+        "openai-compatible",
+        "connection-selected",
+        "model-selected",
+        "selected-model",
+        1,
+        1,
+        "stored-r1",
+    )
+
+    runtime._default_client(
+        "agent",
+        runtime._config,
+        "openai-compatible",
+        "selected-model",
+        scope,
+    )
+
+    assert calls[0][1]["api_key"] == "selected-credential"
+    assert calls[0][1]["base_url"] == "https://selected.example.invalid/v1"
+    runtime.close()
+
+
+def test_default_client_reports_a_typed_missing_selected_credential(
+    tmp_path, monkeypatch
+):
+    settings = tmp_path / "settings.json"
+    settings.write_text(json.dumps(packaged_settings()), encoding="utf-8")
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    runtime = NovalRuntime(Config.load(settings))
+    scope = ReplayScope(
+        "openai-compatible",
+        "connection-deepseek-default",
+        "model-deepseek-v4-pro-default",
+        "deepseek-v4-pro",
+        1,
+        1,
+        "runtime-credential-epoch",
+    )
+
+    with pytest.raises(NovalError) as missing:
+        runtime._default_client(
+            "agent",
+            runtime._config,
+            "openai-compatible",
+            "deepseek-v4-pro",
+            scope,
+        )
+
+    assert missing.value.code == "credential_unavailable"
+    assert "DEEPSEEK_API_KEY" not in missing.value.safe_message
+    runtime.close()
+
+
 def test_explicit_goal_exposes_uncertain_status_then_accepts_host_verification(
     tmp_path,
 ):
@@ -1133,17 +1642,16 @@ def test_persistent_session_can_be_listed_closed_and_resumed(tmp_path):
         first = runtime.create_session(SessionOptions(
             workdir=str(workdir),
             persistence=SessionPersistence.PERSISTENT,
-            provider="anthropic",
-            model="persisted-agent",
-            judge_model="persisted-judge",
+            selected_model_id="persisted-agent",
+            selected_judge_model_id="persisted-judge",
         ))
         session_id = first.info.session_id
         first.run_turn(TurnRequest("first question"))
         persisted = runtime.list_persisted_sessions(str(workdir))
         assert [item.session_id for item in persisted] == [session_id]
         assert persisted[0].is_open is True
-        assert persisted[0].provider == "anthropic"
-        assert persisted[0].model == "persisted-agent"
+        assert persisted[0].selected_model_id == "persisted-agent"
+        assert persisted[0].selected_judge_model_id == "persisted-judge"
 
     second_factory = RecordingClientFactory(["second reply"])
     with NovalRuntime(config, client_factory=second_factory) as runtime:
@@ -1162,12 +1670,248 @@ def test_persistent_session_can_be_listed_closed_and_resumed(tmp_path):
         assert "first question" in sent_text
         assert "first reply" in sent_text
         assert [(spec.purpose, spec.provider, spec.model) for spec in second_factory.specs] == [
-            ("agent", "anthropic", "persisted-agent"),
-            ("completion_judge", "anthropic", "persisted-judge"),
+            ("agent", "openai-compatible", "persisted-agent"),
+            ("completion_judge", "openai-compatible", "persisted-judge"),
         ]
 
 
-def test_session_provider_and_model_overrides_are_session_scoped(tmp_path):
+def test_schema_v2_configuration_persists_ids_outside_session_jsonl(tmp_path):
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    settings = tmp_path / "settings.json"
+    document = packaged_settings()
+    document.update(
+        {
+            "sessions_dir": str(tmp_path / "sessions"),
+            "persist_logs": False,
+            "persist_usage": False,
+        }
+    )
+    settings.write_text(json.dumps(document), encoding="utf-8")
+    config = Config.load(settings)
+    factory = RecordingClientFactory(["configured reply"])
+
+    with NovalRuntime(
+        config,
+        client_factory=factory,
+    ) as runtime:
+        session = runtime.create_session(
+            SessionOptions(
+                workdir=str(workdir),
+                persistence=SessionPersistence.PERSISTENT,
+            )
+        )
+        session.run_turn(TurnRequest("configured question"))
+        session_id = session.info.session_id
+
+    [jsonl_path] = list(
+        (tmp_path / "sessions").glob(f"*/{session_id}.jsonl")
+    )
+    header = json.loads(jsonl_path.read_text(encoding="utf-8").splitlines()[0])
+    metadata = json.loads(
+        jsonl_path.with_suffix(".meta.json").read_text(encoding="utf-8")
+    )
+
+    assert "model" not in header["_meta"]
+    assert metadata["application"] == {
+        "schema_version": 2,
+        "selected_model_id": "model-deepseek-v4-pro-default",
+        "selected_judge_model_id": "model-deepseek-v4-flash-default",
+        "configuration_revision": 1,
+    }
+    assert [spec.replay_scope.connection_id for spec in factory.specs] == [
+        "connection-deepseek-default",
+        "connection-deepseek-default",
+    ]
+    assert [spec.replay_scope.configured_model_id for spec in factory.specs] == [
+        "model-deepseek-v4-pro-default",
+        "model-deepseek-v4-flash-default",
+    ]
+    assert all(
+        spec.replay_scope.credential_epoch
+        and "secret" not in spec.replay_scope.credential_epoch
+        for spec in factory.specs
+    )
+
+
+def test_single_model_selection_uses_the_builtin_judge_on_its_connection(
+    tmp_path,
+):
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    settings = tmp_path / "settings.json"
+    document = packaged_settings()
+    document["models"]["connections"].append(
+        {
+            "id": "connection-deepseek-secondary",
+            "revision": 1,
+            "label": "DeepSeek secondary",
+            "profile_id": "deepseek",
+            "adapter": "openai-compatible",
+            "base_url": "https://api.deepseek.com",
+            "api_key": "",
+            "api_key_env": "DEEPSEEK_API_KEY",
+        }
+    )
+    document["models"]["configured"].extend(
+        [
+            {
+                "id": "model-secondary-pro",
+                "label": "Secondary Pro",
+                "connection_id": "connection-deepseek-secondary",
+                "model": "deepseek-v4-pro",
+            },
+            {
+                "id": "model-secondary-flash",
+                "label": "Secondary Flash",
+                "connection_id": "connection-deepseek-secondary",
+                "model": "deepseek-v4-flash",
+            },
+        ]
+    )
+    settings.write_text(json.dumps(document), encoding="utf-8")
+    events = []
+
+    with NovalRuntime(Config.load(settings)) as runtime:
+        session = runtime.create_session(
+            SessionOptions(
+                workdir=str(workdir),
+                persistence=SessionPersistence.EPHEMERAL,
+            ),
+            event_sink=events.append,
+        )
+
+        selection = session.select_model("model-secondary-pro")
+
+        assert selection.selected_model_id == "model-secondary-pro"
+        assert (
+            selection.selected_judge_model_id
+            == "model-secondary-flash"
+        )
+        assert session.info.selected_judge_model_id == "model-secondary-flash"
+        assert events[-1].type == EventType.SESSION_MODELS_SELECTED.value
+        assert events[-1].payload["effective_from"] == "next_turn"
+        assert events[-1].payload["active_model_id"] is None
+
+
+def test_deleted_weak_model_reference_keeps_session_repairable(tmp_path):
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    settings = tmp_path / "settings.json"
+    document = packaged_settings()
+    document.update({
+        "sessions_dir": str(tmp_path / "sessions"),
+        "persist_logs": False,
+        "persist_usage": False,
+    })
+    settings.write_text(json.dumps(document), encoding="utf-8")
+    runtime = NovalRuntime(
+        Config.load(settings),
+        client_factory=QueueClientFactory([
+            mock_text("Seeded."),
+            mock_text("Recovered."),
+        ]),
+    )
+    session = runtime.create_session(
+        SessionOptions(
+            workdir=str(workdir),
+            persistence=SessionPersistence.PERSISTENT,
+        )
+    )
+    session.select_model("model-deepseek-v4-flash-default")
+    session.run_turn(TurnRequest("Persist this Session."))
+    session_id = session.info.session_id
+    session.close()
+    runtime.delete_configured_model(
+        "model-deepseek-v4-flash-default",
+        expected_configuration_revision=1,
+    )
+
+    resumed = runtime.resume_session(
+        session_id,
+        SessionOptions(
+            workdir=str(workdir),
+            persistence=SessionPersistence.PERSISTENT,
+        ),
+    )
+
+    assert resumed.info.selected_model_id == (
+        "model-deepseek-v4-flash-default"
+    )
+    with pytest.raises(NovalError) as missing:
+        resumed.run_turn(TurnRequest("This Turn must not silently fall back."))
+    assert missing.value.code == "model_configuration_missing"
+    assert resumed.info.is_open
+
+    repaired = resumed.select_model("model-deepseek-v4-pro-default")
+    result = resumed.run_turn(TurnRequest("Continue after repair."))
+
+    assert repaired.selected_model_id == "model-deepseek-v4-pro-default"
+    assert repaired.selected_judge_model_id == (
+        "model-deepseek-v4-pro-default"
+    )
+    assert result.message.text == "Recovered."
+    resumed.close()
+    runtime.close()
+
+
+def test_persistent_resume_closes_interrupted_turn_before_continuing(tmp_path):
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    config = application_config(tmp_path)
+    store = JsonlSessionStore.create(config.sessions_dir(), workdir, config.model)
+    store.set_model_selection(
+        SessionModelSelection(
+            selected_model_id=config.model,
+            selected_judge_model_id=config.judge_model,
+            configuration_revision=1,
+        )
+    )
+    store.append(user_message("Inspect the project"))
+    store.append(assistant_message(
+        "I will inspect the files.",
+        tool_calls=(ToolCallBlock("call-1", "read_file", '{"path":"README.md"}'),),
+    ))
+    session_id = store.session_id
+    store.close()
+
+    with NovalRuntime(
+        config,
+        client_factory=QueueClientFactory([mock_text("Continued safely.")]),
+    ) as runtime:
+        resumed = runtime.resume_session(session_id, SessionOptions(
+            workdir=str(workdir),
+            persistence=SessionPersistence.PERSISTENT,
+        ))
+        restored = resumed.transcript(after_sequence=0, limit=20)
+        assert [entry.role for entry in restored.entries] == [
+            "user", "assistant", "tool", "assistant",
+        ]
+        assert restored.entries[-2].tool_results[0].is_error is True
+        assert "interrupted when Noval closed" in restored.entries[-1].text
+
+        result = resumed.run_turn(TurnRequest("Continue"))
+
+        assert result.status is TurnStatus.COMPLETED
+        assert result.message is not None
+        assert result.message.text == "Continued safely."
+
+    with NovalRuntime(
+        config,
+        client_factory=QueueClientFactory([mock_text("unused")]),
+    ) as runtime:
+        resumed_again = runtime.resume_session(session_id, SessionOptions(
+            workdir=str(workdir),
+            persistence=SessionPersistence.PERSISTENT,
+        ))
+        history = resumed_again.transcript(after_sequence=0, limit=20)
+        assert sum(
+            "interrupted when Noval closed" in entry.text
+            for entry in history.entries
+        ) == 1
+
+
+def test_session_model_selection_overrides_are_session_scoped(tmp_path):
     workdir = tmp_path / "project"
     workdir.mkdir()
     factory = RecordingClientFactory(["one", "two"])
@@ -1180,9 +1924,8 @@ def test_session_provider_and_model_overrides_are_session_scoped(tmp_path):
         override_session = runtime.create_session(SessionOptions(
             workdir=str(workdir),
             persistence=SessionPersistence.EPHEMERAL,
-            provider="anthropic",
-            model="agent-override",
-            judge_model="judge-override",
+            selected_model_id="agent-override",
+            selected_judge_model_id="judge-override",
         ))
         default_session.run_turn(TurnRequest("one"))
         override_session.run_turn(TurnRequest("two"))
@@ -1190,8 +1933,8 @@ def test_session_provider_and_model_overrides_are_session_scoped(tmp_path):
     assert [(spec.purpose, spec.provider, spec.model) for spec in factory.specs] == [
         ("agent", "openai-compatible", "agent-default"),
         ("completion_judge", "openai-compatible", "judge-default"),
-        ("agent", "anthropic", "agent-override"),
-        ("completion_judge", "anthropic", "judge-override"),
+        ("agent", "openai-compatible", "agent-override"),
+        ("completion_judge", "openai-compatible", "judge-override"),
     ]
 
 
@@ -1209,7 +1952,9 @@ def test_same_session_rejects_a_concurrent_turn_without_queueing(tmp_path):
         target=lambda: results.append(session.run_turn(TurnRequest("first")))
     )
     worker.start()
-    assert factory.clients[0].entered.wait(2)
+    assert factory.wait_for_clients(1, 2)
+    client = factory.clients[0]
+    assert client.entered.wait(2)
 
     started = time.perf_counter()
     with pytest.raises(NovalError) as busy:
@@ -1223,9 +1968,191 @@ def test_same_session_rejects_a_concurrent_turn_without_queueing(tmp_path):
         runtime.close()
     assert runtime_busy.value.code == "runtime_busy"
 
-    factory.clients[0].release.set()
+    client.release.set()
     worker.join(2)
     assert results[0].status is TurnStatus.COMPLETED
+    runtime.close()
+
+
+def test_model_switch_during_turn_changes_only_the_next_turn(tmp_path):
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    settings = tmp_path / "settings.json"
+    document = packaged_settings()
+    document.update(
+        {
+            "sessions_dir": str(tmp_path / "sessions"),
+            "persist_logs": False,
+            "persist_usage": False,
+        }
+    )
+    settings.write_text(json.dumps(document), encoding="utf-8")
+
+    class SwitchingFactory:
+        def __init__(self):
+            self.specs = []
+            self.first = BlockingClient("first reply")
+            self.agent_count = 0
+
+        def __call__(self, spec):
+            self.specs.append(spec)
+            if spec.purpose != "agent":
+                return MockClient([])
+            self.agent_count += 1
+            if self.agent_count == 1:
+                return self.first
+            return MockClient([mock_text("second reply")])
+
+    factory = SwitchingFactory()
+    runtime = NovalRuntime(Config.load(settings), client_factory=factory)
+    session = runtime.create_session(
+        SessionOptions(
+            workdir=str(workdir),
+            persistence=SessionPersistence.PERSISTENT,
+        )
+    )
+    session.select_models(
+        "model-deepseek-v4-pro-default",
+        "model-deepseek-v4-pro-default",
+    )
+    results = []
+    worker = threading.Thread(
+        target=lambda: results.append(
+            session.run_turn(TurnRequest("first question"))
+        )
+    )
+    worker.start()
+    assert factory.first.entered.wait(2)
+
+    session.select_models(
+        "model-deepseek-v4-flash-default",
+        "model-deepseek-v4-flash-default",
+    )
+
+    assert len(factory.specs) == 2
+    active = session._active_execution
+    assert active is not None
+    assert active.agent.configured_model_id == "model-deepseek-v4-pro-default"
+    assert active.judge.configured_model_id == "model-deepseek-v4-pro-default"
+    assert session._agent.context_manager.client is active.agent_client
+    semantic_judge = (
+        session._agent.task_controller.completion_verifier.semantic_judge
+    )
+    assert semantic_judge.client is active.judge_client
+
+    factory.first.release.set()
+    worker.join(3)
+    assert results[0].message.text == "first reply"
+
+    second = session.run_turn(TurnRequest("second question"))
+
+    assert second.message.text == "second reply"
+    agent_specs = [
+        spec for spec in factory.specs if spec.purpose == "agent"
+    ]
+    judge_specs = [
+        spec
+        for spec in factory.specs
+        if spec.purpose == "completion_judge"
+    ]
+    assert [spec.replay_scope.configured_model_id for spec in agent_specs] == [
+        "model-deepseek-v4-pro-default",
+        "model-deepseek-v4-flash-default",
+    ]
+    assert [spec.replay_scope.configured_model_id for spec in judge_specs] == [
+        "model-deepseek-v4-pro-default",
+        "model-deepseek-v4-flash-default",
+    ]
+    assert session._store.load_model_selection().selected_model_id == (
+        "model-deepseek-v4-flash-default"
+    )
+    session.close()
+    runtime.close()
+
+
+def test_connection_change_during_turn_changes_only_next_transport_revision(
+    tmp_path,
+):
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    settings = tmp_path / "settings.json"
+    document = packaged_settings()
+    document.update(
+        {
+            "sessions_dir": str(tmp_path / "sessions"),
+            "persist_logs": False,
+            "persist_usage": False,
+        }
+    )
+    settings.write_text(json.dumps(document), encoding="utf-8")
+
+    class RevisionFactory:
+        def __init__(self):
+            self.specs = []
+            self.first = BlockingClient("first reply")
+            self.agent_count = 0
+
+        def __call__(self, spec):
+            self.specs.append(spec)
+            if spec.purpose != "agent":
+                return MockClient([])
+            self.agent_count += 1
+            if self.agent_count == 1:
+                return self.first
+            return MockClient([mock_text("second reply")])
+
+    factory = RevisionFactory()
+    runtime = NovalRuntime(Config.load(settings), client_factory=factory)
+    session = runtime.create_session(
+        SessionOptions(
+            workdir=str(workdir),
+            persistence=SessionPersistence.PERSISTENT,
+        )
+    )
+    results = []
+    worker = threading.Thread(
+        target=lambda: results.append(
+            session.run_turn(TurnRequest("first question"))
+        )
+    )
+    worker.start()
+    assert factory.first.entered.wait(2)
+    active = session._active_execution
+    assert active.agent.transport_revision == 1
+
+    changed = runtime.upsert_connection(
+        ConnectionUpsert(
+            expected_configuration_revision=1,
+            connection_id="connection-deepseek-default",
+            expected_connection_revision=1,
+            label="DeepSeek",
+            profile_id="deepseek",
+            api_key="replacement-credential",
+        )
+    )
+
+    assert changed.revision == 2
+    assert session._active_execution is active
+    assert active.agent.transport_revision == 1
+    factory.first.release.set()
+    worker.join(3)
+    assert results[0].message.text == "first reply"
+
+    second = session.run_turn(TurnRequest("second question"))
+
+    assert second.message.text == "second reply"
+    agent_specs = [
+        spec for spec in factory.specs if spec.purpose == "agent"
+    ]
+    assert [spec.replay_scope.transport_revision for spec in agent_specs] == [
+        1,
+        2,
+    ]
+    assert "replacement-credential" not in repr(agent_specs)
+    assert "replacement-credential" not in json.dumps(
+        runtime.configuration().to_dict()
+    )
+    session.close()
     runtime.close()
 
 
@@ -1377,8 +2304,10 @@ def test_different_sessions_execute_in_parallel_without_message_leakage(tmp_path
         ]
         for thread in threads:
             thread.start()
-        assert all(client.entered.wait(2) for client in factory.clients)
-        for client in factory.clients:
+        assert factory.wait_for_clients(2, 2)
+        clients = list(factory.clients)
+        assert all(client.entered.wait(2) for client in clients)
+        for client in clients:
             client.release.set()
         for thread in threads:
             thread.join(2)
@@ -1512,9 +2441,11 @@ def test_cancel_is_cooperative_and_event_sink_failures_do_not_break_turn(tmp_pat
             target=lambda: results.append(session.run_turn(TurnRequest("wait")))
         )
         worker.start()
-        assert factory.clients[0].entered.wait(2)
+        assert factory.wait_for_clients(1, 2)
+        client = factory.clients[0]
+        assert client.entered.wait(2)
         assert session.cancel_active_turn() is True
-        factory.clients[0].release.set()
+        client.release.set()
         worker.join(2)
 
         assert results[0].status is TurnStatus.STOPPED

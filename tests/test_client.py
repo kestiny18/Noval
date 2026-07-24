@@ -14,7 +14,12 @@ from noval.client import (
     ToolDefinition,
 )
 from noval.messages import (
-    AdapterReplayState, ToolCallBlock, assistant_message, tool_result_message, user_message,
+    AdapterReplayState,
+    ReplayScope,
+    ToolCallBlock,
+    assistant_message,
+    tool_result_message,
+    user_message,
 )
 from noval.session import JsonlSessionStore
 
@@ -186,6 +191,42 @@ def test_openai_client_sets_timeout_and_retries(monkeypatch):
     }
 
 
+def test_openai_loopback_client_bypasses_the_system_proxy(monkeypatch):
+    openai_options = {}
+    httpx_options = {}
+    local_http_client = object()
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            openai_options.update(kwargs)
+
+    class FakeHttpxClient:
+        def __new__(cls, **kwargs):
+            httpx_options.update(kwargs)
+            return local_http_client
+
+    monkeypatch.setitem(
+        sys.modules,
+        "openai",
+        SimpleNamespace(OpenAI=FakeOpenAI),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "httpx",
+        SimpleNamespace(Client=FakeHttpxClient),
+    )
+
+    OpenAICompatibleClient(
+        "http://127.0.0.1:8080/v1",
+        "key",
+        "local-model",
+        timeout=7,
+    )
+
+    assert httpx_options == {"timeout": 7, "trust_env": False}
+    assert openai_options["http_client"] is local_http_client
+
+
 def test_plain_reasoning_is_not_retained_but_usage_is_normalized():
     client, _ = openai_client([
         openai_response(content="answer", reasoning="private final reasoning"),
@@ -291,6 +332,104 @@ def test_openai_tool_reasoning_round_trips_as_adapter_owned_state():
     assert replayed["tool_calls"][0]["function"]["name"] == "read_file"
 
 
+@pytest.mark.parametrize(
+    "other_scope",
+    [
+        ReplayScope(
+            OPENAI_ADAPTER,
+            "connection-b",
+            "configured-a",
+            "model-a",
+            1,
+            1,
+        ),
+        ReplayScope(
+            OPENAI_ADAPTER,
+            "connection-a",
+            "configured-b",
+            "model-a",
+            1,
+            1,
+        ),
+        ReplayScope(
+            OPENAI_ADAPTER,
+            "connection-a",
+            "configured-a",
+            "model-b",
+            1,
+            1,
+        ),
+        ReplayScope(
+            OPENAI_ADAPTER,
+            "connection-a",
+            "configured-a",
+            "model-a",
+            2,
+            1,
+        ),
+        ReplayScope(
+            OPENAI_ADAPTER,
+            "connection-a",
+            "configured-a",
+            "model-a",
+            1,
+            2,
+        ),
+    ],
+)
+def test_openai_rejects_same_adapter_replay_from_another_scope(other_scope):
+    current_scope = ReplayScope(
+        OPENAI_ADAPTER,
+        "connection-a",
+        "configured-a",
+        "model-a",
+        1,
+        1,
+    )
+    client, create = openai_client([openai_response(content="unused")])
+    client.replay_scope = current_scope
+    replayed = assistant_message(
+        tool_calls=(ToolCallBlock("call-1", "read_file", "{}"),),
+        replay_state=AdapterReplayState(
+            OPENAI_ADAPTER,
+            1,
+            {"reasoning_content": "private"},
+            other_scope,
+        ),
+    )
+
+    with pytest.raises(ProviderError, match="another model scope") as raised:
+        client.complete(
+            [user_message("read"), replayed, tool_result_message("call-1", "A")],
+            [],
+        )
+
+    assert raised.value.kind is ProviderErrorKind.PROTOCOL
+    assert create.calls == []
+
+
+def test_replay_scope_round_trips_with_opaque_payload():
+    scope = ReplayScope(
+        OPENAI_ADAPTER,
+        "connection-a",
+        "configured-a",
+        "model-a",
+        7,
+        1,
+    )
+    original = AdapterReplayState(
+        OPENAI_ADAPTER,
+        1,
+        {"reasoning_content": "private"},
+        scope,
+    )
+
+    restored = AdapterReplayState.from_dict(original.to_dict())
+
+    assert restored == original
+    assert restored.scope == scope
+
+
 def test_anthropic_thinking_round_trips_without_entering_semantic_view():
     thinking = {"type": "thinking", "thinking": "private", "signature": "sig"}
     client, create = anthropic_client([
@@ -311,6 +450,52 @@ def test_anthropic_thinking_round_trips_without_entering_semantic_view():
     replayed = create.calls[1]["messages"][1]["content"]
     assert replayed[0] == thinking
     assert replayed[1]["type"] == "tool_use"
+
+
+def test_anthropic_rejects_replay_from_another_connection_scope():
+    client, create = anthropic_client(
+        [anthropic_response([{"type": "text", "text": "unused"}])]
+    )
+    client.replay_scope = ReplayScope(
+        ANTHROPIC_ADAPTER,
+        "connection-a",
+        "configured-a",
+        "claude-test",
+        1,
+        1,
+    )
+    replayed = assistant_message(
+        tool_calls=(ToolCallBlock("call-1", "read_file", "{}"),),
+        replay_state=AdapterReplayState(
+            ANTHROPIC_ADAPTER,
+            1,
+            {
+                "blocks": [
+                    {
+                        "type": "thinking",
+                        "thinking": "private",
+                        "signature": "sig",
+                    }
+                ]
+            },
+            ReplayScope(
+                ANTHROPIC_ADAPTER,
+                "connection-b",
+                "configured-a",
+                "claude-test",
+                1,
+                1,
+            ),
+        ),
+    )
+
+    with pytest.raises(ProviderError, match="another model scope"):
+        client.complete(
+            [user_message("read"), replayed, tool_result_message("call-1", "A")],
+            [],
+        )
+
+    assert create.calls == []
 
 
 def test_anthropic_stream_emits_visible_text_and_keeps_thinking_opaque():
@@ -456,11 +641,19 @@ def test_anthropic_rejects_unrepresentable_raw_tool_arguments():
     assert caught.value.retryable is False
 
 
-def test_openai_replay_survives_session_v2_recovery(tmp_path):
+def test_openai_replay_survives_session_v3_recovery(tmp_path):
     client, _ = openai_client([
         openai_response(calls=[openai_call()], reasoning="exact deepseek state"),
     ])
     first = client.complete([user_message("read")], []).message
+    assert first.replay_state.scope == ReplayScope(
+        OPENAI_ADAPTER,
+        OPENAI_ADAPTER,
+        client.model,
+        client.model,
+        1,
+        1,
+    )
     workdir = tmp_path / "work"
     workdir.mkdir()
     store = JsonlSessionStore.create(tmp_path / "sessions", workdir, "model")
@@ -477,7 +670,7 @@ def test_openai_replay_survives_session_v2_recovery(tmp_path):
     assert create.calls[0]["messages"][1]["reasoning_content"] == "exact deepseek state"
 
 
-def test_anthropic_replay_survives_session_v2_recovery(tmp_path):
+def test_anthropic_replay_survives_session_v3_recovery(tmp_path):
     thinking = {"type": "thinking", "thinking": "private", "signature": "exact-sig"}
     client, _ = anthropic_client([
         anthropic_response([

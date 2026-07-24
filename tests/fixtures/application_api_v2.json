@@ -1,40 +1,39 @@
 {
   "runtime_options": {
-    "schema_version": 1,
+    "schema_version": 2,
     "settings_path": null
   },
   "session_options": {
-    "schema_version": 1,
+    "schema_version": 2,
     "workdir": "C:/projects/noval",
     "persistence": "persistent",
-    "provider": null,
-    "model": null,
-    "judge_model": null,
+    "selected_model_id": null,
+    "selected_judge_model_id": null,
     "sandbox_mode": "auto",
     "network_access": "inherit"
   },
   "session_info": {
-    "schema_version": 1,
+    "schema_version": 2,
     "session_id": "session-1",
     "workdir": "C:/projects/noval",
     "persistence": "persistent",
-    "provider": "openai-compatible",
-    "model": "agent-model",
+    "selected_model_id": "configured-agent",
+    "selected_judge_model_id": "configured-judge",
+    "active_model_id": "configured-agent",
+    "active_judge_model_id": "configured-judge",
     "is_open": true,
     "title": "Inspect Noval",
     "message_count": 4,
-    "last_active": "2026-07-18T12:00:00Z",
-    "compatible": true,
-    "session_schema_version": 2
+    "last_active": "2026-07-18T12:00:00Z"
   },
   "turn_request": {
-    "schema_version": 1,
+    "schema_version": 2,
     "text": "Inspect the project",
     "client_request_id": "client-1",
     "goal": null
   },
   "turn_result": {
-    "schema_version": 1,
+    "schema_version": 2,
     "session_id": "session-1",
     "turn_id": "turn-1",
     "client_request_id": "client-1",
@@ -62,7 +61,7 @@
     "completion": null
   },
   "runtime_event": {
-    "schema_version": 1,
+    "schema_version": 2,
     "event_id": "event-1",
     "session_id": "session-1",
     "turn_id": "turn-1",
@@ -73,13 +72,45 @@
       "client_request_id": "client-1"
     }
   },
+  "model_configuration_changed_event": {
+    "schema_version": 2,
+    "event_id": "event-2",
+    "session_id": "session-1",
+    "turn_id": null,
+    "sequence": 2,
+    "timestamp": "2026-07-18T12:00:01Z",
+    "type": "model.configuration_changed",
+    "payload": {
+      "revision": 2,
+      "default_model_id": "configured-agent"
+    }
+  },
+  "session_models_selected_event": {
+    "schema_version": 2,
+    "event_id": "event-3",
+    "session_id": "session-1",
+    "turn_id": null,
+    "sequence": 3,
+    "timestamp": "2026-07-18T12:00:02Z",
+    "type": "session.models_selected",
+    "payload": {
+      "selection": {
+        "selected_model_id": "configured-agent",
+        "selected_judge_model_id": "configured-judge",
+        "configuration_revision": 2
+      },
+      "active_model_id": null,
+      "active_judge_model_id": null,
+      "effective_from": "next_turn"
+    }
+  },
   "permission_state": {
-    "schema_version": 1,
+    "schema_version": 2,
     "mode": "ask",
     "approved_tools": []
   },
   "permission_request": {
-    "schema_version": 1,
+    "schema_version": 2,
     "request_id": "permission-1",
     "session_id": "session-1",
     "turn_id": "turn-1",
@@ -90,7 +121,7 @@
     }
   },
   "request_inspection": {
-    "schema_version": 1,
+    "schema_version": 2,
     "request_id": "request-1",
     "session_id": "session-1",
     "turn_id": "turn-1",
@@ -122,7 +153,7 @@
     }
   },
   "error": {
-    "schema_version": 1,
+    "schema_version": 2,
     "code": "session_busy",
     "safe_message": "Session already has an active turn.",
     "retryable": true,
