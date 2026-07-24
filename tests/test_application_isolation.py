@@ -107,13 +107,16 @@ class IsolationClient:
 
 class IsolationFactory:
     def __init__(self):
-        self.labels = iter(("one", "two"))
         self.barrier = threading.Barrier(2)
         self.clients = {}
+        self.session_labels = {}
+
+    def bind_session(self, session_id, label):
+        self.session_labels[session_id] = label
 
     def __call__(self, spec):
         if spec.purpose == "agent":
-            label = next(self.labels)
+            label = self.session_labels[spec.session_id]
             client = IsolationClient(label, self.barrier)
             self.clients[label] = client
             return client
@@ -154,6 +157,8 @@ def test_parallel_sessions_isolate_runtime_state_and_project_discovery(tmp_path)
             ),
             event_sink=two_events.append,
         )
+        factory.bind_session(one.info.session_id, "one")
+        factory.bind_session(two.info.session_id, "two")
         one.set_permission_mode(PermissionMode.FULL_ACCESS)
         threads = [
             threading.Thread(target=lambda: results.setdefault(
