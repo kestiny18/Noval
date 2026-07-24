@@ -113,7 +113,7 @@ function registerIpc(): void {
   ipcMain.handle("noval:create-session",(_e,options={})=>sidecar.request("session.create",{options}));
   ipcMain.handle("noval:resume-session",(_e,id:string)=>sidecar.request("session.resume",{session_id:id}));
   ipcMain.handle("noval:rename-session",(_e,id:string,title:string)=>sidecar.request("session.rename",{session_id:id,title}));
-  ipcMain.handle("noval:session-models",async(_e,id:string,modelId:string,judgeModelId:string)=>(await sidecar.request<{session:unknown}>("session.models.select",{session_id:id,selected_model_id:modelId,selected_judge_model_id:judgeModelId})).session);
+  ipcMain.handle("noval:session-model",async(_e,id:string,modelId:string)=>(await sidecar.request<{session:unknown}>("session.models.select",{session_id:id,selected_model_id:modelId})).session);
   ipcMain.handle("noval:transcript",(_e,id:string,after=0)=>sidecar.request("session.transcript",{session_id:id,after_sequence:after,limit:100}));
   ipcMain.handle("noval:transcript-history",(_e,id:string,before?:number)=>sidecar.request("session.transcript_history",{session_id:id,before_sequence:before,limit:24}));
   ipcMain.handle("noval:copy-text",(_e,text:string)=>{if(typeof text!=="string")throw new Error("Only text can be copied.");clipboard.writeText(text)});

@@ -399,6 +399,17 @@ class AgentSession:
             selected_judge_model_id,
         )
 
+    def select_model(
+        self,
+        configured_model_id: str,
+    ) -> SessionModelSelection:
+        """Select a primary model and its Runtime-owned judge for the next Turn."""
+        return self._runtime._select_session_models(
+            self,
+            configured_model_id,
+            None,
+        )
+
     def rename(self, title: str) -> SessionInfo:
         """Set bounded display metadata without rewriting conversation history."""
         if not isinstance(title, str):
@@ -1220,15 +1231,9 @@ class NovalRuntime:
             if options.selected_judge_model_id is not None:
                 selected_judge_model_id = options.selected_judge_model_id
             else:
-                judge_matches = [
-                    configured.id
-                    for configured in model_configuration.configured
-                    if configured.model == self._config.judge_model
-                ]
-                selected_judge_model_id = (
-                    judge_matches[0]
-                    if len(judge_matches) == 1
-                    else selected_model_id
+                selected_judge_model_id = self._judge_configured_model_id(
+                    model_configuration,
+                    selected_model_id,
                 )
             try:
                 selected_model = model_configuration.configured_model(
@@ -1882,7 +1887,7 @@ class NovalRuntime:
         self,
         session: AgentSession,
         selected_model_id: str,
-        selected_judge_model_id: str,
+        selected_judge_model_id: Optional[str],
     ) -> SessionModelSelection:
         with self._lock:
             configuration = self._config.model_configuration
@@ -1893,6 +1898,13 @@ class NovalRuntime:
                     session_id=session.info.session_id,
                 )
             try:
+                if selected_judge_model_id is None:
+                    selected_judge_model_id = (
+                        self._judge_configured_model_id(
+                            configuration,
+                            selected_model_id,
+                        )
+                    )
                 agent = configuration.configured_model(selected_model_id)
                 judge = configuration.configured_model(selected_judge_model_id)
                 agent_connection = configuration.connection(agent.connection_id)
@@ -1924,7 +1936,44 @@ class NovalRuntime:
                 if session._store is not None:
                     session._store.set_model_selection(selection)
                 session._selection = selection
-                return selection
+                active = session._active_execution
+                event = session._new_event_locked(
+                    EventType.SESSION_MODELS_SELECTED.value,
+                    payload={
+                        "selection": selection.to_dict(),
+                        "active_model_id": (
+                            active.agent.configured_model_id
+                            if active is not None else None
+                        ),
+                        "active_judge_model_id": (
+                            active.judge.configured_model_id
+                            if active is not None else None
+                        ),
+                        "effective_from": "next_turn",
+                    },
+                )
+        session._dispatch_event(event)
+        return selection
+
+    @staticmethod
+    def _judge_configured_model_id(
+        configuration: ModelConfiguration,
+        selected_model_id: str,
+    ) -> str:
+        selected = configuration.configured_model(selected_model_id)
+        connection = configuration.connection(selected.connection_id)
+        profile = BUILTIN_PROFILE_BY_ID.get(connection.profile_id)
+        if profile is None:
+            return selected.id
+        matches = [
+            configured.id
+            for configured in configuration.configured
+            if (
+                configured.connection_id == connection.id
+                and configured.model == profile.judge_model
+            )
+        ]
+        return matches[0] if len(matches) == 1 else selected.id
 
     def _turn_binding(
         self,

@@ -9,17 +9,20 @@ from noval.api import (
     PermissionStateView,
     RuntimeEvent,
     SessionInfo,
+    SessionOptions,
     SessionPersistence,
     StopReason,
     TurnMetrics,
     TurnResult,
     TurnStatus,
 )
+from noval.application import NovalRuntime
 from noval.cli import _CliStreamRenderer, _cli_permission_handler, run_cli
 from noval.config import Config
-from noval.messages import assistant_message
+from noval.messages import assistant_message, user_message
 from noval.model_config import packaged_settings
 from noval.permissions import PermissionMode
+from noval.session import JsonlSessionStore, SessionModelSelection
 
 
 def cli_config(tmp_path):
@@ -199,6 +202,71 @@ def test_cli_models_list_and_validate_are_credential_free(
     assert "Provider Profiles" in output
     assert "Model configuration is valid" in output
     assert secret not in output
+
+
+def test_cli_connections_list_and_persistent_session_model_selection(
+    monkeypatch, tmp_path, capsys
+):
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    settings_path = tmp_path / "settings.json"
+    document = packaged_settings()
+    document.update({
+        "sessions_dir": str(tmp_path / "sessions"),
+        "persist_logs": False,
+        "persist_usage": False,
+    })
+    settings_path.write_text(json.dumps(document), encoding="utf-8")
+    config = Config.load(settings_path)
+    store = JsonlSessionStore.create(
+        config.sessions_dir(),
+        workdir,
+        config.model,
+    )
+    store.set_model_selection(SessionModelSelection(
+        selected_model_id="model-deepseek-v4-pro-default",
+        selected_judge_model_id="model-deepseek-v4-flash-default",
+        configuration_revision=1,
+    ))
+    store.append(user_message("Seed the persisted Session."))
+    session_id = store.session_id
+    store.close()
+    load_config = Config.load
+    monkeypatch.setattr(
+        "noval.cli.Config.load",
+        lambda: load_config(settings_path),
+    )
+
+    run_cli(["connections", "list"])
+    run_cli([
+        "--workdir",
+        str(workdir),
+        "--resume",
+        session_id,
+        "models",
+        "select",
+        "model-deepseek-v4-flash-default",
+    ])
+
+    output = capsys.readouterr().out
+    assert "Connections" in output
+    assert "connection-deepseek-default" in output
+    assert "Session model selected for the next Turn" in output
+    with NovalRuntime(load_config(settings_path)) as verify_runtime:
+        resumed = verify_runtime.resume_session(
+            session_id,
+            SessionOptions(
+                workdir=str(workdir),
+                persistence=SessionPersistence.PERSISTENT,
+            ),
+        )
+        assert resumed.info.selected_model_id == (
+            "model-deepseek-v4-flash-default"
+        )
+        assert resumed.info.selected_judge_model_id == (
+            "model-deepseek-v4-flash-default"
+        )
+        resumed.close()
 
 
 def test_cli_resume_and_permission_slash_command_use_public_session(monkeypatch, tmp_path):

@@ -337,6 +337,20 @@ def _parse_args(argv: Optional[List[str]]) -> argparse.Namespace:
         "default", help="select the global default Configured Model"
     )
     default.add_argument("configured_model_id")
+    select = model_commands.add_parser(
+        "select",
+        help="select a Configured Model for an explicitly resumed Session",
+    )
+    select.add_argument("configured_model_id")
+    connections = commands.add_parser(
+        "connections", help="inspect model Connection metadata"
+    )
+    connection_commands = connections.add_subparsers(
+        dest="connections_action", required=True
+    )
+    connection_commands.add_parser(
+        "list", help="list safe Connection metadata"
+    )
     return parser.parse_args(argv)
 
 
@@ -358,6 +372,21 @@ def _print_model_configuration(runtime: NovalRuntime) -> None:
         print(
             f"  {model.id:<36} {model.label} -> {model.model} "
             f"via {connection.label} ({credential}){default}"
+        )
+
+
+def _print_connections(runtime: NovalRuntime) -> None:
+    configuration = runtime.get_model_configuration()
+    print("Connections")
+    for connection in configuration.connections:
+        credential = (
+            "ready"
+            if connection.credential_available
+            else "missing credential"
+        )
+        print(
+            f"  {connection.id:<36} {connection.label} "
+            f"({connection.profile_id}, {credential})"
         )
 
 
@@ -383,6 +412,40 @@ def _run_models_command(args: argparse.Namespace, config: Config) -> None:
                 expected_configuration_revision=configuration.revision,
             )
             print(f"Default model selected: {updated.default_model_id}")
+            return
+        if action == "select":
+            if args.resume is None or not args.resume.strip():
+                raise SystemExit(
+                    "models select requires --resume SESSION_ID."
+                )
+            if not config.persist_sessions:
+                raise SystemExit(
+                    "models select requires persist_sessions=true."
+                )
+            workdir = (
+                Path(args.workdir).expanduser().resolve()
+                if args.workdir else Path.cwd()
+            )
+            if not workdir.is_dir():
+                raise SystemExit(
+                    f"--workdir is not a valid directory: {workdir}"
+                )
+            session = runtime.resume_session(
+                args.resume.strip(),
+                SessionOptions(
+                    workdir=str(workdir),
+                    persistence=SessionPersistence.PERSISTENT,
+                ),
+            )
+            try:
+                selection = session.select_model(args.configured_model_id)
+            finally:
+                session.close()
+            print(
+                "Session model selected for the next Turn: "
+                f"{selection.selected_model_id} "
+                f"(judge: {selection.selected_judge_model_id})."
+            )
             return
         if action == "credential":
             connection = next(
@@ -430,6 +493,17 @@ def run_cli(argv: Optional[List[str]] = None) -> None:
         except NovalError as error:
             raise SystemExit(error.safe_message) from error
         return
+    if args.command == "connections":
+        runtime = NovalRuntime(config, configure_logging=True)
+        try:
+            if args.connections_action == "list":
+                _print_connections(runtime)
+                return
+            raise SystemExit(
+                f"Unsupported connections command: {args.connections_action}"
+            )
+        finally:
+            runtime.close()
 
     workdir = Path(args.workdir).expanduser().resolve() if args.workdir else Path.cwd()
     if not workdir.is_dir():
