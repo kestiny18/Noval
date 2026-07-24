@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted on 2026-07-24.
+Accepted on 2026-07-24. ADR-0010 advances the current canonical schema to v3;
+the discover-only-current-schema policy remains accepted.
 
 ## Context
 

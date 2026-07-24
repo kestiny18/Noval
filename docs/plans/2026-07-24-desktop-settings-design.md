@@ -2,21 +2,24 @@
 
 ## Goal
 
-Replace the provider modal with a focused, single-page Desktop settings
-experience inspired by the supplied Codex references while exposing only
-capabilities Noval currently owns.
+Provide a focused Desktop settings experience inspired by the supplied Codex
+references while exposing only capabilities Noval currently owns. Provider and
+model configuration is superseded by
+`2026-07-24-provider-model-configuration-design.md`.
 
 ## Information architecture
 
-The Settings surface replaces the project shell temporarily and has three
+The Settings surface replaces the project shell temporarily and has four
 sections:
 
-1. **General** — effective Provider, primary model, judge model, base URL,
-   securely stored API key replacement, and Desktop/Core/protocol versions.
-2. **Profile** — a read-only local profile derived from the current project,
+1. **General** — application and Runtime information plus general behavior.
+2. **Models** — connections, configured models, and write-only credential
+   inputs as
+   defined by the Phase 1 Provider and model configuration design.
+3. **Profile** — a read-only local profile derived from the current project,
    Session, Runtime, and version state. It does not invent an account, billing,
    usage heatmap, or cloud identity.
-3. **Appearance** — System, Light, and Dark themes plus Comfortable and Compact
+4. **Appearance** — System, Light, and Dark themes plus Comfortable and Compact
    interface density.
 
 The Back action restores the existing project shell without recreating or
@@ -24,10 +27,13 @@ resetting project state.
 
 ## Ownership and persistence
 
-Provider configuration continues to represent the effective Noval Runtime
-configuration. Saving it restarts the Python sidecar through the existing Main
-process boundary; credentials remain encrypted with Electron `safeStorage` and
-never return to the Renderer.
+Model configuration is Runtime-owned and uses settings schema v2, Application
+API v2, and the OpenAI-compatible Phase 1 contract defined by
+`2026-07-24-provider-model-configuration-design.md`. Phase 1 stores Connection
+API keys as plaintext in the user-local Runtime settings file. Existing keys
+never return to the Renderer, Desktop does not describe them as encrypted, and
+model configuration updates through Runtime APIs without requiring a Sidecar
+restart.
 
 Theme and density are Desktop-only preferences stored in Electron's
 `desktop-settings.json`. They do not enter `~/.noval/settings.json`, canonical
@@ -45,7 +51,7 @@ Sessions, the sidecar protocol, or the Noval kernel.
 
 ## Verification
 
-- Renderer tests cover all three sections, navigation, Runtime values,
+- Renderer tests cover all four sections, navigation, Runtime values,
   appearance persistence calls, document theme/density state, and Back
   behavior.
 - Electron E2E covers real settings navigation, local preference persistence,
