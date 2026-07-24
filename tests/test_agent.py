@@ -633,7 +633,9 @@ def _meta(session_id, title="t"):
         last_active="2026-01-01T00:00:00+00:00",
         title=title,
         message_count=2,
-        model="m",
+        selected_model_id="configured-agent",
+        selected_judge_model_id="configured-judge",
+        configuration_revision=1,
     )
 
 

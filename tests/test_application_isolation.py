@@ -240,8 +240,8 @@ def test_provider_failure_is_terminal_only_for_its_own_session(tmp_path):
     assert healthy_result.message.text == "healthy"
 
 
-def test_application_api_v1_golden_fixture_round_trips():
-    fixture = Path(__file__).parent / "fixtures" / "application_api_v1.json"
+def test_application_api_v2_golden_fixture_round_trips():
+    fixture = Path(__file__).parent / "fixtures" / "application_api_v2.json"
     documents = json.loads(fixture.read_text(encoding="utf-8"))
     readers = {
         "runtime_options": RuntimeOptions,
