@@ -1486,7 +1486,7 @@ class NovalRuntime:
     ) -> LLMClient:
         if self._uses_default_client_factory:
             return self._default_client(
-                config, provider, model, replay_scope
+                purpose, config, provider, model, replay_scope
             )
         assert self._client_factory is not None
         return self._client_factory(ClientSpec(
@@ -1499,14 +1499,16 @@ class NovalRuntime:
 
     def _default_client(
         self,
+        purpose: str,
         config: Config,
         provider: str,
         model: str,
         replay_scope: ReplayScope,
     ) -> LLMClient:
-        api_key = config.resolve_api_key()
-        base_url = config.base_url
-        if config.model_configuration is not None:
+        if config.model_configuration is None:
+            api_key = config.resolve_api_key()
+            base_url = config.base_url
+        else:
             connection = config.model_configuration.connection(
                 replay_scope.connection_id
             )
@@ -1514,12 +1516,14 @@ class NovalRuntime:
             if not api_key and connection.api_key_env:
                 api_key = os.environ.get(connection.api_key_env, "")
             if not api_key:
-                raise SystemExit(
-                    f"API key not found for Connection {connection.id!r}."
+                raise NovalError(
+                    "credential_unavailable",
+                    "The selected Connection has no available credential.",
                 )
             provider = connection.adapter
             base_url = connection.base_url
         transport_key: Tuple[object, ...] = (
+            purpose,
             provider,
             replay_scope.connection_id,
             replay_scope.transport_revision,
