@@ -1,6 +1,7 @@
 import json
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -8,8 +9,14 @@ from noval.messages import (
     AdapterReplayState, MessageProvenance, ToolCallBlock, assistant_message, user_message,
 )
 from noval.session import (
-    SCHEMA_VERSION, JsonlSessionStore, SessionLockedError,
-    UnsupportedSessionVersion, list_persisted_projects, list_sessions,
+    SCHEMA_VERSION,
+    JsonlSessionStore,
+    SessionLockedError,
+    SessionMetadataError,
+    SessionModelSelection,
+    UnsupportedSessionVersion,
+    list_persisted_projects,
+    list_sessions,
 )
 
 
@@ -22,7 +29,7 @@ def close(store):
     store.close()
 
 
-def test_create_is_lazy_and_writes_canonical_schema_v2(tmp_path):
+def test_create_is_lazy_and_writes_canonical_schema_v3(tmp_path):
     base = tmp_path / "sessions"
     workdir = tmp_path / "project"
     workdir.mkdir()
@@ -35,7 +42,10 @@ def test_create_is_lazy_and_writes_canonical_schema_v2(tmp_path):
 
     path = session_file(base, store.session_id)
     lines = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
-    assert lines[0]["_meta"]["schema_version"] == SCHEMA_VERSION == 2
+    assert lines[0]["_meta"]["schema_version"] == SCHEMA_VERSION == 3
+    assert "model" not in lines[0]["_meta"]
+    assert "provider" not in lines[0]["_meta"]
+    assert "selected_model_id" not in lines[0]["_meta"]
     assert lines[1]["seq"] == 0
     assert lines[1]["message"] == message.to_dict()
     assert store.load() == [message]
@@ -268,6 +278,88 @@ def test_sidecar_metadata_merges_and_keeps_lazy_creation(tmp_path):
     assert metadata["permissions"]["mode"] == "full_access"
 
 
+def test_model_selection_round_trips_in_mutable_sidecar_only(tmp_path):
+    base = tmp_path / "sessions"
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    store = JsonlSessionStore.create(base, workdir, "provider-model")
+    selection = SessionModelSelection(
+        selected_model_id="configured-agent",
+        selected_judge_model_id="configured-judge",
+        configuration_revision=4,
+    )
+
+    store.set_model_selection(selection)
+    assert not base.exists()
+    store.append(user_message("hello"))
+    store.close()
+
+    header = json.loads(store._path.read_text(encoding="utf-8").splitlines()[0])
+    assert "configured-agent" not in json.dumps(header)
+    assert store.load_model_selection() == selection
+    metadata = json.loads(store._meta_path.read_text(encoding="utf-8"))
+    assert metadata["application"] == selection.to_dict()
+
+
+def test_concurrent_metadata_updates_merge_without_lost_fields(tmp_path):
+    base = tmp_path / "sessions"
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    store = JsonlSessionStore.create(base, workdir, "provider-model")
+    store.append(user_message("hello"))
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        tuple(
+            executor.map(
+                lambda update: store.update_metadata(update),
+                (
+                    {"title": "Concurrent title"},
+                    {"permissions": {"mode": "ask", "approved_tools": []}},
+                ),
+            )
+        )
+
+    metadata = store.load_metadata()
+    assert metadata["title"] == "Concurrent title"
+    assert metadata["permissions"]["mode"] == "ask"
+    assert not list(store._meta_path.parent.glob("*.tmp"))
+    store.close()
+
+
+@pytest.mark.parametrize(
+    "application",
+    [
+        None,
+        {},
+        {"schema_version": 1},
+        {
+            "schema_version": 2,
+            "selected_model_id": "",
+            "selected_judge_model_id": "judge",
+            "configuration_revision": 1,
+        },
+        {
+            "schema_version": 2,
+            "selected_model_id": "agent",
+            "selected_judge_model_id": "judge",
+            "configuration_revision": 0,
+        },
+    ],
+)
+def test_missing_or_invalid_model_selection_fails_without_fallback(
+    tmp_path, application
+):
+    base = tmp_path / "sessions"
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    store = JsonlSessionStore.create(base, workdir, "provider-model")
+    if application is not None:
+        store.update_metadata({"application": application})
+
+    with pytest.raises(SessionMetadataError, match="model selection"):
+        store.load_model_selection()
+
+
 def test_adapter_replay_state_and_provenance_round_trip(tmp_path):
     base = tmp_path / "sessions"
     workdir = tmp_path / "project"
@@ -285,7 +377,10 @@ def test_adapter_replay_state_and_provenance_round_trip(tmp_path):
     assert resumed.load() == [message]
 
 
-def test_v1_session_is_not_discovered_and_open_fails_without_mutation(tmp_path):
+@pytest.mark.parametrize("legacy_version", [1, 2])
+def test_old_session_is_not_discovered_and_open_fails_without_mutation(
+    tmp_path, legacy_version
+):
     base = tmp_path / "sessions"
     workdir = tmp_path / "project"
     workdir.mkdir()
@@ -295,15 +390,31 @@ def test_v1_session_is_not_discovered_and_open_fails_without_mutation(tmp_path):
     close(seed)
     current_path.unlink()
     path = seed._dir / "legacy.jsonl"
-    original = "\n".join([
-        json.dumps({"_meta": {"schema_version": 1, "session_id": "legacy", "model": "m"}}),
-        json.dumps({"seq": 0, "ts": "t", "msg": {"role": "user", "content": "old"}}),
-    ]) + "\n"
+    original = "\n".join(
+        [
+            json.dumps(
+                {
+                    "_meta": {
+                        "schema_version": legacy_version,
+                        "session_id": "legacy",
+                        "model": "m",
+                    }
+                }
+            ),
+            json.dumps(
+                {
+                    "seq": 0,
+                    "ts": "t",
+                    "msg": {"role": "user", "content": "old"},
+                }
+            ),
+        ]
+    ) + "\n"
     path.write_text(original, encoding="utf-8")
 
     assert list_sessions(base, workdir) == []
     assert list_persisted_projects(base) == []
-    with pytest.raises(UnsupportedSessionVersion, match="reads only schema v2"):
+    with pytest.raises(UnsupportedSessionVersion, match="reads only schema v3"):
         JsonlSessionStore.open(base, workdir, "legacy", "model-a")
     assert path.read_text(encoding="utf-8") == original
 

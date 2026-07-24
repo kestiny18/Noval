@@ -61,6 +61,7 @@ from noval.client import (
     mock_tool_call,
 )
 from noval.config import Config
+from noval.model_config import packaged_settings
 from noval.messages import (
     AdapterReplayState,
     ToolCallBlock,
@@ -70,7 +71,7 @@ from noval.messages import (
 )
 from noval.permissions import PermissionMode
 from noval.process import NetworkAccess, SandboxMode
-from noval.session import JsonlSessionStore
+from noval.session import JsonlSessionStore, SessionModelSelection
 from noval.tools import Risk, Tool
 
 
@@ -1228,7 +1229,7 @@ def test_persistent_session_can_be_listed_closed_and_resumed(tmp_path):
         first = runtime.create_session(SessionOptions(
             workdir=str(workdir),
             persistence=SessionPersistence.PERSISTENT,
-            provider="anthropic",
+            provider="openai-compatible",
             model="persisted-agent",
             judge_model="persisted-judge",
         ))
@@ -1237,7 +1238,7 @@ def test_persistent_session_can_be_listed_closed_and_resumed(tmp_path):
         persisted = runtime.list_persisted_sessions(str(workdir))
         assert [item.session_id for item in persisted] == [session_id]
         assert persisted[0].is_open is True
-        assert persisted[0].provider == "anthropic"
+        assert persisted[0].provider == "openai-compatible"
         assert persisted[0].model == "persisted-agent"
 
     second_factory = RecordingClientFactory(["second reply"])
@@ -1257,9 +1258,54 @@ def test_persistent_session_can_be_listed_closed_and_resumed(tmp_path):
         assert "first question" in sent_text
         assert "first reply" in sent_text
         assert [(spec.purpose, spec.provider, spec.model) for spec in second_factory.specs] == [
-            ("agent", "anthropic", "persisted-agent"),
-            ("completion_judge", "anthropic", "persisted-judge"),
+            ("agent", "openai-compatible", "persisted-agent"),
+            ("completion_judge", "openai-compatible", "persisted-judge"),
         ]
+
+
+def test_schema_v2_configuration_persists_ids_outside_session_jsonl(tmp_path):
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    settings = tmp_path / "settings.json"
+    document = packaged_settings()
+    document.update(
+        {
+            "sessions_dir": str(tmp_path / "sessions"),
+            "persist_logs": False,
+            "persist_usage": False,
+        }
+    )
+    settings.write_text(json.dumps(document), encoding="utf-8")
+    config = Config.load(settings)
+
+    with NovalRuntime(
+        config,
+        client_factory=RecordingClientFactory(["configured reply"]),
+    ) as runtime:
+        session = runtime.create_session(
+            SessionOptions(
+                workdir=str(workdir),
+                persistence=SessionPersistence.PERSISTENT,
+            )
+        )
+        session.run_turn(TurnRequest("configured question"))
+        session_id = session.info.session_id
+
+    [jsonl_path] = list(
+        (tmp_path / "sessions").glob(f"*/{session_id}.jsonl")
+    )
+    header = json.loads(jsonl_path.read_text(encoding="utf-8").splitlines()[0])
+    metadata = json.loads(
+        jsonl_path.with_suffix(".meta.json").read_text(encoding="utf-8")
+    )
+
+    assert "model" not in header["_meta"]
+    assert metadata["application"] == {
+        "schema_version": 2,
+        "selected_model_id": "model-deepseek-v4-pro-default",
+        "selected_judge_model_id": "model-deepseek-v4-flash-default",
+        "configuration_revision": 1,
+    }
 
 
 def test_persistent_resume_closes_interrupted_turn_before_continuing(tmp_path):
@@ -1267,6 +1313,13 @@ def test_persistent_resume_closes_interrupted_turn_before_continuing(tmp_path):
     workdir.mkdir()
     config = application_config(tmp_path)
     store = JsonlSessionStore.create(config.sessions_dir(), workdir, config.model)
+    store.set_model_selection(
+        SessionModelSelection(
+            selected_model_id=config.model,
+            selected_judge_model_id=config.judge_model,
+            configuration_revision=1,
+        )
+    )
     store.append(user_message("Inspect the project"))
     store.append(assistant_message(
         "I will inspect the files.",
