@@ -394,6 +394,24 @@ class Agent:
                 "The Session was preserved; continue from the confirmed state.)"
             ))
 
+    def bind_turn_clients(
+        self,
+        agent_client: LLMClient,
+        agent_model: str,
+        judge_client: LLMClient,
+        judge_model: str,
+    ) -> None:
+        """Apply one admitted TurnExecution before any model request."""
+        self.client = agent_client
+        self.config = replace(
+            self.config,
+            model=agent_model,
+            judge_model=judge_model,
+        )
+        if self.context_manager is not None:
+            self.context_manager.bind_turn_client(agent_client, agent_model)
+        self.task_controller.bind_turn_judge(judge_client, judge_model)
+
     def _append_message(self, msg: ConversationMessage, *, persist: bool = True) -> None:
         """Append to memory and optionally persist non-system messages."""
         self.messages.append(msg)

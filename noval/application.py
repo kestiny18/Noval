@@ -57,6 +57,7 @@ from .client import (
 )
 from .config import Config
 from .context import ContextManager
+from .model_config import ModelConfigurationError
 from .permissions import PermissionController, PermissionMode, PermissionState
 from .process import ProcessRuntime, SandboxMode, SandboxPolicy, sandbox_status_text
 from .redaction import redact_sensitive_text
@@ -89,6 +90,7 @@ from .task import (
     TaskEventStore,
 )
 from .tools import Tool, all_tools
+from .turn import TurnExecution, TurnModelBinding
 from .usage import JsonlUsageStore, MeteredLLMClient
 
 
@@ -114,6 +116,13 @@ class ClientSpec:
 
 class ClientFactory(Protocol):
     def __call__(self, spec: ClientSpec) -> LLMClient: ...
+
+
+class _UnboundClient:
+    """Construction placeholder; every Provider request requires Turn admission."""
+
+    def complete(self, messages, tools):
+        raise RuntimeError("model client is not bound to an admitted Turn")
 
 
 EventSink = Callable[[RuntimeEvent], None]
@@ -316,6 +325,8 @@ class AgentSession:
         permission_handler: Optional[PermissionHandler],
         tool_names: Tuple[str, ...],
         request_journal: RequestJournal,
+        selection: SessionModelSelection,
+        session_config: Config,
     ):
         self._runtime = runtime
         self._base_info = info
@@ -327,9 +338,13 @@ class AgentSession:
         self._permission_handler = permission_handler
         self._tool_names = tool_names
         self._request_journal = request_journal
+        self._request_sequence = RequestSequence()
+        self._selection = selection
+        self._session_config = session_config
         self._state_lock = threading.RLock()
         self._closed = False
         self._active_turn_id: Optional[str] = None
+        self._active_execution: Optional[TurnExecution] = None
         self._event_sequence = 0
         self._events = deque(maxlen=_EVENT_BUFFER_MAX_EVENTS)
 
@@ -341,6 +356,18 @@ class AgentSession:
     def permission_state(self) -> PermissionStateView:
         with self._state_lock:
             return self._permission_state_locked()
+
+    def select_models(
+        self,
+        selected_model_id: str,
+        selected_judge_model_id: str,
+    ) -> SessionModelSelection:
+        """Select configured ids for the next Turn, including while one is active."""
+        return self._runtime._select_session_models(
+            self,
+            selected_model_id,
+            selected_judge_model_id,
+        )
 
     def rename(self, title: str) -> SessionInfo:
         """Set bounded display metadata without rewriting conversation history."""
@@ -683,7 +710,7 @@ class AgentSession:
         if not isinstance(request, TurnRequest):
             raise TypeError("request must be TurnRequest")
         turn_id = "turn-" + uuid4().hex
-        self._runtime._admit_turn(self, turn_id)
+        execution = self._runtime._admit_turn(self, turn_id)
         started = time.perf_counter()
         log_scope = runtime_log_context(
             session_id=self._base_info.session_id,
@@ -701,6 +728,8 @@ class AgentSession:
                 payload={
                     "client_request_id": request.client_request_id,
                     "goal_id": request.goal.goal_id if request.goal else None,
+                    "selected_model_id": execution.agent.configured_model_id,
+                    "selected_judge_model_id": execution.judge.configured_model_id,
                 },
             )
             agent_turn_started = True
@@ -776,6 +805,7 @@ class AgentSession:
             with self._state_lock:
                 if self._active_turn_id == turn_id:
                     self._active_turn_id = None
+                    self._active_execution = None
                 self._base_info = replace(
                     self._base_info,
                     message_count=sum(
@@ -1042,6 +1072,8 @@ class NovalRuntime:
         self._event_sink = event_sink
         self._sessions: Dict[str, AgentSession] = {}
         self._lock = threading.RLock()
+        self._transport_lock = threading.RLock()
+        self._transport_pool: Dict[Tuple[object, ...], object] = {}
         self._credential_epoch = uuid4().hex
         self._closed = False
         self.log_path = (
@@ -1163,6 +1195,11 @@ class NovalRuntime:
             if model_configuration is not None
             else 1
         )
+        session_selection = SessionModelSelection(
+            selected_model_id=selected_model_id,
+            selected_judge_model_id=selected_judge_model_id,
+            configuration_revision=configuration_revision,
+        )
 
         store: Optional[PersistentSessionStore]
         session_title: Optional[str] = None
@@ -1204,6 +1241,7 @@ class NovalRuntime:
                 selected_model_id = selection.selected_model_id
                 selected_judge_model_id = selection.selected_judge_model_id
                 configuration_revision = selection.configuration_revision
+                session_selection = selection
                 if model_configuration is not None:
                     selected_model = model_configuration.configured_model(
                         selected_model_id
@@ -1246,13 +1284,7 @@ class NovalRuntime:
             judge_model=judge_model,
         )
         if store is not None and session_id is None:
-            store.set_model_selection(
-                SessionModelSelection(
-                    selected_model_id=selected_model_id,
-                    selected_judge_model_id=selected_judge_model_id,
-                    configuration_revision=configuration_revision,
-                )
-            )
+            store.set_model_selection(session_selection)
 
         with self._lock:
             if resolved_session_id in self._sessions:
@@ -1284,120 +1316,9 @@ class NovalRuntime:
             JsonlRequestJournal(store.request_path(), resolved_session_id)
             if store is not None else InMemoryRequestJournal()
         )
-        request_sequence = RequestSequence()
         session_holder: Dict[str, AgentSession] = {}
-
-        def request_context() -> RequestContext:
-            session = session_holder.get("session")
-            metadata: Dict[str, object] = {}
-            if session is not None:
-                manager = session._agent.context_manager
-                checkpoint = manager.checkpoint if manager is not None else None
-                if checkpoint is not None:
-                    metadata = {
-                        "checkpoint_id": checkpoint.checkpoint_id,
-                        "source_through_seq": checkpoint.source_through_seq,
-                    }
-            return RequestContext(
-                session_id=resolved_session_id,
-                turn_id=session._active_turn() if session is not None else None,
-                metadata=metadata,
-            )
-
-        def replay_scope(
-            configured_model_id: str,
-            provider_model: str,
-        ) -> ReplayScope:
-            if model_configuration is None:
-                adapter = (
-                    ANTHROPIC_ADAPTER
-                    if provider == "anthropic"
-                    else OPENAI_ADAPTER
-                )
-                return ReplayScope(
-                    adapter=adapter,
-                    connection_id=f"runtime-{provider}",
-                    configured_model_id=configured_model_id,
-                    provider_model=provider_model,
-                    transport_revision=1,
-                    adapter_schema_version=1,
-                    credential_epoch=self._credential_epoch,
-                )
-            configured = model_configuration.configured_model(
-                configured_model_id
-            )
-            connection = model_configuration.connection(
-                configured.connection_id
-            )
-            adapter = (
-                ANTHROPIC_ADAPTER
-                if connection.adapter == "anthropic"
-                else OPENAI_ADAPTER
-            )
-            credential_epoch = (
-                self._credential_epoch
-                if connection.api_key_env and not connection.api_key
-                else f"stored-r{connection.revision}"
-            )
-            return ReplayScope(
-                adapter=adapter,
-                connection_id=connection.id,
-                configured_model_id=configured.id,
-                provider_model=configured.model,
-                transport_revision=connection.revision,
-                adapter_schema_version=1,
-                credential_epoch=credential_epoch,
-            )
-
-        agent_replay_scope = replay_scope(selected_model_id, model)
-        judge_replay_scope = replay_scope(
-            selected_judge_model_id, judge_model
-        )
-        agent_client = self._make_client(
-            "agent",
-            provider,
-            model,
-            resolved_session_id,
-            session_config,
-            agent_replay_scope,
-        )
-        judge_client = self._make_client(
-            "completion_judge",
-            provider,
-            judge_model,
-            resolved_session_id,
-            session_config,
-            judge_replay_scope,
-        )
-        if session_config.persist_usage:
-            usage_store = JsonlUsageStore(
-                session_config.usage_dir(), resolved_session_id
-            )
-            agent_client = MeteredLLMClient(
-                agent_client, usage_store, model, purpose="agent"
-            )
-            judge_client = MeteredLLMClient(
-                judge_client,
-                usage_store,
-                judge_model,
-                purpose="completion_judge",
-            )
-        agent_client = RequestRecordingClient(
-            agent_client,
-            request_journal,
-            request_context,
-            purpose="agent",
-            identity=_client_identity(agent_client, provider, model),
-            sequence=request_sequence,
-        )
-        judge_client = RequestRecordingClient(
-            judge_client,
-            request_journal,
-            request_context,
-            purpose="completion_judge",
-            identity=_client_identity(judge_client, provider, judge_model),
-            sequence=request_sequence,
-        )
+        agent_client: LLMClient = _UnboundClient()
+        judge_client: LLMClient = _UnboundClient()
 
         resume_messages = None
         recover_interrupted_turn = False
@@ -1473,6 +1394,8 @@ class NovalRuntime:
             permission_handler=permission_handler,
             tool_names=tuple(tool.name for tool in self._tool_catalog),
             request_journal=request_journal,
+            selection=session_selection,
+            session_config=session_config,
         )
         session_holder["session"] = session
         with self._lock:
@@ -1508,8 +1431,8 @@ class NovalRuntime:
             replay_scope=replay_scope,
         ))
 
-    @staticmethod
     def _default_client(
+        self,
         config: Config,
         provider: str,
         model: str,
@@ -1530,17 +1453,36 @@ class NovalRuntime:
                 )
             provider = connection.adapter
             base_url = connection.base_url
-        return create_provider_client(
+        transport_key: Tuple[object, ...] = (
             provider,
-            api_key=api_key,
-            model=model,
-            base_url=base_url,
-            anthropic_base_url=config.anthropic_base_url,
-            timeout=config.request_timeout_seconds,
-            max_retries=config.request_max_retries,
-            anthropic_max_tokens=config.anthropic_max_tokens,
-            replay_scope=replay_scope,
+            replay_scope.connection_id,
+            replay_scope.transport_revision,
+            replay_scope.credential_epoch,
+            base_url,
+            config.anthropic_base_url,
+            config.request_timeout_seconds,
+            config.request_max_retries,
+            config.anthropic_max_tokens,
         )
+        with self._transport_lock:
+            transport = self._transport_pool.get(transport_key)
+            client = create_provider_client(
+                provider,
+                api_key=api_key,
+                model=model,
+                base_url=base_url,
+                anthropic_base_url=config.anthropic_base_url,
+                timeout=config.request_timeout_seconds,
+                max_retries=config.request_max_retries,
+                anthropic_max_tokens=config.anthropic_max_tokens,
+                replay_scope=replay_scope,
+                transport=transport,
+            )
+            if transport is None:
+                created = getattr(client, "_client", None)
+                if created is not None:
+                    self._transport_pool[transport_key] = created
+            return client
 
     def get_session(self, session_id: str) -> AgentSession:
         with self._lock:
@@ -1614,7 +1556,234 @@ class NovalRuntime:
             if current is session:
                 del self._sessions[session.info.session_id]
 
-    def _admit_turn(self, session: AgentSession, turn_id: str) -> None:
+    def _select_session_models(
+        self,
+        session: AgentSession,
+        selected_model_id: str,
+        selected_judge_model_id: str,
+    ) -> SessionModelSelection:
+        with self._lock:
+            configuration = self._config.model_configuration
+            if configuration is None:
+                raise NovalError(
+                    "model_configuration_unavailable",
+                    "This Runtime was not created from settings schema v2.",
+                    session_id=session.info.session_id,
+                )
+            try:
+                agent = configuration.configured_model(selected_model_id)
+                judge = configuration.configured_model(selected_judge_model_id)
+                agent_connection = configuration.connection(agent.connection_id)
+                judge_connection = configuration.connection(judge.connection_id)
+            except ModelConfigurationError as error:
+                raise NovalError(
+                    "configured_model_unavailable",
+                    "The selected Configured Model does not exist.",
+                    session_id=session.info.session_id,
+                ) from error
+            if agent_connection.adapter != judge_connection.adapter:
+                raise NovalError(
+                    "configured_model_adapter_mismatch",
+                    "Agent and judge Configured Models must use the same Adapter.",
+                    session_id=session.info.session_id,
+                )
+            selection = SessionModelSelection(
+                selected_model_id=agent.id,
+                selected_judge_model_id=judge.id,
+                configuration_revision=configuration.revision,
+            )
+            with session._state_lock:
+                if session._closed:
+                    raise NovalError(
+                        "session_closed",
+                        "Session is closed.",
+                        session_id=session.info.session_id,
+                    )
+                if session._store is not None:
+                    session._store.set_model_selection(selection)
+                session._selection = selection
+                return selection
+
+    def _turn_binding(
+        self,
+        *,
+        configuration,
+        configured_model_id: str,
+        legacy_provider: str,
+    ) -> Tuple[TurnModelBinding, str]:
+        if configuration is None:
+            replay_adapter = (
+                ANTHROPIC_ADAPTER
+                if legacy_provider == "anthropic"
+                else OPENAI_ADAPTER
+            )
+            scope = ReplayScope(
+                adapter=replay_adapter,
+                connection_id=f"runtime-{legacy_provider}",
+                configured_model_id=configured_model_id,
+                provider_model=configured_model_id,
+                transport_revision=1,
+                adapter_schema_version=1,
+                credential_epoch=self._credential_epoch,
+            )
+            return (
+                TurnModelBinding(
+                    configured_model_id=configured_model_id,
+                    connection_id=scope.connection_id,
+                    adapter=legacy_provider,
+                    provider_model=configured_model_id,
+                    transport_revision=1,
+                    configuration_revision=1,
+                    replay_scope=scope,
+                ),
+                legacy_provider,
+            )
+        configured = configuration.configured_model(configured_model_id)
+        connection = configuration.connection(configured.connection_id)
+        replay_adapter = (
+            ANTHROPIC_ADAPTER
+            if connection.adapter == "anthropic"
+            else OPENAI_ADAPTER
+        )
+        credential_epoch = (
+            self._credential_epoch
+            if connection.api_key_env and not connection.api_key
+            else f"stored-r{connection.revision}"
+        )
+        scope = ReplayScope(
+            adapter=replay_adapter,
+            connection_id=connection.id,
+            configured_model_id=configured.id,
+            provider_model=configured.model,
+            transport_revision=connection.revision,
+            adapter_schema_version=1,
+            credential_epoch=credential_epoch,
+        )
+        return (
+            TurnModelBinding(
+                configured_model_id=configured.id,
+                connection_id=connection.id,
+                adapter=connection.adapter,
+                provider_model=configured.model,
+                transport_revision=connection.revision,
+                configuration_revision=configuration.revision,
+                replay_scope=scope,
+            ),
+            connection.adapter,
+        )
+
+    def _request_context_for(self, session: AgentSession) -> RequestContext:
+        metadata: Dict[str, object] = {}
+        manager = session._agent.context_manager
+        checkpoint = manager.checkpoint if manager is not None else None
+        if checkpoint is not None:
+            metadata = {
+                "checkpoint_id": checkpoint.checkpoint_id,
+                "source_through_seq": checkpoint.source_through_seq,
+            }
+        return RequestContext(
+            session_id=session.info.session_id,
+            turn_id=session._active_turn(),
+            metadata=metadata,
+        )
+
+    def _record_turn_client(
+        self,
+        session: AgentSession,
+        client: LLMClient,
+        binding: TurnModelBinding,
+        provider: str,
+        purpose: str,
+    ) -> LLMClient:
+        decorated = client
+        if session._session_config.persist_usage:
+            decorated = MeteredLLMClient(
+                decorated,
+                JsonlUsageStore(
+                    session._session_config.usage_dir(),
+                    session.info.session_id,
+                ),
+                binding.provider_model,
+                purpose=purpose,
+            )
+        return RequestRecordingClient(
+            decorated,
+            session._request_journal,
+            lambda: self._request_context_for(session),
+            purpose=purpose,
+            identity=_client_identity(
+                decorated, provider, binding.provider_model
+            ),
+            sequence=session._request_sequence,
+        )
+
+    def _build_turn_execution(
+        self,
+        session: AgentSession,
+        selection: SessionModelSelection,
+        configuration,
+    ) -> TurnExecution:
+        agent_binding, agent_provider = self._turn_binding(
+            configuration=configuration,
+            configured_model_id=selection.selected_model_id,
+            legacy_provider=session._base_info.provider,
+        )
+        judge_binding, judge_provider = self._turn_binding(
+            configuration=configuration,
+            configured_model_id=selection.selected_judge_model_id,
+            legacy_provider=session._base_info.provider,
+        )
+        if agent_binding.replay_scope.adapter != judge_binding.replay_scope.adapter:
+            raise NovalError(
+                "configured_model_adapter_mismatch",
+                "Agent and judge Configured Models must use the same Adapter.",
+                session_id=session.info.session_id,
+            )
+        turn_config = replace(
+            copy.deepcopy(session._session_config),
+            provider=agent_provider,
+            model=agent_binding.provider_model,
+            judge_model=judge_binding.provider_model,
+            model_configuration=configuration,
+        )
+        agent_client = self._make_client(
+            "agent",
+            agent_provider,
+            agent_binding.provider_model,
+            session.info.session_id,
+            turn_config,
+            agent_binding.replay_scope,
+        )
+        judge_client = self._make_client(
+            "completion_judge",
+            judge_provider,
+            judge_binding.provider_model,
+            session.info.session_id,
+            turn_config,
+            judge_binding.replay_scope,
+        )
+        return TurnExecution(
+            agent=agent_binding,
+            judge=judge_binding,
+            agent_client=self._record_turn_client(
+                session,
+                agent_client,
+                agent_binding,
+                agent_provider,
+                "agent",
+            ),
+            judge_client=self._record_turn_client(
+                session,
+                judge_client,
+                judge_binding,
+                judge_provider,
+                "completion_judge",
+            ),
+        )
+
+    def _admit_turn(
+        self, session: AgentSession, turn_id: str
+    ) -> TurnExecution:
         # Runtime shutdown and Session turn admission share this lock order.
         with self._lock:
             with session._state_lock:
@@ -1625,7 +1794,29 @@ class NovalRuntime:
                         "Runtime is closed.",
                         session_id=session.info.session_id,
                     )
+                configuration = self._config.model_configuration
+                selection = session._selection
                 session._active_turn_id = turn_id
+        try:
+            execution = self._build_turn_execution(
+                session, selection, configuration
+            )
+        except Exception:
+            with session._state_lock:
+                if session._active_turn_id == turn_id:
+                    session._active_turn_id = None
+            raise
+        with session._state_lock:
+            if session._active_turn_id != turn_id:
+                raise RuntimeError("Turn admission state changed unexpectedly")
+            session._active_execution = execution
+            session._agent.bind_turn_clients(
+                execution.agent_client,
+                execution.agent.provider_model,
+                execution.judge_client,
+                execution.judge.provider_model,
+            )
+        return execution
 
     def close(self) -> None:
         with self._lock:
@@ -1647,6 +1838,18 @@ class NovalRuntime:
             self._closed = True
         for session in sessions:
             session.close()
+        with self._transport_lock:
+            transports = tuple(
+                {id(item): item for item in self._transport_pool.values()}.values()
+            )
+            self._transport_pool.clear()
+        for transport in transports:
+            close = getattr(transport, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    log.warning("Provider transport close failed", exc_info=True)
 
     def __enter__(self) -> "NovalRuntime":
         return self

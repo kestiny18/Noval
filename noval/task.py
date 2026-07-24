@@ -211,6 +211,13 @@ class CompletionVerifier:
     def __init__(self, semantic_judge: Optional["SemanticJudge"] = None):
         self.semantic_judge = semantic_judge
 
+    def bind_turn_client(self, client: LLMClient, model: str) -> None:
+        """Bind semantic judging to the admitted Turn's judge client."""
+        if self.semantic_judge is None:
+            self.semantic_judge = SemanticJudge(client, model=model)
+        else:
+            self.semantic_judge.bind_turn_client(client, model)
+
     def verify(self, state: TaskState, candidate_reply: str) -> CompletionVerdict:
         if not state.recent_user_inputs:
             return CompletionVerdict(
@@ -240,6 +247,10 @@ class CompletionVerifier:
 
 class SemanticJudge:
     def __init__(self, client: LLMClient, *, model: str = "unknown"):
+        self.client = client
+        self.model = model
+
+    def bind_turn_client(self, client: LLMClient, model: str) -> None:
         self.client = client
         self.model = model
 
@@ -329,6 +340,9 @@ class TaskController:
         self.completion_verifier = completion_verifier or CompletionVerifier()
         self.state = state or (event_store.load_latest() if event_store else TaskState())
         self._now = now or (lambda: datetime.now(timezone.utc))
+
+    def bind_turn_judge(self, client: LLMClient, model: str) -> None:
+        self.completion_verifier.bind_turn_client(client, model)
 
     def activate_goal(self, goal: GoalContract) -> CompletionReport:
         if not isinstance(goal, GoalContract):

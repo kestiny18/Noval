@@ -286,6 +286,11 @@ class ContextManager:
         self.checkpoints = JsonlCheckpointStore(store.context_path(), store.session_id)
         self._checkpoint = self.checkpoints.load_latest(store.load_records())
 
+    def bind_turn_client(self, client: LLMClient, model: str) -> None:
+        """Bind compaction to the same client selected for the admitted Turn."""
+        self.client = client
+        self.model = model
+
     @property
     def checkpoint(self) -> Optional[ContextCheckpoint]:
         return self._checkpoint
