@@ -1,6 +1,11 @@
 # OpenAI-compatible Provider and Model Configuration Implementation Plan
 
-> **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
+**Delivery status (2026-07-25):** implementation and automated validation are
+in progress on the feature pull request. Final completion remains gated by
+(1) running the real Adapter contract against every shipped Profile with
+maintainer-provided credentials, removing any Profile that fails, and
+(2) human installation and product-flow acceptance of the final Windows
+installer. Neither gate may be inferred from mocked tests or package creation.
 
 **Goal:** Deliver Runtime-owned OpenAI-compatible provider/model configuration, immutable per-Turn bindings, strict replay isolation, Application API v2, Sidecar protocol v2, CLI support, and the corresponding Desktop experience.
 
@@ -54,15 +59,14 @@
 **Files:**
 - Modify: `noval/session.py`
 - Modify: `tests/test_session.py`
-- Modify: `tests/test_session_metadata.py`
 
 **Steps:**
 1. Write failing tests that v3 is the only discoverable schema and explicit v2 opens fail without mutation.
 2. Change the canonical JSONL header to schema v3 without placing mutable provider/model selections in it.
 3. Extend the mutable metadata sidecar with selected main and judge configured-model ids plus configuration revision.
-4. Write failing tests for atomic metadata updates, corrupt metadata fallback behavior, and concurrent update serialization.
+4. Write failing tests for atomic metadata updates, explicit corrupt-metadata failure without fallback, and concurrent update serialization.
 5. Preserve append-only canonical Session truth and checkpoint recovery behavior.
-6. Run `python -m pytest tests/test_session.py tests/test_session_metadata.py tests/test_checkpoint.py -q`.
+6. Run `python -m pytest tests/test_session.py tests/test_application_api.py -q`.
 7. Run `git diff --check`, inspect the staged diff, and commit as `feat(session): persist configured model selection`.
 
 ## Task 4: Define Application API v2 configuration DTOs and mutations
@@ -72,7 +76,7 @@
 - Modify: `noval/application.py`
 - Modify: `noval/__init__.py`
 - Add: `tests/fixtures/application_api_v2.json`
-- Modify: `tests/test_application_api_contract.py`
+- Modify: `tests/test_application_isolation.py`
 - Modify: `tests/test_application_api.py`
 
 **Steps:**
@@ -82,7 +86,7 @@
 4. Add list/get/upsert/delete/activate configuration methods to `NovalRuntime`.
 5. Require API keys only on mutation input and return write-only credential status.
 6. Write failure tests for revision conflicts, referenced-profile deletion, invalid activation, and missing credentials.
-7. Run `python -m pytest tests/test_application_api.py tests/test_application_api_contract.py -q`.
+7. Run `python -m pytest tests/test_application_api.py tests/test_application_isolation.py -q`.
 8. Run `git diff --check`, inspect the staged diff, and commit as `feat(api): expose model configuration api v2`.
 
 ## Task 5: Add replay scope to canonical provider requests
@@ -91,14 +95,13 @@
 - Modify: `noval/messages.py`
 - Modify: `noval/client.py`
 - Modify: `tests/test_client.py`
-- Modify: `tests/test_anthropic_client.py`
 
 **Steps:**
 1. Write failing tests for an explicit replay scope containing adapter, profile id, configured-model id, base URL identity, and configuration revision.
 2. Bind OpenAI-compatible opaque replay data to the complete scope and reject every mismatch before an SDK request.
 3. Keep the existing Anthropic adapter functional while limiting new configuration support to OpenAI-compatible profiles.
 4. Ensure replay metadata remains adapter-owned, JSON-safe, credential-free, and absent from public DTOs.
-5. Run `python -m pytest tests/test_client.py tests/test_anthropic_client.py -q`.
+5. Run `python -m pytest tests/test_client.py tests/test_messages.py -q`.
 6. Run `git diff --check`, inspect the staged diff, and commit as `fix(provider): isolate replay state by model scope`.
 
 ## Task 6: Resolve immutable Turn execution bindings
@@ -132,9 +135,9 @@
 - Modify: `desktop/src/shared/protocol.ts`
 - Modify: `desktop/src/main/sidecar-client.ts`
 - Modify: `desktop/tests/fixtures/fake-sidecar.mjs`
-- Modify: `noval/sidecar.py`
+- Modify: `desktop/sidecar/noval_sidecar/server.py`
 - Modify: `noval/cli.py`
-- Modify: `tests/test_sidecar.py`
+- Modify: `desktop/sidecar/tests/test_protocol.py`
 - Modify: `tests/test_cli.py`
 - Modify: `desktop/src/main/sidecar-client.test.ts`
 
@@ -144,7 +147,7 @@
 3. Remove API keys and provider-private data from all Sidecar responses and diagnostics.
 4. Add CLI commands to list profiles/models, validate configuration, update credentials, and select configured models.
 5. Use non-echoing credential input for interactive CLI writes and never print credential values.
-6. Run `python -m pytest tests/test_sidecar.py tests/test_cli.py -q`.
+6. Run `python -m pytest desktop/sidecar/tests/test_protocol.py tests/test_cli.py -q`.
 7. Run `npm test -- --run src/main/sidecar-client.test.ts` from `desktop`.
 8. Run `git diff --check`, inspect the staged diff, and commit as `feat(host): add model configuration protocol v2`.
 
@@ -180,7 +183,7 @@
 1. Write failing renderer tests for profile/model listing, active selection, credential status, validation errors, and revision conflicts.
 2. Implement a Models settings section centered on built-in OpenAI-compatible profiles with custom compatible profiles as an advanced path.
 3. Make API-key fields write-only: blank means unchanged, explicit replace/delete actions are separate, and saved values are never rehydrated.
-4. Add main/judge selectors whose updates affect only the next Turn and show selected versus active ids while a Turn is running.
+4. Add one Configured Model selector. Runtime owns the same-Connection judge; the UI observes selected versus active ids while a Turn is running.
 5. Preserve responsive layout, keyboard access, focus visibility, and reduced-motion behavior.
 6. Add E2E coverage for configure, select, run, switch-during-run, and reopen flows.
 7. Run `npm test -- --run src/renderer/App.test.tsx` from `desktop`.
@@ -194,13 +197,17 @@
 
 **Steps:**
 1. Run `python -m pytest -q`.
-2. Run `python -m ruff check .`.
-3. Run `python -m mypy noval`.
-4. Run `npm run typecheck`, `npm test`, `npm run build`, and `npm run test:e2e` from `desktop`.
-5. Run targeted adversarial credential-persistence, replay-mismatch, schema-hard-break, and close/admission/configuration race tests again.
+2. Run `python -m compileall -q noval desktop/sidecar/noval_sidecar`.
+3. Run `npm run typecheck`, `npm test`, `npm run build`, and `npm run test:e2e` from `desktop`.
+4. Run targeted adversarial credential-persistence, replay-mismatch, schema-hard-break, and close/admission/configuration race tests again.
+5. Run the opt-in real OpenAI-compatible Adapter contract for every shipped Profile using maintainer-provided environment credentials; remove an unverified or failing Profile before release.
 6. Run `git diff --check` and inspect the full branch diff against its base.
 7. Scan the diff and generated artifacts for credential-like content and provider-private replay data.
 8. Update related documentation and changelog only where the delivered behavior requires it.
 9. Commit any validation fixes in small, scoped commits.
 10. Push the branch, update the related Issue with scope/validation/remaining work, and update or open the pull request.
-11. Wait for `CI gate` and `Analyze Python`, resolve all review conversations, then merge and synchronize the Issue when acceptance criteria are fully satisfied.
+11. Wait for `CI gate` and `Analyze Python`, resolve all review conversations, and obtain human Windows installer/product-flow acceptance before marking the pull request ready to merge.
+
+Ruff and Mypy are not configured repository gates at this revision. Adopting
+and baselining them across historical code is separate work; Phase 1 must not
+claim they passed or bulk-rewrite unrelated modules.

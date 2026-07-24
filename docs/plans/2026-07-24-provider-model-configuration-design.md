@@ -631,30 +631,35 @@ Phase 1 exposes equivalent validation through Runtime operations:
 
 ```text
 noval models list
-noval models select <configured-model-id>
 noval connections list
+noval --workdir <project-path> --resume <session-id> models select <configured-model-id>
 ```
 
 Selection requires an explicit open/resumed Session context. Connection and
-model CRUD remain Desktop- or settings-file-driven.
+model CRUD remain Desktop- or settings-file-driven. Global options precede the
+CLI subcommand, as shown above.
 
 ## Failure codes
 
 | Code | Meaning |
 |---|---|
 | `unsupported_settings_schema` | settings file is not schema v2 |
-| `invalid_model_configuration` | schema or reference invariant failed |
-| `unknown_provider_profile` | built-in Profile is not packaged |
+| `invalid_json` / `invalid_settings` / `legacy_settings_fields` | settings syntax, type, or removed-field validation failed |
+| `unknown_profile` | built-in Profile is not packaged |
 | `unsupported_adapter` | configuration selected an unavailable Adapter |
 | `invalid_base_url` | Custom endpoint failed validation |
+| `builtin_profile_mismatch` / `unsupported_profile_model` | built-in Profile transport or model catalog was overridden |
+| `duplicate_id` / `connection_not_found` | configuration reference invariant failed |
 | `credential_unavailable` | no stored or environment credential is available |
 | `configured_model_not_found` | selection request references no current model |
-| `model_configuration_in_use` | deletion would leave a strong configuration reference |
+| `connection_in_use` / `default_model_in_use` | deletion would leave a strong configuration reference |
 | `model_configuration_missing` | a weak Session reference cannot resolve |
+| `configured_model_adapter_mismatch` | agent and judge bindings use different Adapters |
 | `provider_replay_incompatible` | required opaque state cannot be safely replayed |
 | `unsupported_session_schema` | Session is not schema v3 |
 | `session_state_invalid` | v3 mutable application metadata is missing or corrupt |
-| `configuration_write_conflict` | settings writer lease could not be acquired |
+| `configuration_conflict` / `connection_conflict` | optimistic revision validation failed |
+| `settings_busy` | settings writer lease could not be acquired |
 
 Provider failures remain normalized as `ProviderError`. No failure changes
 Adapter, Connection, or model automatically.
