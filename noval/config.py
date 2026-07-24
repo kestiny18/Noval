@@ -1,39 +1,19 @@
-"""Configuration loading.
-
-Built-in defaults are overridden by ``~/.noval/settings.json``. Missing files
-fall back to defaults. API keys are resolved at runtime rather than embedded in
-the repository.
-"""
+"""Stable Runtime preferences backed by settings schema v2."""
 from __future__ import annotations
 
-import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
-# Default configuration; settings.json may override any field.
-DEFAULTS: Dict[str, Any] = {
-    "provider": "openai-compatible",
-    "model": "deepseek-v4-pro",
-    "judge_model": "deepseek-v4-flash",
-    "base_url": "https://api.deepseek.com",
-    "api_key_env": "DEEPSEEK_API_KEY",        # Environment variable containing the key.
-    "max_steps": 40,                          # Maximum tool-loop steps per user turn.
-    "max_tool_output_chars": 8000,            # Truncate tool output beyond this length.
-    "persist_sessions": True,                 # Persist sessions by default.
-    "sessions_dir": "",                       # Empty means ~/.noval/sessions.
-    "persist_logs": True,                     # Persist redacted runtime logs by default.
-    "logs_dir": "",                           # Empty means ~/.noval/logs.
-    "log_retention_days": 14,                 # Delete expired daily log directories.
-    "persist_usage": True,                    # Persist Provider-reported token usage.
-    "usage_dir": "",                         # Empty means ~/.noval/usage.
-    "context_budget_tokens": 256000,          # Active-context working budget.
-    "request_timeout_seconds": 120,           # Prevent Provider requests from hanging the loop.
-    "request_max_retries": 2,                 # Provider retries; zero disables retries.
-    "anthropic_base_url": "",                # Empty uses the Anthropic SDK default.
-    "anthropic_max_tokens": 8192,
-}
+from .model_config import (
+    BUILTIN_PROFILE_BY_ID,
+    ModelConfiguration,
+    ModelConfigurationError,
+    load_settings_document,
+    parse_model_configuration,
+)
+
 # The system prompt is agent behavior defined in code, not a stable user
 # preference, so settings.json cannot override DEFAULT_SYSTEM_PROMPT.
 
@@ -61,7 +41,7 @@ class Config:
     api_key_env: str
     max_steps: int
     max_tool_output_chars: int
-    api_key: str = ""          # Optional plaintext key in the user-local settings file.
+    api_key: str = field(default="", repr=False)
     persist_sessions: bool = True
     sessions_dir_setting: str = ""
     persist_logs: bool = True
@@ -76,28 +56,32 @@ class Config:
     provider: str = "openai-compatible"
     anthropic_base_url: str = ""
     anthropic_max_tokens: int = 8192
-    raw: Dict[str, Any] = field(default_factory=dict)
+    model_configuration: Optional[ModelConfiguration] = field(
+        default=None, repr=False
+    )
+    raw: Dict[str, Any] = field(default_factory=dict, repr=False)
 
     @classmethod
     def load(cls, path: Path | None = None) -> "Config":
-        merged = dict(DEFAULTS)
         p = path or settings_path()
-        if p.exists():
-            try:
-                user = json.loads(p.read_text(encoding="utf-8"))
-            except json.JSONDecodeError as e:
-                raise SystemExit(f"settings.json is not valid JSON: {e}")
-            merged.update(user)  # A shallow merge is sufficient for the flat schema.
-
-        for key in ("provider", "model", "judge_model", "base_url", "api_key_env"):
-            if not isinstance(merged[key], str) or not merged[key].strip():
-                raise SystemExit(f"settings.json: {key} must be a non-empty string")
-        if merged["provider"] not in {"openai-compatible", "anthropic"}:
-            raise SystemExit(
-                "settings.json: provider must be openai-compatible or anthropic"
-            )
-        if not isinstance(merged["anthropic_base_url"], str):
-            raise SystemExit("settings.json: anthropic_base_url must be a string")
+        try:
+            merged = load_settings_document(p)
+            model_configuration = parse_model_configuration(merged["models"])
+        except ModelConfigurationError as exc:
+            raise SystemExit(str(exc)) from None
+        configured = model_configuration.configured_model(
+            model_configuration.default_model_id
+        )
+        connection = model_configuration.connection(configured.connection_id)
+        profile_models = {
+            model.model: model
+            for model in model_configuration.configured
+            if model.connection_id == connection.id
+        }
+        judge_model = configured.model
+        profile = BUILTIN_PROFILE_BY_ID.get(connection.profile_id)
+        if profile is not None and profile.judge_model in profile_models:
+            judge_model = profile.judge_model
 
         # Invalid configuration must fail clearly instead of silently drifting.
         if not isinstance(merged["persist_sessions"], bool):
@@ -140,13 +124,13 @@ class Config:
             raise SystemExit("settings.json: request_max_retries must be at least 0")
 
         return cls(
-            model=merged["model"],
-            judge_model=merged["judge_model"],
-            base_url=merged["base_url"],
-            api_key_env=merged["api_key_env"],
+            model=configured.model,
+            judge_model=judge_model,
+            base_url=connection.base_url,
+            api_key_env=connection.api_key_env,
             max_steps=merged["max_steps"],
             max_tool_output_chars=merged["max_tool_output_chars"],
-            api_key=merged.get("api_key", ""),
+            api_key=connection.api_key,
             persist_sessions=merged["persist_sessions"],
             sessions_dir_setting=merged["sessions_dir"],
             persist_logs=merged["persist_logs"],
@@ -157,9 +141,10 @@ class Config:
             context_budget_tokens=merged["context_budget_tokens"],
             request_timeout_seconds=merged["request_timeout_seconds"],
             request_max_retries=merged["request_max_retries"],
-            provider=merged["provider"],
-            anthropic_base_url=merged["anthropic_base_url"],
+            provider=connection.adapter,
+            anthropic_base_url="",
             anthropic_max_tokens=merged["anthropic_max_tokens"],
+            model_configuration=model_configuration,
             raw=merged,
         )
 
@@ -182,21 +167,22 @@ class Config:
         return Path(self.usage_dir_setting).expanduser()
 
     def resolve_api_key(self) -> str:
-        """Resolve an API key from settings.json, then the configured environment variable.
-
-        The user-local settings file is outside the repository, but a key stored
-        there is still plaintext and must never be copied into project files.
-        """
+        """Resolve the default Connection credential without exposing it."""
         if self.api_key:
             return self.api_key
         key = os.environ.get(self.api_key_env)
         if key:
             return key
+        connection_id = "the default Connection"
+        if self.model_configuration is not None:
+            configured = self.model_configuration.configured_model(
+                self.model_configuration.default_model_id
+            )
+            connection_id = repr(configured.connection_id)
         raise SystemExit(
-            "API key not found. Choose one of these options:\n"
-            f"  1) Add \"api_key\": \"sk-...\" to {settings_path()}\n"
-            f"  2) Set environment variable {self.api_key_env} "
-            f"(PowerShell: $env:{self.api_key_env}=\"sk-...\")"
+            f"API key not found for {connection_id}. Update the Connection "
+            "credential through the Noval configuration API or set environment "
+            f"variable {self.api_key_env}."
         )
 
     def api_key_configured(self) -> bool:

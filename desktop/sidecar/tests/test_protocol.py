@@ -6,6 +6,7 @@ import pytest
 
 from desktop.sidecar.noval_sidecar.protocol import MAX_LINE_BYTES, ProtocolError, parse_request
 from desktop.sidecar.noval_sidecar.server import SidecarServer
+from noval.model_config import packaged_settings
 
 
 def request(method, params=None, request_id="req-1"):
@@ -16,6 +17,24 @@ def request(method, params=None, request_id="req-1"):
         "method": method,
         "params": params or {},
     }).encode()
+
+
+def start_runtime(server, tmp_path):
+    settings = tmp_path / "settings.json"
+    document = packaged_settings()
+    document.update(
+        {
+            "sessions_dir": str(tmp_path / "sessions"),
+            "logs_dir": str(tmp_path / "logs"),
+            "usage_dir": str(tmp_path / "usage"),
+        }
+    )
+    settings.write_text(json.dumps(document), encoding="utf-8")
+    return server.dispatch(
+        parse_request(
+            request("runtime.start", {"settings_path": str(settings)})
+        )
+    )
 
 
 def test_parse_request_rejects_invalid_and_oversized_input():
@@ -46,7 +65,7 @@ def test_server_returns_safe_error_without_echoing_input():
 
 def test_workspace_must_be_selected_before_listing(tmp_path):
     server = SidecarServer(io.BytesIO(), io.BytesIO())
-    server.dispatch(parse_request(request("runtime.start")))
+    start_runtime(server, tmp_path)
     with pytest.raises(ValueError, match="workspace"):
         server.dispatch(parse_request(request("session.list")))
     selected = server.dispatch(parse_request(request("workspace.select", {"workdir": str(tmp_path)})))
@@ -55,9 +74,9 @@ def test_workspace_must_be_selected_before_listing(tmp_path):
     server.close()
 
 
-def test_runtime_exposes_safe_configuration_and_project_inventory():
+def test_runtime_exposes_safe_configuration_and_project_inventory(tmp_path):
     server = SidecarServer(io.BytesIO(), io.BytesIO())
-    server.dispatch(parse_request(request("runtime.start")))
+    start_runtime(server, tmp_path)
 
     configuration = server.dispatch(parse_request(request("runtime.configuration")))
     projects = server.dispatch(parse_request(request("workspace.list")))
@@ -76,7 +95,7 @@ def test_workspace_sessions_lists_without_changing_active_workspace(tmp_path):
     first.mkdir()
     second.mkdir()
     server = SidecarServer(io.BytesIO(), io.BytesIO())
-    server.dispatch(parse_request(request("runtime.start")))
+    start_runtime(server, tmp_path)
     server.dispatch(parse_request(request("workspace.select", {"workdir": str(first)})))
     assert server.dispatch(parse_request(request("workspace.sessions", {"workdir": str(second)}))) == {"sessions": []}
     assert server.dispatch(parse_request(request("session.list"))) == {"sessions": []}
