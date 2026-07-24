@@ -379,14 +379,18 @@ class OpenAICompatibleClient:
         timeout: float = 120.0,
         max_retries: int = 2,
         replay_scope: Optional[ReplayScope] = None,
+        transport: Any = None,
     ):
-        from openai import OpenAI
-        self._client = OpenAI(
-            base_url=base_url,
-            api_key=api_key,
-            timeout=timeout,
-            max_retries=max_retries,
-        )
+        if transport is None:
+            from openai import OpenAI
+
+            transport = OpenAI(
+                base_url=base_url,
+                api_key=api_key,
+                timeout=timeout,
+                max_retries=max_retries,
+            )
+        self._client = transport
         self.model = model
         self.identity = ProviderIdentity(OPENAI_ADAPTER, model, OPENAI_ADAPTER)
         self.replay_scope = replay_scope or _default_replay_scope(
@@ -740,21 +744,25 @@ class AnthropicMessagesClient:
         max_retries: int = 2,
         max_tokens: int = 8192,
         replay_scope: Optional[ReplayScope] = None,
+        transport: Any = None,
     ):
-        try:
-            from anthropic import Anthropic
-        except ImportError as error:
-            raise RuntimeError(
-                "Anthropic provider requires the optional dependency: pip install 'noval[anthropic]'"
-            ) from error
-        kwargs: Dict[str, Any] = {
-            "api_key": api_key,
-            "timeout": timeout,
-            "max_retries": max_retries,
-        }
-        if base_url:
-            kwargs["base_url"] = base_url
-        self._client = Anthropic(**kwargs)
+        if transport is None:
+            try:
+                from anthropic import Anthropic
+            except ImportError as error:
+                raise RuntimeError(
+                    "Anthropic provider requires the optional dependency: "
+                    "pip install 'noval[anthropic]'"
+                ) from error
+            kwargs: Dict[str, Any] = {
+                "api_key": api_key,
+                "timeout": timeout,
+                "max_retries": max_retries,
+            }
+            if base_url:
+                kwargs["base_url"] = base_url
+            transport = Anthropic(**kwargs)
+        self._client = transport
         self.model = model
         self.max_tokens = max_tokens
         self.identity = ProviderIdentity("anthropic", model, ANTHROPIC_ADAPTER)
@@ -896,6 +904,7 @@ def create_provider_client(
     max_retries: int = 2,
     anthropic_max_tokens: int = 8192,
     replay_scope: Optional[ReplayScope] = None,
+    transport: Any = None,
 ) -> LLMClient:
     if provider == "anthropic":
         return AnthropicMessagesClient(
@@ -906,6 +915,7 @@ def create_provider_client(
             max_retries=max_retries,
             max_tokens=anthropic_max_tokens,
             replay_scope=replay_scope,
+            transport=transport,
         )
     if provider == OPENAI_ADAPTER:
         return OpenAICompatibleClient(
@@ -915,6 +925,7 @@ def create_provider_client(
             timeout=timeout,
             max_retries=max_retries,
             replay_scope=replay_scope,
+            transport=transport,
         )
     raise ValueError(f"unsupported provider: {provider!r}")
 

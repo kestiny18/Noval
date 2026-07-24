@@ -5,6 +5,7 @@ import time
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -64,6 +65,7 @@ from noval.config import Config
 from noval.model_config import packaged_settings
 from noval.messages import (
     AdapterReplayState,
+    ReplayScope,
     ToolCallBlock,
     assistant_message,
     tool_result_message,
@@ -978,6 +980,58 @@ def test_runtime_creates_ephemeral_session_without_changing_process_state(tmp_pa
     assert dict(os.environ) == before_env
 
 
+def test_runtime_reuses_transport_but_returns_model_bound_clients(
+    tmp_path, monkeypatch
+):
+    calls = []
+
+    def fake_create(provider, **kwargs):
+        transport = kwargs["transport"] or object()
+        client = SimpleNamespace(_client=transport, model=kwargs["model"])
+        calls.append((provider, kwargs, client))
+        return client
+
+    monkeypatch.setattr(application_module, "create_provider_client", fake_create)
+    runtime = NovalRuntime(application_config(tmp_path))
+    first_scope = ReplayScope(
+        "openai-compatible",
+        "connection-a",
+        "configured-a",
+        "model-a",
+        3,
+        1,
+        "stored-r3",
+    )
+    second_scope = ReplayScope(
+        "openai-compatible",
+        "connection-a",
+        "configured-b",
+        "model-b",
+        3,
+        1,
+        "stored-r3",
+    )
+
+    first = runtime._default_client(
+        runtime._config,
+        "openai-compatible",
+        "model-a",
+        first_scope,
+    )
+    second = runtime._default_client(
+        runtime._config,
+        "openai-compatible",
+        "model-b",
+        second_scope,
+    )
+
+    assert first is not second
+    assert calls[0][1]["transport"] is None
+    assert calls[1][1]["transport"] is first._client
+    assert second._client is first._client
+    runtime.close()
+
+
 def test_explicit_goal_exposes_uncertain_status_then_accepts_host_verification(
     tmp_path,
 ):
@@ -1437,6 +1491,102 @@ def test_same_session_rejects_a_concurrent_turn_without_queueing(tmp_path):
     factory.clients[0].release.set()
     worker.join(2)
     assert results[0].status is TurnStatus.COMPLETED
+    runtime.close()
+
+
+def test_model_switch_during_turn_changes_only_the_next_turn(tmp_path):
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    settings = tmp_path / "settings.json"
+    document = packaged_settings()
+    document.update(
+        {
+            "sessions_dir": str(tmp_path / "sessions"),
+            "persist_logs": False,
+            "persist_usage": False,
+        }
+    )
+    settings.write_text(json.dumps(document), encoding="utf-8")
+
+    class SwitchingFactory:
+        def __init__(self):
+            self.specs = []
+            self.first = BlockingClient("first reply")
+            self.agent_count = 0
+
+        def __call__(self, spec):
+            self.specs.append(spec)
+            if spec.purpose != "agent":
+                return MockClient([])
+            self.agent_count += 1
+            if self.agent_count == 1:
+                return self.first
+            return MockClient([mock_text("second reply")])
+
+    factory = SwitchingFactory()
+    runtime = NovalRuntime(Config.load(settings), client_factory=factory)
+    session = runtime.create_session(
+        SessionOptions(
+            workdir=str(workdir),
+            persistence=SessionPersistence.PERSISTENT,
+        )
+    )
+    session.select_models(
+        "model-deepseek-v4-pro-default",
+        "model-deepseek-v4-pro-default",
+    )
+    results = []
+    worker = threading.Thread(
+        target=lambda: results.append(
+            session.run_turn(TurnRequest("first question"))
+        )
+    )
+    worker.start()
+    assert factory.first.entered.wait(2)
+
+    session.select_models(
+        "model-deepseek-v4-flash-default",
+        "model-deepseek-v4-flash-default",
+    )
+
+    assert len(factory.specs) == 2
+    active = session._active_execution
+    assert active is not None
+    assert active.agent.configured_model_id == "model-deepseek-v4-pro-default"
+    assert active.judge.configured_model_id == "model-deepseek-v4-pro-default"
+    assert session._agent.context_manager.client is active.agent_client
+    semantic_judge = (
+        session._agent.task_controller.completion_verifier.semantic_judge
+    )
+    assert semantic_judge.client is active.judge_client
+
+    factory.first.release.set()
+    worker.join(3)
+    assert results[0].message.text == "first reply"
+
+    second = session.run_turn(TurnRequest("second question"))
+
+    assert second.message.text == "second reply"
+    agent_specs = [
+        spec for spec in factory.specs if spec.purpose == "agent"
+    ]
+    judge_specs = [
+        spec
+        for spec in factory.specs
+        if spec.purpose == "completion_judge"
+    ]
+    assert [spec.replay_scope.configured_model_id for spec in agent_specs] == [
+        "model-deepseek-v4-pro-default",
+        "model-deepseek-v4-flash-default",
+    ]
+    assert [spec.replay_scope.configured_model_id for spec in judge_specs] == [
+        "model-deepseek-v4-pro-default",
+        "model-deepseek-v4-flash-default",
+    ]
+    assert session._store.load_model_selection().selected_model_id == (
+        "model-deepseek-v4-flash-default"
+    )
+    session.close()
     runtime.close()
 
 
