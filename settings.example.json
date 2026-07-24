@@ -1,9 +1,35 @@
 {
-  "provider": "openai-compatible",
-  "model": "deepseek-v4-pro",
-  "judge_model": "deepseek-v4-flash",
-  "base_url": "https://api.deepseek.com",
-  "api_key_env": "DEEPSEEK_API_KEY",
+  "schema_version": 2,
+  "models": {
+    "revision": 1,
+    "connections": [
+      {
+        "id": "connection-deepseek-default",
+        "revision": 1,
+        "label": "DeepSeek",
+        "profile_id": "deepseek",
+        "adapter": "openai-compatible",
+        "base_url": "https://api.deepseek.com",
+        "api_key": "",
+        "api_key_env": "DEEPSEEK_API_KEY"
+      }
+    ],
+    "configured": [
+      {
+        "id": "model-deepseek-v4-pro-default",
+        "label": "DeepSeek V4 Pro",
+        "connection_id": "connection-deepseek-default",
+        "model": "deepseek-v4-pro"
+      },
+      {
+        "id": "model-deepseek-v4-flash-default",
+        "label": "DeepSeek V4 Flash",
+        "connection_id": "connection-deepseek-default",
+        "model": "deepseek-v4-flash"
+      }
+    ],
+    "default_model_id": "model-deepseek-v4-pro-default"
+  },
   "max_steps": 40,
   "max_tool_output_chars": 8000,
   "persist_sessions": true,
@@ -16,6 +42,5 @@
   "context_budget_tokens": 256000,
   "request_timeout_seconds": 120,
   "request_max_retries": 2,
-  "anthropic_base_url": "",
   "anthropic_max_tokens": 8192
 }

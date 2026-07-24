@@ -159,7 +159,9 @@ preserved.
 
 ## State, recovery, and freshness
 
-- Session schema v2 stores canonical non-system messages in append-only JSONL.
+- Session schema v3 stores canonical non-system messages in append-only JSONL.
+  Mutable Configured Model selection is application sidecar state, not
+  canonical conversation truth.
 - Only current-schema Session files participate in project and Session
   discovery. Unsupported files remain untouched and explicit open attempts
   fail closed.
