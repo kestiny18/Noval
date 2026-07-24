@@ -73,7 +73,9 @@ from .session import (
     JsonlSessionStore,
     PersistentSessionStore,
     SessionLockedError,
+    SessionMetadataError,
     SessionMetadataStore,
+    SessionModelSelection,
     list_persisted_projects,
     list_sessions,
 )
@@ -1125,6 +1127,39 @@ class NovalRuntime:
         provider = options.provider or self._config.provider
         model = options.model or self._config.model
         judge_model = options.judge_model or self._config.judge_model
+        model_configuration = self._config.model_configuration
+
+        def configured_id(provider_model: str, purpose: str) -> str:
+            if model_configuration is None:
+                return provider_model
+            matches = [
+                configured.id
+                for configured in model_configuration.configured
+                if configured.model == provider_model
+                and model_configuration.connection(
+                    configured.connection_id
+                ).adapter
+                == provider
+            ]
+            if len(matches) != 1:
+                raise NovalError(
+                    "configured_model_unavailable",
+                    f"The {purpose} model does not identify exactly one "
+                    "Configured Model.",
+                )
+            return matches[0]
+
+        selected_model_id = (
+            model_configuration.default_model_id
+            if model_configuration is not None and options.model is None
+            else configured_id(model, "agent")
+        )
+        selected_judge_model_id = configured_id(judge_model, "judge")
+        configuration_revision = (
+            model_configuration.revision
+            if model_configuration is not None
+            else 1
+        )
 
         store: Optional[PersistentSessionStore]
         session_title: Optional[str] = None
@@ -1154,20 +1189,43 @@ class NovalRuntime:
             resolved_session_id = store.session_id
             store_metadata = store.load_metadata()
             session_title = _observed_session_title(store_metadata.get("title"))
-            application_metadata = store_metadata.get("application")
-            if session_id is not None and isinstance(application_metadata, dict):
-                if options.provider is None:
-                    stored_provider = application_metadata.get("provider")
-                    if isinstance(stored_provider, str) and stored_provider:
-                        provider = stored_provider
-                if options.model is None:
-                    stored_model = application_metadata.get("model")
-                    if isinstance(stored_model, str) and stored_model:
-                        model = stored_model
-                if options.judge_model is None:
-                    stored_judge = application_metadata.get("judge_model")
-                    if isinstance(stored_judge, str) and stored_judge:
-                        judge_model = stored_judge
+            if session_id is not None:
+                try:
+                    selection = store.load_model_selection()
+                except SessionMetadataError as error:
+                    raise NovalError(
+                        "session_model_selection_invalid",
+                        str(error),
+                        session_id=session_id,
+                    ) from error
+                selected_model_id = selection.selected_model_id
+                selected_judge_model_id = selection.selected_judge_model_id
+                configuration_revision = selection.configuration_revision
+                if model_configuration is not None:
+                    selected_model = model_configuration.configured_model(
+                        selected_model_id
+                    )
+                    selected_judge = model_configuration.configured_model(
+                        selected_judge_model_id
+                    )
+                    selected_connection = model_configuration.connection(
+                        selected_model.connection_id
+                    )
+                    judge_connection = model_configuration.connection(
+                        selected_judge.connection_id
+                    )
+                    if selected_connection.adapter != judge_connection.adapter:
+                        raise NovalError(
+                            "session_model_selection_invalid",
+                            "Agent and judge Configured Models must use the same Adapter.",
+                            session_id=session_id,
+                        )
+                    provider = selected_connection.adapter
+                    model = selected_model.model
+                    judge_model = selected_judge.model
+                else:
+                    model = selected_model_id
+                    judge_model = selected_judge_model_id
         else:
             if session_id is not None:
                 raise NovalError(
@@ -1185,14 +1243,13 @@ class NovalRuntime:
             judge_model=judge_model,
         )
         if store is not None and session_id is None:
-            store.update_metadata({
-                "application": {
-                    "schema_version": 1,
-                    "provider": provider,
-                    "model": model,
-                    "judge_model": judge_model,
-                }
-            })
+            store.set_model_selection(
+                SessionModelSelection(
+                    selected_model_id=selected_model_id,
+                    selected_judge_model_id=selected_judge_model_id,
+                    configuration_revision=configuration_revision,
+                )
+            )
 
         with self._lock:
             if resolved_session_id in self._sessions:
