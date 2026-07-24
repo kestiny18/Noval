@@ -84,12 +84,9 @@ python -m venv .venv
 # source .venv/bin/activate
 
 pip install -e .
-
-# 使用 Anthropic Provider 时安装可选依赖
-# pip install -e ".[anthropic]"
 ```
 
-设置 API key，二选一：
+设置 API key：
 
 ```bash
 # Windows PowerShell
@@ -99,29 +96,24 @@ $env:DEEPSEEK_API_KEY="sk-你的key"
 # export DEEPSEEK_API_KEY="sk-你的key"
 ```
 
-或者写入用户目录下的 `~/.noval/settings.json`：
+Phase 1 只开放 OpenAI-compatible 配置。可以查看内置 Profile，并验证本地配置：
 
-```json
-{
-  "api_key": "sk-你的key"
-}
+```bash
+python -m noval models list
+python -m noval models validate
 ```
 
-该文件不在仓库内。不要把真实 key 写进 `settings.example.json` 或任何提交。
+Desktop 也可以把 Connection API key 直接写入
+`~/.noval/settings.json`。Desktop 和公开 API 只提供写入入口，不会回显
+key；但 settings 文件中的值是依赖当前用户文件权限保护的明文。条件允许时应
+优先使用 Profile 对应的环境变量。CLI 可通过隐藏输入更新：
 
-旧配置缺少 `provider` 时继续使用 `openai-compatible`。Anthropic 示例：
-
-```json
-{
-  "provider": "anthropic",
-  "model": "你的 Claude 模型名",
-  "judge_model": "你的 Claude judge 模型名",
-  "api_key_env": "ANTHROPIC_API_KEY",
-  "anthropic_max_tokens": 8192
-}
+```bash
+python -m noval models credential connection-deepseek-default
 ```
 
-`anthropic_base_url` 留空时使用 Anthropic SDK 默认地址，也可以显式配置兼容网关。
+settings schema v2 是内部版本的一次有意硬升级，旧 settings 会被拒绝而不会
+自动迁移。不要把真实 key 写进 `settings.example.json` 或任何提交。
 
 启动：
 
@@ -172,7 +164,7 @@ with NovalRuntime.from_settings() as runtime:
 
 一个 Runtime 可以同时执行不同 Session；每个 Session 内只允许一个 active turn。相同 Session 的并发调用不会进入内核队列，而是立即抛出 `NovalError(code="session_busy", retryable=True)`，排队策略由宿主决定。Session 的消息、workdir、权限、Hooks、Skills、MCP、Context、Task、Usage、事件序列和子进程 runtime 均独立。
 
-`SessionPersistence.DEFAULT` 继承全局设置，`PERSISTENT` 使用 schema v2 JSONL，`EPHEMERAL` 只驻留内存。持久 Session 打开期间持有跨进程 writer lease；第二个写者收到可重试的 `session_locked`，关闭后 lease 立即释放。
+`SessionPersistence.DEFAULT` 继承全局设置，`PERSISTENT` 使用 schema v3 JSONL，`EPHEMERAL` 只驻留内存。持久 Session 打开期间持有跨进程 writer lease；第二个写者收到可重试的 `session_locked`，关闭后 lease 立即释放。
 
 危险工具通过独立 `PermissionHandler` 返回 `ALLOW_ONCE`、`ALLOW_SESSION` 或 `DENY`。ASK 模式没有 handler 或 handler 异常时 fail-closed。`RuntimeEvent` 是 JSON-safe、Session 内单调排序的实时通知；每个打开的 Session 保留一个有界的内存重放窗口，但事件不持久化，也不是另一份真相源。事件 sink 异常不会中断回合。
 
@@ -180,7 +172,7 @@ with NovalRuntime.from_settings() as runtime:
 
 每次模型调用都会生成 request id。宿主可从 `model.started` 事件取得 id，再调用 `session.inspect_request(request_id)` 重建 canonical messages、tool schema、checkpoint 来源和 adapter 自己渲染的安全请求形态。结果不包含 API key、authorization header、SDK raw response 或 opaque thinking/reasoning state。
 
-完整的离线双 Session 示例见 [`examples/headless-api`](examples/headless-api/README.md)。公共 DTO 都支持显式 `to_dict()` / `from_dict()`；wire key 为 snake_case，当前 schema version 为 1。
+完整的离线双 Session 示例见 [`examples/headless-api`](examples/headless-api/README.md)。公共 DTO 都支持显式 `to_dict()` / `from_dict()`；wire key 为 snake_case，当前 API schema version 为 2。
 
 Desktop 等宿主可以直接使用同一组消费者安全接口：
 
@@ -407,12 +399,12 @@ project.json
 20260623-153012-ab12.meta.json
 ```
 
-- JSONL schema v2 保存 canonical user / assistant / tool block messages；system prompt、环境和项目记忆在恢复时重建。
-- 标题默认从第一条用户消息派生；自定义标题与会话权限写入独立 sidecar。
+- JSONL schema v3 保存 canonical user / assistant / tool block messages；system prompt、环境和项目记忆在恢复时重建。
+- 标题默认从第一条用户消息派生；自定义标题、模型选择与会话权限写入独立 sidecar。
 - 坏行和进程崩溃留下的半截尾行会被跳过，不废掉整个会话。
 - 内容目前是明文，可能包含用户粘贴的密钥、文件内容和 adapter-owned replay state。可用 `"persist_sessions": false` 关闭。
 
-v0.9 不读取或迁移旧 schema v1 Session：会话列表会标记为不兼容，尝试恢复时返回明确错误，原文件保持不变。旧 checkpoint 同样不会复用。
+当前 Runtime 只发现 schema v3 Session，不读取或迁移旧 schema；尝试显式恢复时返回明确错误，原文件保持不变。旧 checkpoint 同样不会复用。
 
 这部分已通过自动化测试与真实任务验证，包括多 workdir、中文路径、大历史、任务中断和进程强杀恢复。同一 Session 只允许一个 live writer；进程内重复打开返回 `session_already_open`，跨进程竞争返回 `session_locked`。
 
