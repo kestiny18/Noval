@@ -57,6 +57,7 @@ class EventType(str, Enum):
     SESSION_OPENED = "session.opened"
     SESSION_RENAMED = "session.renamed"
     SESSION_MODELS_SELECTED = "session.models_selected"
+    MODEL_CONFIGURATION_CHANGED = "model.configuration_changed"
     SESSION_CLOSED = "session.closed"
     TURN_STARTED = "turn.started"
     TURN_CANCEL_REQUESTED = "turn.cancel_requested"

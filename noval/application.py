@@ -1088,6 +1088,22 @@ class AgentSession:
                 "runtime event sink failed type=%s", event.type, exc_info=True
             )
 
+    def _publish_model_configuration_changed(
+        self,
+        configuration: ModelConfigurationInfo,
+    ) -> None:
+        with self._state_lock:
+            if self._closed:
+                return
+            event = self._new_event_locked(
+                EventType.MODEL_CONFIGURATION_CHANGED.value,
+                payload={
+                    "revision": configuration.revision,
+                    "default_model_id": configuration.default_model_id,
+                },
+            )
+        self._dispatch_event(event)
+
     def close(self) -> None:
         with self._state_lock:
             if self._closed:
@@ -1684,8 +1700,12 @@ class NovalRuntime:
                 api_key=connection.api_key,
             )
             retired = self._retire_obsolete_transports_locked(configuration)
+            sessions = tuple(self._sessions.values())
         self._close_provider_transports(retired)
-        return self.configuration().models
+        observed = self.configuration().models
+        for session in sessions:
+            session._publish_model_configuration_changed(observed)
+        return observed
 
     def _retire_obsolete_transports_locked(
         self,
