@@ -200,7 +200,9 @@ installer. Neither gate may be inferred from mocked tests or package creation.
 2. Run `python -m compileall -q noval desktop/sidecar/noval_sidecar`.
 3. Run `npm run typecheck`, `npm test`, `npm run build`, and `npm run test:e2e` from `desktop`.
 4. Run targeted adversarial credential-persistence, replay-mismatch, schema-hard-break, and close/admission/configuration race tests again.
-5. Run the opt-in real OpenAI-compatible Adapter contract for every shipped Profile using maintainer-provided environment credentials; remove an unverified or failing Profile before release.
+5. With every packaged Profile environment variable populated, run
+   `$env:NOVAL_RUN_LIVE_PROVIDER_CONTRACT='1'; python -m pytest tests/live/test_provider_profiles.py -q`;
+   remove an unverified or failing Profile/model before release.
 6. Run `git diff --check` and inspect the full branch diff against its base.
 7. Scan the diff and generated artifacts for credential-like content and provider-private replay data.
 8. Update related documentation and changelog only where the delivered behavior requires it.
