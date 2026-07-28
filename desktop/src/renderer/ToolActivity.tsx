@@ -1,5 +1,6 @@
 import {FilePenLine,Search,TerminalSquare,Wrench} from "lucide-react";
-import type {TranscriptEntry} from "../shared/protocol";
+import type {LanguagePreference,TranscriptEntry} from "../shared/protocol";
+import {translate} from "./i18n";
 
 type ActivityKind="command"|"inspect"|"edit"|"other";
 export type MessageItem={type:"message";key:string;role:TranscriptEntry["role"];text:string;timestamp:string|null;showMeta:boolean};
@@ -25,12 +26,12 @@ export function buildTimeline(entries:TranscriptEntry[]):TimelineItem[]{
  return timeline;
 }
 
-export function ToolActivity({activity}:{activity:ActivityItem}){
+export function ToolActivity({activity,language}:{activity:ActivityItem;language:LanguagePreference}){
  const Icon=activity.kind==="command"?TerminalSquare:activity.kind==="inspect"?Search:activity.kind==="edit"?FilePenLine:Wrench;
- const label=activityLabel(activity);
+ const label=activityLabel(activity,language);
  return <details className={`activity-row ${activity.failed?"failed":activity.pending?"pending":""}`}>
   <summary aria-label={`${label}${activity.toolNames.length?`: ${activity.toolNames.join(", ")}`:""}`} title={activity.toolNames.join(", ")}><Icon size={15}/><span>{label}</span></summary>
-  <div className="activity-details">{activity.details.map(detail=><section key={detail.key}><strong>{detail.toolName}</strong><small>{detail.pending?"Running":detail.failed?"Failed":"Completed"}</small>{detail.content&&<pre>{detail.content}</pre>}</section>)}</div>
+  <div className="activity-details">{activity.details.map(detail=><section key={detail.key}><strong>{detail.toolName}</strong><small>{translate(language,detail.pending?"running":detail.failed?"failed":"completed")}</small>{detail.content&&<pre>{detail.content}</pre>}</section>)}</div>
  </details>
 }
 
@@ -49,11 +50,11 @@ function activityKind(name:string):ActivityKind{
  return "other";
 }
 
-function activityLabel(activity:ActivityItem){
- if(activity.failed)return activity.kind==="command"?"Command failed":activity.kind==="edit"?"File change failed":"Tool failed";
- if(activity.pending)return activity.kind==="command"?"Running a command":activity.kind==="inspect"?"Inspecting files":activity.kind==="edit"?"Editing files":"Using a tool";
- if(activity.kind==="command")return activity.count>1?`Ran ${activity.count} commands`:"Ran a command";
- if(activity.kind==="inspect")return activity.count>1?"Inspected files":"Inspected a file";
- if(activity.kind==="edit")return activity.count>1?"Edited files":"Edited a file";
- return activity.count>1?`Used ${activity.count} tools`:"Used a tool";
+function activityLabel(activity:ActivityItem,language:LanguagePreference){
+ if(activity.failed)return translate(language,activity.kind==="command"?"commandFailed":activity.kind==="edit"?"fileChangeFailed":"toolFailed");
+ if(activity.pending)return translate(language,activity.kind==="command"?"runningCommand":activity.kind==="inspect"?"inspectingFiles":activity.kind==="edit"?"editingFiles":"usingTool");
+ if(activity.kind==="command")return translate(language,activity.count>1?"ranCommands":"ranCommand",{count:activity.count});
+ if(activity.kind==="inspect")return translate(language,activity.count>1?"inspectedFiles":"inspectedFile");
+ if(activity.kind==="edit")return translate(language,activity.count>1?"editedFiles":"editedFile");
+ return translate(language,activity.count>1?"usedTools":"usedTool",{count:activity.count});
 }

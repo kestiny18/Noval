@@ -1,9 +1,10 @@
 import {FormEvent,useEffect,useMemo,useRef,useState} from "react";
 import {ArrowUp,Check,CheckCircle2,Copy,Ellipsis,Folder,FolderOpen,KeyRound,MessageSquarePlus,Pencil,Plus,RotateCcw,Settings,Shield,Square,Trash2,X,XCircle} from "lucide-react";
-import type {AppInfo,AppearancePreferences,CompletionReport,ConnectionUpsert,ModelConfigurationInfo,PermissionState,ProjectInfo,ProviderProfileInfo,SessionInfo,SidecarEvent,TranscriptEntry} from "../shared/protocol";
+import type {AppInfo,AppearancePreferences,CompletionReport,ConnectionUpsert,LanguagePreference,ModelConfigurationInfo,PermissionState,ProjectInfo,ProviderProfileInfo,SessionInfo,SidecarEvent,TranscriptEntry} from "../shared/protocol";
 import {MarkdownText} from "./MarkdownText";
 import {buildTimeline,MessageItem,ToolActivity} from "./ToolActivity";
 import {SettingsPage} from "./SettingsPage";
+import {localeLanguage,translate} from "./i18n";
 import "./model-selector.css";
 
 type PendingPermission={request_id:string;tool_name:string;risk:string;arguments:Record<string,unknown>};
@@ -18,16 +19,18 @@ export function App(){
  const [showPermissions,setShowPermissions]=useState(false),[projectMenu,setProjectMenu]=useState<string|null>(null),[projectToRemove,setProjectToRemove]=useState<string|null>(null),[removingProject,setRemovingProject]=useState(false),[draftProject,setDraftProject]=useState<string|null>(null);
  const previousConnection=useRef(connection),eventSequence=useRef(0),viewport=useRef<HTMLDivElement|null>(null),loadingOlder=useRef(false),lastScrollTop=useRef(0);
  const [showSettings,setShowSettings]=useState(false),[profiles,setProfiles]=useState<ProviderProfileInfo[]>([]),[modelConfig,setModelConfig]=useState<ModelConfigurationInfo|null>(null),[draftModelId,setDraftModelId]=useState("");
- const [appearance,setAppearance]=useState<AppearancePreferences>({theme:"system",density:"comfortable"}),[appInfo,setAppInfo]=useState<AppInfo|null>(null);
- const title=active?.title||"New task",hasTask=Boolean(active||draftProject);
+ const [appearance,setAppearance]=useState<AppearancePreferences>({theme:"system",density:"comfortable"}),[language,setLanguage]=useState<LanguagePreference>(()=>localeLanguage(navigator.language)),[appInfo,setAppInfo]=useState<AppInfo|null>(null);
+ const t=(key:Parameters<typeof translate>[1],values?:Record<string,string|number>)=>translate(language,key,values);
+ const title=active?.title||t("newTask"),hasTask=Boolean(active||draftProject);
 
- useEffect(()=>{void Promise.all([refreshProjects(),refreshModels(),window.noval.getAppearance().then(applyAppearance)]).catch(e=>setError(message(e)));return window.noval.onEvent(handleEvent)},[]);
+ useEffect(()=>{void Promise.all([refreshProjects(),refreshModels(),window.noval.getPreferences().then(preferences=>{applyAppearance(preferences.appearance);applyLanguage(preferences.language)})]).catch(e=>setError(message(e)))},[]);
+ useEffect(()=>window.noval.onEvent(handleEvent),[language]);
  useEffect(()=>{const recovered=previousConnection.current!=="connected"&&connection==="connected";previousConnection.current=connection;if(!recovered||!active)return;void restoreActive()},[connection,active?.session_id]);
  useEffect(()=>{if(!projectMenu&&!projectToRemove)return;function keydown(event:KeyboardEvent){if(event.key==="Escape"&&!removingProject){setProjectMenu(null);setProjectToRemove(null)}}function pointerdown(event:PointerEvent){const target=event.target;if(projectMenu&&target instanceof Element&&!target.closest(".project-menu")&&!target.closest(".project-actions-trigger"))setProjectMenu(null)}document.addEventListener("keydown",keydown);document.addEventListener("pointerdown",pointerdown);return()=>{document.removeEventListener("keydown",keydown);document.removeEventListener("pointerdown",pointerdown)}},[projectMenu,projectToRemove,removingProject]);
 
  async function refreshProjects(){const list=await window.noval.listProjects();setProjects(list);const current=list.find(item=>item.active)?.path??null;setWorkspace(current);setExpanded(old=>{const next=new Set(old);if(current)next.add(current);return next});const pages=await Promise.all(list.map(async project=>[project.path,await window.noval.projectSessions(project.path)] as const));setSessions(Object.fromEntries(pages))}
- async function restoreActive(){if(!active)return;try{const result=await window.noval.resumeSession(active.session_id);setActive(result.session);setPermissions(result.permissions);const replay=await window.noval.replayEvents(active.session_id,eventSequence.current);eventSequence.current=replay.next_sequence;if(replay.gap_detected)setStatus("Recovered from transcript");await loadLatest(active.session_id);setBusy(false);setStream("")}catch(e){setError(`Runtime recovered, but the task could not be restored: ${message(e)}`)}}
- function handleEvent(value:SidecarEvent){const e=value.event,p=value.payload as any;if(typeof p.sequence==="number")eventSequence.current=Math.max(eventSequence.current,p.sequence);if(e==="host.connection"){setConnection(p.state);if(p.state!=="connected")setPending(null);setStatus(p.state==="connected"?"Ready":p.state==="recovering"?"Recovering runtime":"Runtime unavailable");return}if(e==="model.started"){setStatus("Generating");setStream("")}if(e==="model.output.delta")setStream(v=>v+String(p.text??p.delta??""));if(e==="tool.started")setStatus(`Running ${p.tool_name??"tool"}`);if(e==="validation.started")setStatus("Validating");if(e==="permission.request"){setPending(p.request as PendingPermission);setStatus("Waiting for approval")}if(e==="turn.completed"||e==="turn.failed"){setPending(null);setStatus(e==="turn.completed"?"Ready":"Turn failed")}}
+ async function restoreActive(){if(!active)return;try{const result=await window.noval.resumeSession(active.session_id);setActive(result.session);setPermissions(result.permissions);const replay=await window.noval.replayEvents(active.session_id,eventSequence.current);eventSequence.current=replay.next_sequence;if(replay.gap_detected)setStatus(t("recoveredTranscript"));await loadLatest(active.session_id);setBusy(false);setStream("")}catch(e){setError(`Runtime recovered, but the task could not be restored: ${message(e)}`)}}
+ function handleEvent(value:SidecarEvent){const e=value.event,p=value.payload as any;if(typeof p.sequence==="number")eventSequence.current=Math.max(eventSequence.current,p.sequence);if(e==="host.connection"){setConnection(p.state);if(p.state!=="connected")setPending(null);setStatus(p.state==="connected"?t("ready"):p.state==="recovering"?t("runtimeRecovering"):t("runtimeUnavailable"));return}if(e==="model.started"){setStatus(t("generating"));setStream("")}if(e==="model.output.delta")setStream(v=>v+String(p.text??p.delta??""));if(e==="tool.started")setStatus(`${t("running")} ${p.tool_name??t("tool")}`);if(e==="validation.started")setStatus(t("validating"));if(e==="permission.request"){setPending(p.request as PendingPermission);setStatus(t("waitingApproval"))}if(e==="turn.completed"||e==="turn.failed"){setPending(null);setStatus(e==="turn.completed"?t("ready"):t("turnFailed"))}}
  async function addProject(){try{const value=await window.noval.chooseWorkspace();if(!value)return;await refreshProjects();setWorkspace(value);setExpanded(old=>new Set(old).add(value));setActive(null);setDraftProject(null);setEntries([])}catch(e){setError(message(e))}}
  async function activateProject(path:string){await window.noval.activateProject(path);setWorkspace(path);setProjects(items=>items.map(item=>({...item,active:item.path===path})))}
  async function toggleProject(project:ProjectInfo){try{await activateProject(project.path);setExpanded(old=>{const next=new Set(old);next.has(project.path)?next.delete(project.path):next.add(project.path);return next});setActive(null);setDraftProject(null);setEntries([])}catch(e){setError(message(e))}}
@@ -35,49 +38,144 @@ export function App(){
  async function openSession(path:string,item:SessionInfo){try{setError(null);setCompletion(null);setPending(null);await activateProject(path);const result=active?.session_id===item.session_id?{session:active,permissions}:await window.noval.resumeSession(item.session_id);setActive(result.session);setDraftModelId(result.session.selected_model_id);setDraftProject(null);setPermissions(result.permissions);const replay=await window.noval.replayEvents(item.session_id,0);eventSequence.current=replay.next_sequence;await loadLatest(item.session_id)}catch(e){setError(message(e))}}
  async function removeProject(){const path=projectToRemove;if(!path||removingProject)return;setRemovingProject(true);try{const list=await window.noval.removeProject(path);setProjects(list);setSessions(old=>{const next={...old};delete next[path];return next});if(workspace===path){setWorkspace(list.find(item=>item.active)?.path??null);setActive(null);setDraftProject(null);setEntries([])}setProjectToRemove(null)}catch(e){setError(message(e))}finally{setRemovingProject(false)}}
  async function renameSession(){if(!active||!renameDraft.trim())return;try{const updated=await window.noval.renameSession(active.session_id,renameDraft.trim());setActive(updated);setSessions(old=>Object.fromEntries(Object.entries(old).map(([path,items])=>[path,items.map(item=>item.session_id===updated.session_id?updated:item)])));setRenaming(false)}catch(e){setError(message(e))}}
- async function send(event:FormEvent){event.preventDefault();const projectPath=active?.workdir??draftProject;if(!projectPath||!draft.trim()||busy||connection!=="connected")return;const text=draft.trim();let current=active;setDraft("");setBusy(true);setCompletion(null);try{if(!current){await activateProject(projectPath);const requestedPermissionMode=permissions.mode;const created=await window.noval.createSession(draftModelId?{selected_model_id:draftModelId}:{});current=created.session;setActive(current);setDraftModelId(current.selected_model_id);setDraftProject(null);const createdPermissions=requestedPermissionMode===created.permissions.mode?created.permissions:await window.noval.setPermissionMode(current.session_id,requestedPermissionMode);setPermissions(createdPermissions)}setEntries(old=>[...old,{sequence:Date.now(),role:"user",text,timestamp:null,tool_calls:[],tool_results:[]}]);scrollToBottom();const result=await window.noval.startTurn(current.session_id,text);setCompletion(result.completion);await loadLatest(current.session_id);setStream("")}catch(e){setError(message(e))}finally{const persisted=await window.noval.projectSessions(projectPath).catch(()=>sessions[projectPath]??[]);setSessions(old=>({...old,[projectPath]:persisted}));if(current){const stored=persisted.find(item=>item.session_id===current!.session_id);if(stored)setActive({...stored,is_open:true});else{setActive(null);setDraftProject(projectPath)}}setBusy(false);setStatus("Ready")}}
+ async function send(event:FormEvent){event.preventDefault();const projectPath=active?.workdir??draftProject;if(!projectPath||!draft.trim()||busy||connection!=="connected")return;const text=draft.trim();let current=active;setDraft("");setBusy(true);setCompletion(null);try{if(!current){await activateProject(projectPath);const requestedPermissionMode=permissions.mode;const created=await window.noval.createSession(draftModelId?{selected_model_id:draftModelId}:{});current=created.session;setActive(current);setDraftModelId(current.selected_model_id);setDraftProject(null);const createdPermissions=requestedPermissionMode===created.permissions.mode?created.permissions:await window.noval.setPermissionMode(current.session_id,requestedPermissionMode);setPermissions(createdPermissions)}setEntries(old=>[...old,{sequence:Date.now(),role:"user",text,timestamp:null,tool_calls:[],tool_results:[]}]);scrollToBottom();const result=await window.noval.startTurn(current.session_id,text);setCompletion(result.completion);await loadLatest(current.session_id);setStream("")}catch(e){setError(message(e))}finally{const persisted=await window.noval.projectSessions(projectPath).catch(()=>sessions[projectPath]??[]);setSessions(old=>({...old,[projectPath]:persisted}));if(current){const stored=persisted.find(item=>item.session_id===current!.session_id);if(stored)setActive({...stored,is_open:true});else{setActive(null);setDraftProject(projectPath)}}setBusy(false);setStatus(t("ready"))}}
  async function loadLatest(sessionId:string){const page=await window.noval.transcriptHistory(sessionId);setEntries(page.entries);setHistoryCursor(page.previous_sequence);setHasOlder(page.has_more);scrollToBottom()}
  async function loadOlder(){if(!active||!hasOlder||historyCursor===null||loadingOlder.current)return;const element=viewport.current;if(!element)return;loadingOlder.current=true;const oldHeight=element.scrollHeight,oldTop=element.scrollTop;try{const page=await window.noval.transcriptHistory(active.session_id,historyCursor);setEntries(current=>{const known=new Set(current.map(item=>item.sequence));return [...page.entries.filter(item=>!known.has(item.sequence)),...current]});setHistoryCursor(page.previous_sequence);setHasOlder(page.has_more);window.requestAnimationFrame(()=>{if(viewport.current){viewport.current.scrollTop=viewport.current.scrollHeight-oldHeight+oldTop;lastScrollTop.current=viewport.current.scrollTop}loadingOlder.current=false})}catch(e){loadingOlder.current=false;setError(message(e))}}
  function scrollToBottom(){window.requestAnimationFrame(()=>{if(viewport.current){viewport.current.scrollTop=viewport.current.scrollHeight;lastScrollTop.current=viewport.current.scrollTop}})}
  function handleConversationScroll(element:HTMLDivElement){const current=element.scrollTop,movingUp=current<lastScrollTop.current;lastScrollTop.current=current;if(movingUp&&current<=32)void loadOlder()}
- async function selectPermissionMode(next:PermissionState["mode"]){if(next===permissions.mode)return;if(next==="full_access"&&!confirm("Full access skips approval prompts for this Session. Workspace confinement, sandboxing, Hooks, redaction, and your requested scope still apply. Continue?"))return;try{if(active)setPermissions(await window.noval.setPermissionMode(active.session_id,next));else setPermissions(current=>({...current,mode:next}))}catch(e){setError(message(e))}}
- async function resolve(decision:"allow_once"|"allow_session"|"deny"){if(!pending)return;try{await window.noval.resolvePermission(pending.request_id,decision);setPending(null);setStatus("Running")}catch(e){setError(message(e))}}
+ async function selectPermissionMode(next:PermissionState["mode"]){if(next===permissions.mode)return;if(next==="full_access"&&!confirm(t("fullAccessConfirm")))return;try{if(active)setPermissions(await window.noval.setPermissionMode(active.session_id,next));else setPermissions(current=>({...current,mode:next}))}catch(e){setError(message(e))}}
+ async function resolve(decision:"allow_once"|"allow_session"|"deny"){if(!pending)return;try{await window.noval.resolvePermission(pending.request_id,decision);setPending(null);setStatus(t("running"))}catch(e){setError(message(e))}}
  async function revokeTool(tool:string){if(active)try{setPermissions(await window.noval.revokeTool(active.session_id,tool))}catch(e){setError(message(e))}}
- async function resetPermissions(){if(!active||!confirm("Reset this Session to Ask mode and remove every saved tool grant?"))return;try{setPermissions(await window.noval.resetPermissions(active.session_id))}catch(e){setError(message(e))}}
+ async function resetPermissions(){if(!active||!confirm(t("resetPermissionsConfirm")))return;try{setPermissions(await window.noval.resetPermissions(active.session_id))}catch(e){setError(message(e))}}
  async function refreshModels(){const [profileList,configuration]=await Promise.all([window.noval.listProviderProfiles(),window.noval.getModelConfiguration()]);setProfiles(profileList);setModelConfig(configuration);setDraftModelId(current=>current||configuration.default_model_id)}
- async function openSettings(){try{const [,info,storedAppearance]=await Promise.all([refreshModels(),window.noval.appInfo(),window.noval.getAppearance()]);setAppInfo(info);applyAppearance(storedAppearance);setShowSettings(true)}catch(e){setError(message(e))}}
+ async function openSettings(){try{const [,info,preferences]=await Promise.all([refreshModels(),window.noval.appInfo(),window.noval.getPreferences()]);setAppInfo(info);applyAppearance(preferences.appearance);applyLanguage(preferences.language);setShowSettings(true)}catch(e){setError(message(e))}}
  async function updateConnection(value:ConnectionUpsert){try{setModelConfig(await window.noval.upsertConnection(value))}catch(err){setError(message(err));throw err}}
  async function selectModel(id:string){if(!active){setDraftModelId(id);return}try{const updated=await window.noval.selectSessionModel(active.session_id,id);setActive(updated);setDraftModelId(updated.selected_model_id);setSessions(old=>Object.fromEntries(Object.entries(old).map(([path,items])=>[path,items.map(item=>item.session_id===updated.session_id?updated:item)])))}catch(err){setError(message(err))}}
  async function saveAppearance(value:AppearancePreferences){try{const saved=await window.noval.saveAppearance(value);applyAppearance(saved)}catch(err){setError(message(err))}}
+ async function saveLanguage(value:LanguagePreference){try{const saved=await window.noval.saveLanguage(value);applyLanguage(saved.language)}catch(err){setError(message(err))}}
  function applyAppearance(value:AppearancePreferences){setAppearance(value);document.documentElement.dataset.theme=value.theme;document.documentElement.dataset.density=value.density}
+ function applyLanguage(value:LanguagePreference){setLanguage(value);document.documentElement.lang=value}
 
- const grouped=useMemo(()=>entries.filter(x=>x.text||x.tool_calls.length||x.tool_results.length),[entries]),timeline=useMemo(()=>buildTimeline(grouped),[grouped]),selectedModelId=active?.selected_model_id||draftModelId||modelConfig?.default_model_id||"";
- if(showSettings)return <SettingsPage profiles={profiles} models={modelConfig} upsertConnection={updateConnection} appearance={appearance} saveAppearance={saveAppearance} appInfo={appInfo} workspace={workspace} projectCount={projects.length} sessionCount={Object.values(sessions).reduce((total,items)=>total+items.length,0)} close={()=>setShowSettings(false)} error={error} dismissError={()=>setError(null)}/>;
+ const grouped=useMemo(()=>entries.filter(x=>x.text||x.tool_calls.length||x.tool_results.length),[entries]);
+ const timeline=useMemo(()=>buildTimeline(grouped),[grouped]);
+ const selectedModelId=active?.selected_model_id||draftModelId||modelConfig?.default_model_id||"";
+ if(showSettings)return <SettingsPage
+   profiles={profiles}
+   models={modelConfig}
+   upsertConnection={updateConnection}
+   appearance={appearance}
+   saveAppearance={saveAppearance}
+   language={language}
+   saveLanguage={saveLanguage}
+   appInfo={appInfo}
+   workspace={workspace}
+   projectCount={projects.length}
+   sessionCount={Object.values(sessions).reduce((total,items)=>total+items.length,0)}
+   close={()=>setShowSettings(false)}
+   error={error}
+   dismissError={()=>setError(null)}
+ />;
  return <div className="shell">
-  <aside className="sidebar project-sidebar">
-   <header className="brand"><strong>Noval</strong></header>
-   <div className="project-heading"><span>Projects</span><div><button aria-label="Add project" onClick={addProject}><Plus size={17}/></button></div></div>
-   <nav className="project-tree" aria-label="Projects">{projects.map(project=>{const items=sessions[project.path]??[],limit=visible[project.path]??5,open=expanded.has(project.path),menuOpen=projectMenu===project.path;return <section className="project-node" key={project.path}><div className={`project-row ${project.active?"current":""}`}><button className="project-main" onClick={()=>toggleProject(project)} title={project.path}>{open?<FolderOpen size={17}/>:<Folder size={17}/>}<span>{project.name}</span></button><div className="hover-actions"><button className="project-actions-trigger" aria-label={`Project actions for ${project.name}`} aria-haspopup="menu" aria-expanded={menuOpen} onClick={()=>setProjectMenu(menuOpen?null:project.path)}><Ellipsis size={15}/></button><button aria-label={`New task in ${project.name}`} onClick={()=>beginSession(project.path)}><MessageSquarePlus size={15}/></button></div>{menuOpen&&<div className="menu project-menu" role="menu" aria-label={`Actions for ${project.name}`}><button role="menuitem" onClick={()=>{void window.noval.revealProject(project.path);setProjectMenu(null)}}><FolderOpen size={16}/>Open in File Explorer</button><button role="menuitem" className="danger" onClick={()=>{setProjectMenu(null);setProjectToRemove(project.path)}}><Trash2 size={16}/>Remove project</button></div>}</div>{open&&<div className="session-list">{items.slice(0,limit).map(item=><button key={item.session_id} className={`session-row ${active?.session_id===item.session_id?"active":""}`} onClick={()=>openSession(project.path,item)}><span>{item.title||"Untitled task"}</span></button>)}{items.length>limit&&<button className="show-more" onClick={()=>setVisible(old=>({...old,[project.path]:limit+5}))}>Show {Math.min(5,items.length-limit)} more</button>}{items.length===0&&<p className="no-sessions">No tasks yet</p>}</div>}</section>})}{projects.length===0&&<p className="no-projects">Add a project to begin. Your folders stay local.</p>}</nav>
-   <footer><button className="settings-link" onClick={openSettings}><Settings size={16}/>Settings</button><span className="connection"><span className={`status-dot ${connection}`}/>{connection==="connected"?"Runtime connected":connection==="recovering"?"Recovering runtime":"Runtime unavailable"}</span></footer>
-  </aside>
-  <main className="workspace-pane">
-   <header className="topbar">{active?<div>{renaming?<form className="rename" onSubmit={e=>{e.preventDefault();void renameSession()}}><input aria-label="Task title" autoFocus value={renameDraft} onChange={e=>setRenameDraft(e.target.value)}/><button aria-label="Save title"><CheckCircle2 size={15}/></button><button type="button" aria-label="Cancel rename" onClick={()=>setRenaming(false)}><XCircle size={15}/></button></form>:<h1>{title}<button className="rename-trigger" aria-label="Rename task" onClick={()=>{setRenameDraft(title);setRenaming(true)}}><Pencil size={12}/></button></h1>}<p>{workspace}</p></div>:draftProject?<div><h1>New task</h1><p>{draftProject}</p></div>:<div><h1>{workspace?leaf(workspace):"Noval"}</h1><p>{workspace||"Add a project from the sidebar"}</p></div>}</header>
-   {showPermissions&&active&&<section className="grants-panel"><header><div><strong>Session permissions</strong><small>Saved exactly as Noval Runtime reports them.</small></div><button onClick={resetPermissions}><RotateCcw size={13}/>Reset all</button></header>{permissions.approved_tools.length?<ul>{permissions.approved_tools.map(tool=><li key={tool}><code>{tool}</code><button onClick={()=>revokeTool(tool)}>Revoke</button></li>)}</ul>:<p>No tools are approved for this Session.</p>}</section>}
-   {!hasTask?<EmptyState projectName={workspace?leaf(workspace):null}/>:<><div className="conversation-viewport" ref={viewport} onScroll={event=>handleConversationScroll(event.currentTarget)} onWheel={event=>{if(event.deltaY<0&&event.currentTarget.scrollTop<=32)void loadOlder()}}>{timeline.length===0&&!stream&&!completion?<EmptyState projectName={leaf(active?.workdir??draftProject!)}/>:<div className="conversation">{hasOlder&&<div className="history-loader" aria-label="Older messages available">Scroll up to load earlier messages</div>}{timeline.map(item=>item.type==="message"?<ConversationMessage key={item.key} item={item}/>:<ToolActivity key={item.key} activity={item}/>)}{stream&&<article className="message message-assistant"><MarkdownText text={stream} streaming/></article>}{completion&&<CompletionCard report={completion}/>}</div>}</div><form className="composer" onSubmit={send}><textarea aria-label="Message Noval" value={draft} onChange={e=>setDraft(e.target.value)} placeholder="Ask Noval to inspect, build, or verify" disabled={connection!=="connected"} onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();e.currentTarget.form?.requestSubmit()}}}/><div className="composer-row"><div className="composer-controls"><label className={`permission-selector ${permissions.mode}`}><Shield size={15}/><span className="sr-only">Session access</span><select aria-label="Session access" value={permissions.mode} onChange={event=>void selectPermissionMode(event.target.value as PermissionState["mode"])}><option value="ask">Ask permission</option><option value="full_access">Full access</option></select></label>{active&&permissions.approved_tools.length>0&&<button type="button" className="grant-button" onClick={()=>setShowPermissions(value=>!value)}><KeyRound size={14}/>{permissions.approved_tools.length} grants</button>}<span className="composer-status"><span className={`status-dot ${connection}`}/>{status}</span></div><div className="composer-actions"><label className="model-selector"><span className="sr-only">Session model</span><select aria-label="Session model" value={selectedModelId} onChange={event=>void selectModel(event.target.value)}>{modelConfig?.configured.map(item=><option key={item.id} value={item.id}>{item.label}</option>)}</select>{busy&&<small>Next turn</small>}</label>{busy?<button type="button" className="send stop" aria-label="Stop" onClick={()=>active&&window.noval.cancelTurn(active.session_id)}><Square size={13}/></button>:<button className="send" disabled={!draft.trim()||connection!=="connected"} aria-label="Send"><ArrowUp size={17}/></button>}</div></div></form></>}
-    {error&&<div className="error" role="alert"><strong>Something needs attention</strong><span>{error}</span><button onClick={()=>setError(null)}>Dismiss</button></div>}
-    {pending&&<div className="scrim"><section className="permission"><div className="permission-icon"><KeyRound size={20}/></div><p className="eyebrow">PERMISSION REQUIRED</p><h2>Allow {pending.tool_name}?</h2><p>This <strong>{pending.risk}</strong> action needs your approval.</p><pre>{safePreview(pending.arguments)}</pre><div className="actions"><button onClick={()=>resolve("deny")}>Deny</button><button onClick={()=>resolve("allow_session")}>Allow for Session</button><button className="primary" onClick={()=>resolve("allow_once")}>Allow once</button></div></section></div>}
-    {projectToRemove&&<div className="scrim project-remove-scrim" onPointerDown={event=>{if(event.target===event.currentTarget&&!removingProject)setProjectToRemove(null)}}><section className="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="remove-project-title"><button className="dialog-close" aria-label="Close remove project dialog" disabled={removingProject} onClick={()=>setProjectToRemove(null)}><X size={18}/></button><h2 id="remove-project-title">Remove {leaf(projectToRemove)}?</h2><p>This removes the project from the sidebar. Files and Sessions on disk will not be deleted.</p><div className="dialog-actions"><button autoFocus disabled={removingProject} onClick={()=>setProjectToRemove(null)}>Cancel</button><button className="danger-action" disabled={removingProject} onClick={removeProject}>{removingProject?"Removing…":"Remove"}</button></div></section></div>}
+   <aside className="sidebar project-sidebar">
+     <header className="brand"><strong>Noval</strong></header>
+     <div className="project-heading"><span>{t("projects")}</span><div><button aria-label={t("addProject")} onClick={addProject}><Plus size={17}/></button></div></div>
+     <nav className="project-tree" aria-label={t("projects")}>
+       {projects.map(project=>{
+         const items=sessions[project.path]??[],limit=visible[project.path]??5,open=expanded.has(project.path),menuOpen=projectMenu===project.path;
+         return <section className="project-node" key={project.path}>
+           <div className={`project-row ${project.active?"current":""}`}>
+             <button className="project-main" onClick={()=>toggleProject(project)} title={project.path}>{open?<FolderOpen size={17}/>:<Folder size={17}/>}<span>{project.name}</span></button>
+             <div className="hover-actions">
+               <button className="project-actions-trigger" aria-label={t("projectActions",{name:project.name})} aria-haspopup="menu" aria-expanded={menuOpen} onClick={()=>setProjectMenu(menuOpen?null:project.path)}><Ellipsis size={15}/></button>
+               <button aria-label={t("newTaskIn",{name:project.name})} onClick={()=>beginSession(project.path)}><MessageSquarePlus size={15}/></button>
+             </div>
+             {menuOpen&&<div className="menu project-menu" role="menu" aria-label={t("actionsFor",{name:project.name})}>
+               <button role="menuitem" onClick={()=>{void window.noval.revealProject(project.path);setProjectMenu(null)}}><FolderOpen size={16}/>{t("openExplorer")}</button>
+               <button role="menuitem" className="danger" onClick={()=>{setProjectMenu(null);setProjectToRemove(project.path)}}><Trash2 size={16}/>{t("removeProject")}</button>
+             </div>}
+           </div>
+           {open&&<div className="session-list">
+             {items.slice(0,limit).map(item=><button key={item.session_id} className={`session-row ${active?.session_id===item.session_id?"active":""}`} onClick={()=>openSession(project.path,item)}><span>{item.title||t("untitledTask")}</span></button>)}
+             {items.length>limit&&<button className="show-more" onClick={()=>setVisible(old=>({...old,[project.path]:limit+5}))}>{t("showMore",{count:Math.min(5,items.length-limit)})}</button>}
+             {items.length===0&&<p className="no-sessions">{t("noTasks")}</p>}
+           </div>}
+         </section>;
+       })}
+       {projects.length===0&&<p className="no-projects">{t("addProjectHint")}</p>}
+     </nav>
+     <footer>
+       <button className="settings-link" onClick={openSettings}><Settings size={16}/>{t("settings")}</button>
+       <span className="connection"><span className={`status-dot ${connection}`}/>{connection==="connected"?t("runtimeConnected"):connection==="recovering"?t("runtimeRecovering"):t("runtimeUnavailable")}</span>
+     </footer>
+   </aside>
+   <main className="workspace-pane">
+     <header className="topbar">
+       {active?<div>{renaming?<form className="rename" onSubmit={event=>{event.preventDefault();void renameSession()}}>
+         <input aria-label={t("taskTitle")} autoFocus value={renameDraft} onChange={event=>setRenameDraft(event.target.value)}/>
+         <button aria-label={t("saveTitle")}><CheckCircle2 size={15}/></button>
+         <button type="button" aria-label={t("cancelRename")} onClick={()=>setRenaming(false)}><XCircle size={15}/></button>
+       </form>:<h1>{title}<button className="rename-trigger" aria-label={t("renameTask")} onClick={()=>{setRenameDraft(title);setRenaming(true)}}><Pencil size={12}/></button></h1>}<p>{workspace}</p></div>
+       :draftProject?<div><h1>{t("newTask")}</h1><p>{draftProject}</p></div>
+       :<div><h1>{workspace?leaf(workspace):"Noval"}</h1><p>{workspace||t("addProjectSidebar")}</p></div>}
+     </header>
+     {showPermissions&&active&&<section className="grants-panel">
+       <header><div><strong>{t("sessionPermissions")}</strong><small>{t("runtimePermissions")}</small></div><button onClick={resetPermissions}><RotateCcw size={13}/>{t("resetAll")}</button></header>
+       {permissions.approved_tools.length?<ul>{permissions.approved_tools.map(tool=><li key={tool}><code>{tool}</code><button onClick={()=>revokeTool(tool)}>{t("revoke")}</button></li>)}</ul>:<p>{t("noApprovedTools")}</p>}
+     </section>}
+     {!hasTask?<EmptyState projectName={workspace?leaf(workspace):null} language={language}/>:<>
+       <div className="conversation-viewport" ref={viewport} onScroll={event=>handleConversationScroll(event.currentTarget)} onWheel={event=>{if(event.deltaY<0&&event.currentTarget.scrollTop<=32)void loadOlder()}}>
+         {timeline.length===0&&!stream&&!completion?<EmptyState projectName={leaf(active?.workdir??draftProject!)} language={language}/>:<div className="conversation">
+           {hasOlder&&<div className="history-loader" aria-label={t("olderMessages")}>{t("scrollOlder")}</div>}
+           {timeline.map(item=>item.type==="message"?<ConversationMessage key={item.key} item={item} language={language}/>:<ToolActivity key={item.key} activity={item} language={language}/>)}
+           {stream&&<article className="message message-assistant"><MarkdownText text={stream} streaming/></article>}
+           {completion&&<CompletionCard report={completion} language={language}/>}
+         </div>}
+       </div>
+       <form className="composer" onSubmit={send}>
+         <textarea aria-label={t("messageNoval")} value={draft} onChange={event=>setDraft(event.target.value)} placeholder={t("composerPlaceholder")} disabled={connection!=="connected"} onKeyDown={event=>{if(event.key==="Enter"&&!event.shiftKey){event.preventDefault();event.currentTarget.form?.requestSubmit()}}}/>
+         <div className="composer-row">
+           <div className="composer-controls">
+             <label className={`permission-selector ${permissions.mode}`}><Shield size={15}/><span className="sr-only">{t("sessionAccess")}</span><select aria-label={t("sessionAccess")} value={permissions.mode} onChange={event=>void selectPermissionMode(event.target.value as PermissionState["mode"])}><option value="ask">{t("askPermission")}</option><option value="full_access">{t("fullAccess")}</option></select></label>
+             {active&&permissions.approved_tools.length>0&&<button type="button" className="grant-button" onClick={()=>setShowPermissions(value=>!value)}><KeyRound size={14}/>{t("grants",{count:permissions.approved_tools.length})}</button>}
+             <span className="composer-status"><span className={`status-dot ${connection}`}/>{status}</span>
+           </div>
+           <div className="composer-actions">
+             <label className="model-selector"><span className="sr-only">{t("sessionModel")}</span><select aria-label={t("sessionModel")} value={selectedModelId} onChange={event=>void selectModel(event.target.value)}>{modelConfig?.configured.map(item=><option key={item.id} value={item.id}>{item.label}</option>)}</select>{busy&&<small>{t("nextTurn")}</small>}</label>
+             {busy?<button type="button" className="send stop" aria-label={t("stop")} onClick={()=>active&&window.noval.cancelTurn(active.session_id)}><Square size={13}/></button>:<button className="send" disabled={!draft.trim()||connection!=="connected"} aria-label={t("send")}><ArrowUp size={17}/></button>}
+           </div>
+         </div>
+       </form>
+     </>}
+     {error&&<div className="error" role="alert"><strong>{t("attention")}</strong><span>{error}</span><button onClick={()=>setError(null)}>{t("dismiss")}</button></div>}
+     {pending&&<div className="scrim"><section className="permission">
+       <div className="permission-icon"><KeyRound size={20}/></div><p className="eyebrow">{t("permissionRequired")}</p><h2>{t("allowTool",{tool:pending.tool_name})}</h2><p>{t("actionApproval",{risk:pending.risk})}</p><pre>{safePreview(pending.arguments)}</pre>
+       <div className="actions"><button onClick={()=>resolve("deny")}>{t("deny")}</button><button onClick={()=>resolve("allow_session")}>{t("allowSession")}</button><button className="primary" onClick={()=>resolve("allow_once")}>{t("allowOnce")}</button></div>
+     </section></div>}
+     {projectToRemove&&<div className="scrim project-remove-scrim" onPointerDown={event=>{if(event.target===event.currentTarget&&!removingProject)setProjectToRemove(null)}}>
+       <section className="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="remove-project-title">
+         <button className="dialog-close" aria-label={t("closeRemoveDialog")} disabled={removingProject} onClick={()=>setProjectToRemove(null)}><X size={18}/></button>
+         <h2 id="remove-project-title">{t("removeProjectQuestion",{name:leaf(projectToRemove)})}</h2><p>{t("removeProjectDetail")}</p>
+         <div className="dialog-actions"><button autoFocus disabled={removingProject} onClick={()=>setProjectToRemove(null)}>{t("cancel")}</button><button className="danger-action" disabled={removingProject} onClick={removeProject}>{removingProject?t("removing"):t("remove")}</button></div>
+       </section>
+     </div>}
    </main>
- </div>
+ </div>;
 }
 
-function EmptyState({projectName}:{projectName:string|null}){return <section className="empty-state">{projectName?<h2>我们应该在 <span>{projectName}</span> 中构建什么？</h2>:<h2>添加一个项目以开始使用 Noval</h2>}</section>}
-function ConversationMessage({item}:{item:MessageItem}){
- const [copied,setCopied]=useState(false),displayTime=formatTimestamp(item.timestamp);
- async function copy(){await window.noval.copyText(item.text);setCopied(true);window.setTimeout(()=>setCopied(false),1400)}
- return <article className={`message message-${item.role}`}><MarkdownText text={item.text}/>{item.showMeta&&<footer className="message-meta">{displayTime&&<time dateTime={item.timestamp!} title={formatFullTimestamp(item.timestamp!)}>{displayTime}</time>}<button type="button" aria-label={copied?"Copied":"Copy message"} onClick={copy}>{copied?<Check size={14}/>:<Copy size={14}/>}</button></footer>}</article>
+function EmptyState({projectName,language}:{projectName:string|null;language:LanguagePreference}){
+ const [before,after]=translate(language,"emptyProject",{name:"__PROJECT__"}).split("__PROJECT__");
+ return <section className="empty-state"><h2 aria-label={projectName?translate(language,"emptyProject",{name:projectName}):undefined}>{projectName
+   ?<>{before}<span>{projectName}</span>{after}</>
+   :translate(language,"emptyNoProject")}</h2></section>;
 }
-function CompletionCard({report}:{report:CompletionReport}){return <section className={`completion ${report.status}`} aria-label="Completion evidence"><div><strong>{report.status==="completed"?"Verified complete":report.status==="incomplete"?"Incomplete":"Completion uncertain"}</strong><small>Evidence evaluated by Noval Runtime</small></div>{report.criteria.length>0&&<ul>{report.criteria.map(item=><li key={item.criterion_id}><span>{item.criterion_id}</span><strong>{item.status}</strong><small>{item.source||"No verification source"}</small></li>)}</ul>}</section>}
+function ConversationMessage({item,language}:{item:MessageItem;language:LanguagePreference}){
+ const [copied,setCopied]=useState(false),displayTime=formatTimestamp(item.timestamp,language);
+ async function copy(){await window.noval.copyText(item.text);setCopied(true);window.setTimeout(()=>setCopied(false),1400)}
+ return <article className={`message message-${item.role}`}><MarkdownText text={item.text}/>{item.showMeta&&<footer className="message-meta">{displayTime&&<time dateTime={item.timestamp!} title={formatFullTimestamp(item.timestamp!,language)}>{displayTime}</time>}<button type="button" aria-label={translate(language,copied?"copied":"copyMessage")} onClick={copy}>{copied?<Check size={14}/>:<Copy size={14}/>}</button></footer>}</article>;
+}
+function CompletionCard({report,language}:{report:CompletionReport;language:LanguagePreference}){
+ return <section className={`completion ${report.status}`} aria-label={translate(language,"completionEvidence")}><div><strong>{translate(language,report.status==="completed"?"verifiedComplete":report.status==="incomplete"?"incomplete":"completionUncertain")}</strong><small>{translate(language,"evidenceEvaluated")}</small></div>{report.criteria.length>0&&<ul>{report.criteria.map(item=><li key={item.criterion_id}><span>{item.criterion_id}</span><strong>{item.status}</strong><small>{item.source||translate(language,"noVerificationSource")}</small></li>)}</ul>}</section>;
+}
 function leaf(value:string){return value.split(/[\\/]/).filter(Boolean).at(-1)||value}function message(e:unknown){return e instanceof Error?e.message:"An unexpected error occurred."}function safePreview(v:unknown){try{return JSON.stringify(v,null,2).slice(0,1600)}catch{return "Details unavailable"}}
-function formatTimestamp(value:string|null){if(!value)return "";const date=new Date(value);return Number.isNaN(date.valueOf())?"":new Intl.DateTimeFormat(undefined,{hour:"2-digit",minute:"2-digit"}).format(date)}
-function formatFullTimestamp(value:string){const date=new Date(value);return Number.isNaN(date.valueOf())?value:new Intl.DateTimeFormat(undefined,{dateStyle:"medium",timeStyle:"short"}).format(date)}
+function formatTimestamp(value:string|null,language:LanguagePreference){if(!value)return "";const date=new Date(value);return Number.isNaN(date.valueOf())?"":new Intl.DateTimeFormat(language,{hour:"2-digit",minute:"2-digit"}).format(date)}
+function formatFullTimestamp(value:string,language:LanguagePreference){const date=new Date(value);return Number.isNaN(date.valueOf())?value:new Intl.DateTimeFormat(language,{dateStyle:"medium",timeStyle:"short"}).format(date)}
