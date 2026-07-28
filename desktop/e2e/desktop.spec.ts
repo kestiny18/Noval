@@ -207,6 +207,8 @@ test("configures, switches during a Turn, and restores one durable model selecti
   const root=path.resolve(import.meta.dirname,"..");
   const executablePath=path.join(root,"node_modules","electron","dist",process.platform==="win32"?"electron.exe":"electron");
   const launch=()=>electron.launch({executablePath,args:[".","--lang=en-US",`--user-data-dir=${userData}`],cwd:root,env:{...process.env,NOVAL_E2E_API_KEY:"e2e-provider-key",NOVAL_PYTHON:process.env.NOVAL_PYTHON??"py",NOVAL_SETTINGS_PATH:settingsPath}});
+  const screenshotDir=process.env.NOVAL_OVERLAY_SCREENSHOT_DIR;
+  if(screenshotDir)await mkdir(screenshotDir,{recursive:true});
   let application=await launch();
   try{
     let page=await application.firstWindow();
@@ -232,8 +234,10 @@ test("configures, switches during a Turn, and restores one durable model selecti
     await expect(access).toContainText("Ask permission");
     await access.click();
     await expect(page.getByRole("menu",{name:"Session access"})).toBeVisible();
+    if(screenshotDir)await page.screenshot({path:path.join(screenshotDir,"permission-menu.png")});
     await page.getByRole("menuitemradio",{name:/Full access/i}).click();
     await expect(page.getByRole("status")).toContainText("Full access enabled");
+    if(screenshotDir)await page.screenshot({path:path.join(screenshotDir,"full-access-toast.png")});
     await page.getByRole("button",{name:"Undo"}).click();
     await expect(page.getByRole("status")).toHaveCount(0);
     await expect(access).toContainText("Ask permission");
@@ -243,6 +247,7 @@ test("configures, switches during a Turn, and restores one durable model selecti
     await expect.poll(()=>provider.models.length,{timeout:15_000}).toBe(1);
     await selector.click();
     await expect(page.getByRole("menu",{name:"Session model"})).toBeVisible();
+    if(screenshotDir)await page.screenshot({path:path.join(screenshotDir,"model-menu.png")});
     await page.getByRole("menuitemradio",{name:"alternate-model"}).click();
     await expect(selector).toContainText("alternate-model");
     provider.releaseFirst();
