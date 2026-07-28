@@ -1,4 +1,4 @@
-"""Opt-in real Adapter contract for every shipped OpenAI-compatible model."""
+"""Opt-in real Adapter contract for every shipped DeepSeek model."""
 from __future__ import annotations
 
 import json

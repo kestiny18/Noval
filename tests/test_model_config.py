@@ -39,15 +39,8 @@ def test_missing_settings_loads_schema_v2_packaged_defaults(tmp_path):
     assert not path.exists()
 
 
-def test_catalog_exposes_six_builtin_profiles_and_custom_sentinel():
-    assert [profile.id for profile in BUILTIN_PROFILES] == [
-        "deepseek",
-        "qwen",
-        "moonshot",
-        "zhipu",
-        "openai",
-        "google",
-    ]
+def test_catalog_exposes_only_verified_deepseek_and_custom_sentinel():
+    assert [profile.id for profile in BUILTIN_PROFILES] == ["deepseek"]
     public = public_provider_profiles()
     assert [profile["id"] for profile in public[:-1]] == [
         profile.id for profile in BUILTIN_PROFILES

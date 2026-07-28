@@ -146,7 +146,7 @@ def test_model_configuration_mutations_never_return_credentials(tmp_path):
     encoded = json.dumps(updated)
     assert len(
         [profile for profile in profiles["profiles"] if profile["kind"] == "builtin"]
-    ) == 6
+    ) == 1
     assert profiles["profiles"][-1]["kind"] == "custom"
     assert secret not in encoded
     assert '"api_key":' not in encoded
