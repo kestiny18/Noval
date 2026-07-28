@@ -1,4 +1,4 @@
-import {FormEvent,useEffect,useMemo,useRef,useState} from "react";
+import {type CSSProperties,FormEvent,useEffect,useMemo,useRef,useState} from "react";
 import {ArrowUp,Check,CheckCircle2,Copy,Ellipsis,Folder,FolderOpen,KeyRound,MessageSquarePlus,Pencil,Plus,RotateCcw,Settings,Shield,Square,Trash2,X,XCircle} from "lucide-react";
 import type {AppInfo,AppearancePreferences,CompletionReport,ConnectionUpsert,LanguagePreference,ModelConfigurationInfo,PermissionState,ProjectInfo,ProviderProfileInfo,SessionInfo,SidecarEvent,TranscriptEntry} from "../shared/protocol";
 import {MarkdownText} from "./MarkdownText";
@@ -9,6 +9,7 @@ import "./model-selector.css";
 
 type PendingPermission={request_id:string;tool_name:string;risk:string;arguments:Record<string,unknown>};
 type Connection="connected"|"recovering"|"disconnected";
+const MIN_SIDEBAR_WIDTH=220,MAX_SIDEBAR_WIDTH=480,DEFAULT_SIDEBAR_WIDTH=278;
 
 export function App(){
  const [projects,setProjects]=useState<ProjectInfo[]>([]),[workspace,setWorkspace]=useState<string|null>(null),[sessions,setSessions]=useState<Record<string,SessionInfo[]>>({}),[expanded,setExpanded]=useState<Set<string>>(new Set()),[visible,setVisible]=useState<Record<string,number>>({});
@@ -17,13 +18,13 @@ export function App(){
  const [draft,setDraft]=useState(""),[stream,setStream]=useState(""),[busy,setBusy]=useState(false),[status,setStatus]=useState("Ready"),[error,setError]=useState<string|null>(null),[pending,setPending]=useState<PendingPermission|null>(null);
  const [connection,setConnection]=useState<Connection>("connected"),[completion,setCompletion]=useState<CompletionReport|null>(null),[renaming,setRenaming]=useState(false),[renameDraft,setRenameDraft]=useState("");
  const [showPermissions,setShowPermissions]=useState(false),[projectMenu,setProjectMenu]=useState<string|null>(null),[projectToRemove,setProjectToRemove]=useState<string|null>(null),[removingProject,setRemovingProject]=useState(false),[draftProject,setDraftProject]=useState<string|null>(null);
- const previousConnection=useRef(connection),eventSequence=useRef(0),viewport=useRef<HTMLDivElement|null>(null),loadingOlder=useRef(false),lastScrollTop=useRef(0);
+ const previousConnection=useRef(connection),eventSequence=useRef(0),viewport=useRef<HTMLDivElement|null>(null),loadingOlder=useRef(false),lastScrollTop=useRef(0),resizeStart=useRef<{x:number;width:number}|null>(null);
  const [showSettings,setShowSettings]=useState(false),[profiles,setProfiles]=useState<ProviderProfileInfo[]>([]),[modelConfig,setModelConfig]=useState<ModelConfigurationInfo|null>(null),[draftModelId,setDraftModelId]=useState("");
- const [appearance,setAppearance]=useState<AppearancePreferences>({theme:"system",density:"comfortable"}),[language,setLanguage]=useState<LanguagePreference>(()=>localeLanguage(navigator.language)),[appInfo,setAppInfo]=useState<AppInfo|null>(null);
+ const [appearance,setAppearance]=useState<AppearancePreferences>({theme:"system",density:"comfortable"}),[language,setLanguage]=useState<LanguagePreference>(()=>localeLanguage(navigator.language)),[sidebarWidth,setSidebarWidth]=useState(DEFAULT_SIDEBAR_WIDTH),[appInfo,setAppInfo]=useState<AppInfo|null>(null);
  const t=(key:Parameters<typeof translate>[1],values?:Record<string,string|number>)=>translate(language,key,values);
  const title=active?.title||t("newTask"),hasTask=Boolean(active||draftProject);
 
- useEffect(()=>{void Promise.all([refreshProjects(),refreshModels(),window.noval.getPreferences().then(preferences=>{applyAppearance(preferences.appearance);applyLanguage(preferences.language)})]).catch(e=>setError(message(e)))},[]);
+ useEffect(()=>{void Promise.all([refreshProjects(),refreshModels(),window.noval.getPreferences().then(preferences=>{applyAppearance(preferences.appearance);applyLanguage(preferences.language);setSidebarWidth(preferences.sidebarWidth)})]).catch(e=>setError(message(e)))},[]);
  useEffect(()=>window.noval.onEvent(handleEvent),[language]);
  useEffect(()=>{const recovered=previousConnection.current!=="connected"&&connection==="connected";previousConnection.current=connection;if(!recovered||!active)return;void restoreActive()},[connection,active?.session_id]);
  useEffect(()=>{if(!projectMenu&&!projectToRemove)return;function keydown(event:KeyboardEvent){if(event.key==="Escape"&&!removingProject){setProjectMenu(null);setProjectToRemove(null)}}function pointerdown(event:PointerEvent){const target=event.target;if(projectMenu&&target instanceof Element&&!target.closest(".project-menu")&&!target.closest(".project-actions-trigger"))setProjectMenu(null)}document.addEventListener("keydown",keydown);document.addEventListener("pointerdown",pointerdown);return()=>{document.removeEventListener("keydown",keydown);document.removeEventListener("pointerdown",pointerdown)}},[projectMenu,projectToRemove,removingProject]);
@@ -53,8 +54,15 @@ export function App(){
  async function selectModel(id:string){if(!active){setDraftModelId(id);return}try{const updated=await window.noval.selectSessionModel(active.session_id,id);setActive(updated);setDraftModelId(updated.selected_model_id);setSessions(old=>Object.fromEntries(Object.entries(old).map(([path,items])=>[path,items.map(item=>item.session_id===updated.session_id?updated:item)])))}catch(err){setError(message(err))}}
  async function saveAppearance(value:AppearancePreferences){try{const saved=await window.noval.saveAppearance(value);applyAppearance(saved)}catch(err){setError(message(err))}}
  async function saveLanguage(value:LanguagePreference){try{const saved=await window.noval.saveLanguage(value);applyLanguage(saved.language)}catch(err){setError(message(err))}}
+ async function persistSidebarWidth(value:number){try{const saved=await window.noval.saveSidebarWidth(value);setSidebarWidth(saved.sidebarWidth)}catch(err){setError(message(err))}}
  function applyAppearance(value:AppearancePreferences){setAppearance(value);document.documentElement.dataset.theme=value.theme;document.documentElement.dataset.density=value.density}
  function applyLanguage(value:LanguagePreference){setLanguage(value);document.documentElement.lang=value}
+ function resizeSidebar(value:number){const next=Math.min(MAX_SIDEBAR_WIDTH,Math.max(MIN_SIDEBAR_WIDTH,Math.round(value)));setSidebarWidth(next);return next}
+ function startSidebarResize(event:React.PointerEvent<HTMLDivElement>){if(event.button!==0)return;resizeStart.current={x:event.clientX,width:sidebarWidth};event.currentTarget.setPointerCapture?.(event.pointerId)}
+ function moveSidebarResize(event:React.PointerEvent<HTMLDivElement>){if(!resizeStart.current)return;resizeSidebar(resizeStart.current.width+event.clientX-resizeStart.current.x)}
+ function finishSidebarResize(event:React.PointerEvent<HTMLDivElement>){const start=resizeStart.current;if(!start)return;resizeStart.current=null;event.currentTarget.releasePointerCapture?.(event.pointerId);void persistSidebarWidth(resizeSidebar(start.width+event.clientX-start.x))}
+ function cancelSidebarResize(event:React.PointerEvent<HTMLDivElement>){if(!resizeStart.current)return;resizeStart.current=null;event.currentTarget.releasePointerCapture?.(event.pointerId);void persistSidebarWidth(sidebarWidth)}
+ function resizeSidebarByKeyboard(event:React.KeyboardEvent<HTMLDivElement>){let next:number|undefined;if(event.key==="ArrowLeft")next=sidebarWidth-16;if(event.key==="ArrowRight")next=sidebarWidth+16;if(event.key==="Home")next=MIN_SIDEBAR_WIDTH;if(event.key==="End")next=MAX_SIDEBAR_WIDTH;if(next===undefined)return;event.preventDefault();void persistSidebarWidth(resizeSidebar(next))}
 
  const grouped=useMemo(()=>entries.filter(x=>x.text||x.tool_calls.length||x.tool_results.length),[entries]);
  const timeline=useMemo(()=>buildTimeline(grouped),[grouped]);
@@ -75,7 +83,7 @@ export function App(){
    error={error}
    dismissError={()=>setError(null)}
  />;
- return <div className="shell">
+ return <div className="shell" style={{"--sidebar-width":`${sidebarWidth}px`} as CSSProperties}>
    <aside className="sidebar project-sidebar">
      <header className="brand"><strong>Noval</strong></header>
      <div className="project-heading"><span>{t("projects")}</span><div><button aria-label={t("addProject")} onClick={addProject}><Plus size={17}/></button></div></div>
@@ -108,6 +116,21 @@ export function App(){
        <span className="connection"><span className={`status-dot ${connection}`}/>{connection==="connected"?t("runtimeConnected"):connection==="recovering"?t("runtimeRecovering"):t("runtimeUnavailable")}</span>
      </footer>
    </aside>
+   <div
+     className="sidebar-resizer"
+     role="separator"
+     aria-label={t("resizeSidebar")}
+     aria-orientation="vertical"
+     aria-valuemin={MIN_SIDEBAR_WIDTH}
+     aria-valuemax={MAX_SIDEBAR_WIDTH}
+     aria-valuenow={sidebarWidth}
+     tabIndex={0}
+     onPointerDown={startSidebarResize}
+     onPointerMove={moveSidebarResize}
+     onPointerUp={finishSidebarResize}
+     onPointerCancel={cancelSidebarResize}
+     onKeyDown={resizeSidebarByKeyboard}
+   />
    <main className="workspace-pane">
      <header className="topbar">
        {active?<div>{renaming?<form className="rename" onSubmit={event=>{event.preventDefault();void renameSession()}}>
