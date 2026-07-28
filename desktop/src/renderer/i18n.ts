@@ -1,7 +1,7 @@
 import type {LanguagePreference} from "../shared/protocol";
 
 const en={
-  projects:"Projects",addProject:"Add project",settings:"Settings",
+  projects:"Projects",addProject:"Add project",settings:"Settings",resizeSidebar:"Resize project sidebar",
   runtimeConnected:"Runtime connected",runtimeRecovering:"Recovering runtime",runtimeUnavailable:"Runtime unavailable",
   ready:"Ready",generating:"Generating",validating:"Validating",waitingApproval:"Waiting for approval",
   running:"Running",turnFailed:"Turn failed",recoveredTranscript:"Recovered from transcript",
@@ -65,7 +65,7 @@ const en={
 } as const;
 
 const zh:Record<keyof typeof en,string>={
-  projects:"项目",addProject:"添加项目",settings:"设置",
+  projects:"项目",addProject:"添加项目",settings:"设置",resizeSidebar:"调整项目侧栏宽度",
   runtimeConnected:"运行时已连接",runtimeRecovering:"正在恢复运行时",runtimeUnavailable:"运行时不可用",
   ready:"就绪",generating:"正在生成",validating:"正在验证",waitingApproval:"等待授权",
   running:"运行中",turnFailed:"本轮失败",recoveredTranscript:"已从会话记录恢复",
