@@ -3,37 +3,36 @@
 ## Goal
 
 Provide a focused Desktop settings experience inspired by the supplied Codex
-references while exposing only capabilities Noval currently owns. Provider and
-model configuration is superseded by
+references while exposing only capabilities Noval currently owns. Internal
+model configuration is defined by
 `2026-07-24-provider-model-configuration-design.md`.
 
 ## Information architecture
 
-The Settings surface replaces the project shell temporarily and has four
+The Settings surface replaces the project shell temporarily and has three
 sections in this order:
 
-1. **Profile** — a read-only local profile derived from the current project,
-   Session, Runtime, and version state. It does not invent an account, billing,
-   usage heatmap, or cloud identity.
+1. **General** — application preferences, including the Simplified Chinese and
+   English language choice. It does not expose host, process, protocol, account,
+   billing, or cloud-identity implementation details.
 2. **Appearance** — System, Light, and Dark themes plus Comfortable and Compact
    interface density.
-3. **Models** — the shipped DeepSeek Provider and one write-only API-key
-   replace/clear control. Connection, endpoint, environment-variable,
-   Configured Model, default-model, and Adapter controls are not exposed.
-4. **Language** — Simplified Chinese and English.
+3. **Models** — one unified DeepSeek configuration card containing credential
+   availability and a write-only API key replace/clear control. Provider,
+   Connection, endpoint, environment-variable, Configured Model, default-model,
+   and Adapter concepts are not exposed.
 
 The Back action restores the existing project shell without recreating or
 resetting project state.
 
 ## Ownership and persistence
 
-Model configuration is Runtime-owned and uses settings schema v2, Application
-API v2, and the OpenAI-compatible Phase 1 contract defined by
+Model configuration uses settings schema v2, Application API v2, and the
+OpenAI-compatible Phase 1 contract defined by
 `2026-07-24-provider-model-configuration-design.md`. Phase 1 stores Connection
-API keys as plaintext in the user-local Runtime settings file. Existing keys
-never return to the Renderer, Desktop does not describe them as encrypted, and
-model configuration updates through Runtime APIs without requiring a Sidecar
-restart.
+API keys as plaintext in the user-local settings file. Existing keys never
+return to the Renderer, Desktop does not describe them as encrypted, and
+configuration updates apply without requiring an application restart.
 
 Theme, density, language, and project-sidebar width are Desktop-only
 preferences stored in Electron's `desktop-settings.json`. They do not enter
@@ -55,18 +54,22 @@ conversation composer and are not duplicated in Settings.
   accessible labels, and persist across restarts.
 - The project sidebar separator supports pointer drag, Left/Right arrow keys,
   visible focus, clamping, and persisted restoration.
-- Composer model and permission controls remain usable by keyboard and expose
+- Composer model and permission controls use application-owned anchored menus,
+  remain usable by keyboard, close on Escape or outside interaction, and expose
   their current state with explicit labels.
+- Selecting Full Access applies immediately and shows a non-blocking,
+  time-limited toast with an Undo action. It does not open a native confirmation
+  dialog. The copy states that other safety limits remain in effect.
 - Form controls retain explicit labels and visible focus states.
 - Light and dark themes share the existing Noval semantic tokens.
 - Errors remain visible inside the Settings surface instead of closing it.
 
 ## Verification
 
-- Renderer tests cover all four sections, their exact order, the focused
-  DeepSeek credential form, Runtime values, appearance/language/sidebar
-  persistence calls, document theme/density/language state, composer controls,
-  and Back behavior.
+- Renderer tests cover all three sections, their exact order, the unified
+  DeepSeek credential form, absence of implementation details,
+  appearance/language/sidebar persistence calls, document
+  theme/density/language state, composer menus and toast Undo, and Back behavior.
 - Electron E2E covers real settings navigation, credential save, language and
   sidebar persistence, Session model/permission controls, and restoration after
   relaunch.
