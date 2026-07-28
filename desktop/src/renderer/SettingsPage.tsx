@@ -1,22 +1,24 @@
-import {FormEvent,useMemo,useState} from "react";
+import {FormEvent,useState} from "react";
 import {
-  ArrowLeft,Check,ChevronRight,CircleUserRound,Cpu,FolderKanban,
-  KeyRound,MonitorCog,Moon,Palette,ServerCog,Settings2,ShieldCheck,
-  Sun,SunMoon,
+  ArrowLeft,Check,ChevronRight,CircleUserRound,Cpu,FolderKanban,Languages,
+  KeyRound,MonitorCog,Moon,Palette,ServerCog,Settings2,ShieldCheck,Sun,SunMoon,
 } from "lucide-react";
 import type {
-  AppInfo,AppearancePreferences,ConnectionUpsert,ModelConfigurationInfo,
-  ProviderProfileInfo,
+  AppInfo,AppearancePreferences,ConnectionUpsert,LanguagePreference,
+  ModelConfigurationInfo,ProviderProfileInfo,
 } from "../shared/protocol";
 import {API_SCHEMA_VERSION} from "../shared/protocol";
+import {translate} from "./i18n";
 
-type Section="profile"|"appearance"|"models";
+type Section="profile"|"appearance"|"models"|"language";
 type Props={
   profiles:ProviderProfileInfo[];
   models:ModelConfigurationInfo|null;
   upsertConnection:(value:ConnectionUpsert)=>Promise<void>;
   appearance:AppearancePreferences;
   saveAppearance:(value:AppearancePreferences)=>Promise<void>;
+  language:LanguagePreference;
+  saveLanguage:(value:LanguagePreference)=>Promise<void>;
   appInfo:AppInfo|null;
   workspace:string|null;
   projectCount:number;
@@ -28,27 +30,26 @@ type Props={
 
 export function SettingsPage(props:Props){
   const [section,setSection]=useState<Section>("profile");
+  const t=(key:Parameters<typeof translate>[1],values?:Record<string,string|number>)=>translate(props.language,key,values);
   return <div className="settings-shell" data-testid="settings-shell">
     <aside className="settings-sidebar">
-      <button className="settings-back" onClick={props.close}>
-        <ArrowLeft size={14}/>Back to Noval
-      </button>
-      <div className="settings-brand"><span>Noval</span><strong>Settings</strong></div>
-      <nav aria-label="Settings sections">
-        <p>Desktop</p>
-        <NavButton active={section==="profile"} icon={<CircleUserRound size={15}/>} onClick={()=>setSection("profile")}>Profile</NavButton>
-        <NavButton active={section==="appearance"} icon={<Palette size={15}/>} onClick={()=>setSection("appearance")}>Appearance</NavButton>
-        <NavButton active={section==="models"} icon={<Settings2 size={15}/>} onClick={()=>setSection("models")}>Models</NavButton>
+      <button className="settings-back" onClick={props.close}><ArrowLeft size={14}/>{t("backToNoval")}</button>
+      <div className="settings-brand"><span>Noval</span><strong>{t("settings")}</strong></div>
+      <nav aria-label={t("settingsSections")}>
+        <p>{t("desktop")}</p>
+        <NavButton active={section==="profile"} icon={<CircleUserRound size={15}/>} onClick={()=>setSection("profile")}>{t("profile")}</NavButton>
+        <NavButton active={section==="appearance"} icon={<Palette size={15}/>} onClick={()=>setSection("appearance")}>{t("appearance")}</NavButton>
+        <NavButton active={section==="models"} icon={<Settings2 size={15}/>} onClick={()=>setSection("models")}>{t("models")}</NavButton>
+        <NavButton active={section==="language"} icon={<Languages size={15}/>} onClick={()=>setSection("language")}>{t("language")}</NavButton>
       </nav>
-      <footer><ShieldCheck size={14}/><span>Runtime owns model configuration.</span></footer>
+      <footer><ShieldCheck size={14}/><span>{t("settingsBoundary")}</span></footer>
     </aside>
     <main className="settings-content">
-      {props.error&&<div className="settings-error" role="alert">
-        <span>{props.error}</span><button onClick={props.dismissError}>Dismiss</button>
-      </div>}
+      {props.error&&<div className="settings-error" role="alert"><span>{props.error}</span><button onClick={props.dismissError}>{t("dismiss")}</button></div>}
       {section==="profile"&&<ProfileSettings {...props}/>}
-      {section==="appearance"&&<AppearanceSettings appearance={props.appearance} saveAppearance={props.saveAppearance}/>}
+      {section==="appearance"&&<AppearanceSettings {...props}/>}
       {section==="models"&&<ModelSettings {...props}/>}
+      {section==="language"&&<LanguageSettings {...props}/>}
     </main>
   </div>;
 }
@@ -60,18 +61,19 @@ function NavButton({active,icon,onClick,children}:{active:boolean;icon:React.Rea
 }
 
 function ModelSettings(props:Props){
+  const t=(key:Parameters<typeof translate>[1])=>translate(props.language,key);
   const profile=props.profiles.find(item=>item.id==="deepseek"&&item.kind==="builtin");
   const connection=props.models?.connections.find(item=>item.profile_id==="deepseek");
   const [apiKey,setApiKey]=useState("");
   const [clearKey,setClearKey]=useState(false);
   const [saving,setSaving]=useState(false);
-  const [saved,setSaved]=useState("");
+  const [saved,setSaved]=useState(false);
 
   async function save(event:FormEvent){
     event.preventDefault();
     if(!profile||!connection||!props.models)return;
     setSaving(true);
-    setSaved("");
+    setSaved(false);
     try{
       await props.upsertConnection({
         schema_version:API_SCHEMA_VERSION,
@@ -85,43 +87,34 @@ function ModelSettings(props:Props){
       });
       setApiKey("");
       setClearKey(false);
-      setSaved("API key saved without restarting the Runtime.");
+      setSaved(true);
     }catch{}finally{setSaving(false)}
   }
 
   return <section className="settings-page">
-    <PageHeader
-      eyebrow="RUNTIME"
-      title="Models"
-      description="Configure the credential for the verified Phase 1 Provider. Choose the model for each Session from the conversation input."
-    />
-    <SettingsGroup title="Provider">
-      <SettingRow title="Model provider" description="Phase 1 currently ships only the real-contract-verified DeepSeek Profile.">
-        <select aria-label="Model provider" value="deepseek" disabled>
+    <PageHeader eyebrow={t("runtime")} title={t("models")} description={t("modelsDescription")}/>
+    <SettingsGroup title={t("provider")}>
+      <SettingRow title={t("modelProvider")} description={t("providerDescription")}>
+        <select aria-label={t("modelProvider")} value="deepseek" disabled>
           <option value="deepseek">{profile?.label??"DeepSeek"}</option>
         </select>
       </SettingRow>
-      <SettingRow title="Credential status" description="Only availability is exposed to Desktop; the existing value is never returned.">
-        <span className="privacy-badge">
-          <ShieldCheck size={13}/>{connection?.credential_available?"Available":"Not configured"}
-        </span>
+      <SettingRow title={t("credentialStatus")} description={t("credentialStatusDescription")}>
+        <span className="privacy-badge"><ShieldCheck size={13}/>{connection?.credential_available?t("available"):t("notConfigured")}</span>
       </SettingRow>
     </SettingsGroup>
-    <SettingsGroup title="API key">
+    <SettingsGroup title={t("apiKeyGroup")}>
       <form className="connection-form" onSubmit={save}>
-        <SettingRow
-          title="DeepSeek API key"
-          description="Write-only. A saved value is plaintext in your user-local settings.json and never rehydrated into Desktop."
-        >
+        <SettingRow title={t("deepseekApiKey")} description={t("apiKeyDescription")}>
           <div className="credential-stack">
             <div className="credential-field">
               <KeyRound size={14}/>
               <input
-                aria-label="API key"
+                aria-label={t("apiKey")}
                 type="password"
                 autoComplete="off"
                 value={apiKey}
-                placeholder={connection?.api_key_configured?"Credential configured — enter to replace":"Enter credential"}
+                placeholder={connection?.api_key_configured?t("credentialConfigured"):t("enterCredential")}
                 onChange={event=>{setApiKey(event.target.value);setClearKey(false)}}
               />
             </div>
@@ -131,84 +124,99 @@ function ModelSettings(props:Props){
                 checked={clearKey}
                 onChange={event=>{setClearKey(event.target.checked);if(event.target.checked)setApiKey("")}}
               />
-              Clear stored credential
+              {t("clearCredential")}
             </label>}
           </div>
         </SettingRow>
         <div className="settings-save">
-          <span>{saved&&<><Check size={14}/>{saved}</>}</span>
-          <button className="settings-primary" disabled={saving||!connection}>
-            {saving?"Saving…":"Save API key"}
-          </button>
+          <span>{saved&&<><Check size={14}/>{t("apiKeySaved")}</>}</span>
+          <button className="settings-primary" disabled={saving||!connection}>{saving?t("saving"):t("saveApiKey")}</button>
         </div>
       </form>
     </SettingsGroup>
   </section>;
 }
 
-function ProfileSettings({workspace,projectCount,sessionCount,appInfo}:Props){
+function ProfileSettings(props:Props){
+  const t=(key:Parameters<typeof translate>[1])=>translate(props.language,key);
   return <section className="settings-page">
-    <PageHeader
-      eyebrow="LOCAL PROFILE"
-      title="Private by design"
-      description="A truthful view of the Noval state available on this device. No account or cloud profile is required."
-    />
+    <PageHeader eyebrow={t("localProfile")} title={t("privateByDesign")} description={t("profileDescription")}/>
     <div className="profile-hero">
       <div className="profile-mark">N</div>
       <div>
-        <span className="profile-status"><i/>Local Runtime connected</span>
-        <h2>Noval Desktop</h2>
-        <p>Your projects, Sessions, permissions, and model configuration remain under local Runtime ownership.</p>
+        <span className="profile-status"><i/>{t("localRuntimeConnected")}</span>
+        <h2>{t("novalDesktop")}</h2>
+        <p>{t("profileOwnership")}</p>
       </div>
     </div>
     <div className="profile-stats">
-      <Stat icon={<FolderKanban size={17}/>} value={String(projectCount)} label="Projects"/>
-      <Stat icon={<CircleUserRound size={17}/>} value={String(sessionCount)} label="Stored Sessions"/>
-      <Stat icon={<Cpu size={17}/>} value={appInfo?.coreVersion??"—"} label="Core version"/>
+      <Stat icon={<FolderKanban size={17}/>} value={String(props.projectCount)} label={t("projectsCount")}/>
+      <Stat icon={<CircleUserRound size={17}/>} value={String(props.sessionCount)} label={t("storedSessions")}/>
+      <Stat icon={<Cpu size={17}/>} value={props.appInfo?.coreVersion??"—"} label={t("coreVersion")}/>
     </div>
-    <SettingsGroup title="Current environment">
-      <SettingRow title="Active workspace" description="The project Noval will use for the next new task.">
-        <span className="setting-value truncate" title={workspace??undefined}>{workspace??"No project selected"}</span>
+    <SettingsGroup title={t("currentEnvironment")}>
+      <SettingRow title={t("activeWorkspace")} description={t("activeWorkspaceDescription")}>
+        <span className="setting-value truncate" title={props.workspace??undefined}>{props.workspace??t("noProjectSelected")}</span>
       </SettingRow>
-      <SettingRow title="Runtime boundary" description="Electron is the product shell; Python remains the only execution kernel.">
-        <span className="privacy-badge"><ServerCog size={13}/>Local</span>
+      <SettingRow title={t("runtimeBoundary")} description={t("runtimeBoundaryDescription")}>
+        <span className="privacy-badge"><ServerCog size={13}/>{t("local")}</span>
       </SettingRow>
-      <SettingRow title="Desktop version" description="Current preview build.">
-        <code>{appInfo?.desktopVersion??"—"}</code>
-      </SettingRow>
-      <SettingRow title="Sidecar protocol" description="Typed Electron ↔ Python transport contract.">
-        <code>v{appInfo?.protocolVersion??"—"}</code>
-      </SettingRow>
+      <SettingRow title={t("desktopVersion")} description={t("previewBuild")}><code>{props.appInfo?.desktopVersion??"—"}</code></SettingRow>
+      <SettingRow title={t("sidecarProtocol")} description={t("sidecarDescription")}><code>v{props.appInfo?.protocolVersion??"—"}</code></SettingRow>
     </SettingsGroup>
   </section>;
 }
 
-function AppearanceSettings({appearance,saveAppearance}:{appearance:AppearancePreferences;saveAppearance:(value:AppearancePreferences)=>Promise<void>}){
+function AppearanceSettings(props:Props){
+  const t=(key:Parameters<typeof translate>[1])=>translate(props.language,key);
   return <section className="settings-page">
-    <PageHeader eyebrow="INTERFACE" title="Appearance" description="Choose how Noval looks on this device. Changes apply immediately and persist across restarts."/>
-    <SettingsGroup title="Theme">
+    <PageHeader eyebrow={t("interface")} title={t("appearance")} description={t("appearanceDescription")}/>
+    <SettingsGroup title={t("theme")}>
       <div className="theme-grid">
-        <ThemeChoice label="System" icon={<SunMoon size={16}/>} value="system" current={appearance.theme} onChoose={theme=>saveAppearance({...appearance,theme})}/>
-        <ThemeChoice label="Light" icon={<Sun size={16}/>} value="light" current={appearance.theme} onChoose={theme=>saveAppearance({...appearance,theme})}/>
-        <ThemeChoice label="Dark" icon={<Moon size={16}/>} value="dark" current={appearance.theme} onChoose={theme=>saveAppearance({...appearance,theme})}/>
+        <ThemeChoice label={t("system")} icon={<SunMoon size={16}/>} value="system" current={props.appearance.theme} onChoose={theme=>props.saveAppearance({...props.appearance,theme})}/>
+        <ThemeChoice label={t("light")} icon={<Sun size={16}/>} value="light" current={props.appearance.theme} onChoose={theme=>props.saveAppearance({...props.appearance,theme})}/>
+        <ThemeChoice label={t("dark")} icon={<Moon size={16}/>} value="dark" current={props.appearance.theme} onChoose={theme=>props.saveAppearance({...props.appearance,theme})}/>
       </div>
     </SettingsGroup>
-    <SettingsGroup title="Layout">
-      <SettingRow title="Interface density" description="Adjust project rows and surrounding application chrome.">
-        <div className="density-control" role="group" aria-label="Interface density">
+    <SettingsGroup title={t("layout")}>
+      <SettingRow title={t("interfaceDensity")} description={t("densityDescription")}>
+        <div className="density-control" role="group" aria-label={t("interfaceDensity")}>
           {(["comfortable","compact"] as const).map(value=><button
             type="button"
-            className={appearance.density===value?"active":""}
-            aria-pressed={appearance.density===value}
+            className={props.appearance.density===value?"active":""}
+            aria-pressed={props.appearance.density===value}
             key={value}
-            onClick={()=>saveAppearance({...appearance,density:value})}
-          >{value[0].toUpperCase()+value.slice(1)}</button>)}
+            onClick={()=>props.saveAppearance({...props.appearance,density:value})}
+          >{t(value)}</button>)}
         </div>
       </SettingRow>
     </SettingsGroup>
     <div className="appearance-note">
       <MonitorCog size={17}/>
-      <div><strong>Desktop preference only</strong><p>Theme and density are stored by Electron. They do not change Noval Core settings or Session behavior.</p></div>
+      <div><strong>{t("desktopPreference")}</strong><p>{t("appearanceBoundary")}</p></div>
+    </div>
+  </section>;
+}
+
+function LanguageSettings(props:Props){
+  const t=(key:Parameters<typeof translate>[1])=>translate(props.language,key);
+  return <section className="settings-page">
+    <PageHeader eyebrow={t("languageEyebrow")} title={t("languageTitle")} description={t("languageDescription")}/>
+    <SettingsGroup title={t("displayLanguage")}>
+      <SettingRow title={t("displayLanguage")} description={t("displayLanguageDescription")}>
+        <select
+          aria-label={t("displayLanguage")}
+          value={props.language}
+          onChange={event=>void props.saveLanguage(event.target.value as LanguagePreference)}
+        >
+          <option value="zh-CN">{t("chinese")}</option>
+          <option value="en">{t("english")}</option>
+        </select>
+      </SettingRow>
+    </SettingsGroup>
+    <div className="appearance-note">
+      <Languages size={17}/>
+      <div><strong>{t("desktopPreference")}</strong><p>{t("languageNote")}</p></div>
     </div>
   </section>;
 }
