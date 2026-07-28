@@ -119,57 +119,6 @@ BUILTIN_PROFILES: Tuple[ProviderProfile, ...] = (
         "deepseek-v4-pro",
         "deepseek-v4-flash",
     ),
-    _profile(
-        "qwen",
-        "Qwen",
-        "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        "DASHSCOPE_API_KEY",
-        (
-            ("qwen3.7-plus", "Qwen 3.7 Plus"),
-            ("qwen3.6-flash", "Qwen 3.6 Flash"),
-        ),
-        "qwen3.7-plus",
-        "qwen3.6-flash",
-    ),
-    _profile(
-        "moonshot",
-        "Moonshot",
-        "https://api.moonshot.cn/v1",
-        "MOONSHOT_API_KEY",
-        (("kimi-k2.6", "Kimi K2.6"),),
-        "kimi-k2.6",
-        "kimi-k2.6",
-    ),
-    _profile(
-        "zhipu",
-        "Zhipu",
-        "https://open.bigmodel.cn/api/paas/v4",
-        "ZAI_API_KEY",
-        (("glm-5.2", "GLM 5.2"),),
-        "glm-5.2",
-        "glm-5.2",
-    ),
-    _profile(
-        "openai",
-        "OpenAI",
-        "https://api.openai.com/v1",
-        "OPENAI_API_KEY",
-        (("gpt-5.2", "GPT-5.2"), ("gpt-5-mini", "GPT-5 mini")),
-        "gpt-5.2",
-        "gpt-5-mini",
-    ),
-    _profile(
-        "google",
-        "Google",
-        "https://generativelanguage.googleapis.com/v1beta/openai/",
-        "GEMINI_API_KEY",
-        (
-            ("gemini-3.6-flash", "Gemini 3.6 Flash"),
-            ("gemini-3.5-flash-lite", "Gemini 3.5 Flash Lite"),
-        ),
-        "gemini-3.6-flash",
-        "gemini-3.6-flash",
-    ),
 )
 BUILTIN_PROFILE_BY_ID: Mapping[str, ProviderProfile] = MappingProxyType(
     {profile.id: profile for profile in BUILTIN_PROFILES}

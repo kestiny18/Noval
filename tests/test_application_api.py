@@ -308,14 +308,7 @@ def test_runtime_configuration_mutations_are_typed_atomic_and_credential_safe(
     )
 
     profiles = runtime.list_provider_profiles()
-    assert [profile.id for profile in profiles[:-1]] == [
-        "deepseek",
-        "qwen",
-        "moonshot",
-        "zhipu",
-        "openai",
-        "google",
-    ]
+    assert [profile.id for profile in profiles[:-1]] == ["deepseek"]
     assert profiles[-1].id == "custom"
     assert all("base_url" not in profile.to_dict() for profile in profiles)
     secret = "credential-never-returned"
