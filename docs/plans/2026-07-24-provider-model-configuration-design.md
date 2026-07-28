@@ -587,30 +587,31 @@ switching remains deferred.
 Settings navigation is:
 
 ```text
-Profile
+General
 Appearance
 Models
-Language
 ```
 
-Models contains:
+General contains the Desktop language choice. Models contains one unified
+DeepSeek configuration card with:
 
-1. the shipped Provider identity;
+1. the model service name;
 2. credential availability;
-3. one write-only API-key replace/clear field.
+3. one write-only API key replace/clear field.
 
 The Phase 1 form is deliberately:
 
 ```text
-Provider: DeepSeek
+DeepSeek
 API key
 ```
 
 There is no Connection name, endpoint, environment-variable, Configured Model,
-default-model, Custom Provider, or Adapter control in Desktop. Built-in
+default-model, Custom Provider, vendor, or Adapter control in Desktop. Built-in
 endpoint and Adapter values are not editable. Existing stored key values never
-reach the Renderer. The underlying Runtime API remains generic for CLI and
-future hosts.
+reach the Renderer. Internal APIs remain generic for CLI and future hosts.
+Desktop product copy does not expose Electron, Python, Runtime, Sidecar, or
+protocol ownership.
 
 The conversation composer owns two Session controls:
 
@@ -619,19 +620,23 @@ The conversation composer owns two Session controls:
 - an access selector backed by the existing Session permission mode.
 
 Both controls display product language rather than internal ids. Neither is
-duplicated in Settings.
+duplicated in Settings. They use application-owned anchored menus rather than
+platform-native select popups. Selecting Full Access applies immediately and
+shows a non-blocking toast with Undo instead of a native confirmation dialog.
 
 The project sidebar and conversation area are separated by a draggable,
 keyboard-operable separator. Desktop clamps and persists the sidebar width.
 
-Language is a Desktop-only choice between Simplified Chinese and English. On
+Language is an option within General and is a Desktop-only choice between
+Simplified Chinese and English. On
 the first launch, a `zh` system locale selects Chinese and every other locale
 selects English. An explicit user choice persists and wins on later launches.
 All first-party visible copy and accessibility labels use the selected locale;
 Provider/Core error messages remain safe source text in Phase 1.
 
-Desktop Sidecar protocol v2 mirrors Application API v2. A schema failure is a
-typed startup failure, not an automatic restart loop.
+Internally, Desktop Sidecar protocol v2 mirrors Application API v2. A schema
+failure is a typed startup failure, not an automatic restart loop; these
+implementation details are not rendered in the product UI.
 
 ## CLI
 
