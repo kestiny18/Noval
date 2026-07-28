@@ -129,7 +129,7 @@ test("discovers projects and Sessions from Noval Core storage",async()=>{
   const settingsPath=path.join(userData,"noval-settings.json");await writeFile(settingsPath,JSON.stringify(runtimeSettings(sessionsRoot,"core-model","core-judge")),"utf8");
   const root=path.resolve(import.meta.dirname,".."),executablePath=path.join(root,"node_modules","electron","dist",process.platform==="win32"?"electron.exe":"electron");
   const application=await electron.launch({executablePath,args:[".","--lang=en-US",`--user-data-dir=${userData}`],cwd:root,env:{...process.env,DEEPSEEK_API_KEY:"e2e-placeholder",NOVAL_PYTHON:process.env.NOVAL_PYTHON??"py",NOVAL_SETTINGS_PATH:settingsPath}});const page=await application.firstWindow();
-  try{await expect(page.getByRole("button",{name:"core-project",exact:true})).toBeVisible();await expect(page.getByRole("button",{name:/incompatible v2/i})).toHaveCount(0);await expect(page.getByRole("button",{name:"Stored conversation"})).toBeVisible();await page.getByRole("button",{name:"Stored conversation"}).click();await expect(page.getByRole("heading",{name:"Rendered Markdown",level:2})).toBeVisible({timeout:30000});await expect(page.locator("strong",{hasText:"formatted text"})).toBeVisible();const activity=page.getByText("Ran 2 commands");await expect(activity).toBeVisible();await expect(page.getByText("Tool completed")).toHaveCount(0);await activity.click();await expect(page.locator(".activity-details pre").first()).toHaveText("done");const viewport=page.locator(".conversation-viewport");expect(await viewport.evaluate(element=>getComputedStyle(element).scrollbarWidth)).toBe("thin");expect(await viewport.evaluate(element=>{element.scrollTop=element.scrollHeight;return element.scrollTop>0})).toBe(true);const geometry=await page.evaluate(()=>{const last=document.querySelector(".activity-row")?.getBoundingClientRect(),composer=document.querySelector(".composer")?.getBoundingClientRect();return {lastBottom:last?.bottom??0,composerTop:composer?.top??0}});expect(geometry.lastBottom).toBeLessThan(geometry.composerTop);await page.getByRole("button",{name:"Settings"}).click();await expect(page.getByRole("heading",{name:"Private by design"})).toBeVisible();await page.getByRole("button",{name:"Models"}).click();await expect(page.getByRole("heading",{name:"Models",exact:true})).toBeVisible();await expect(page.getByLabel("Model provider")).toHaveValue("deepseek");await expect(page.getByLabel("Model provider")).toBeDisabled();await expect(page.getByLabel("Base URL")).toHaveCount(0)}
+  try{await expect(page.getByRole("button",{name:"core-project",exact:true})).toBeVisible();await expect(page.getByRole("button",{name:/incompatible v2/i})).toHaveCount(0);await expect(page.getByRole("button",{name:"Stored conversation"})).toBeVisible();await page.getByRole("button",{name:"Stored conversation"}).click();await expect(page.getByRole("heading",{name:"Rendered Markdown",level:2})).toBeVisible({timeout:30000});await expect(page.locator("strong",{hasText:"formatted text"})).toBeVisible();const activity=page.getByText("Ran 2 commands");await expect(activity).toBeVisible();await expect(page.getByText("Tool completed")).toHaveCount(0);await activity.click();await expect(page.locator(".activity-details pre").first()).toHaveText("done");const viewport=page.locator(".conversation-viewport");expect(await viewport.evaluate(element=>getComputedStyle(element).scrollbarWidth)).toBe("thin");expect(await viewport.evaluate(element=>{element.scrollTop=element.scrollHeight;return element.scrollTop>0})).toBe(true);const geometry=await page.evaluate(()=>{const last=document.querySelector(".activity-row")?.getBoundingClientRect(),composer=document.querySelector(".composer")?.getBoundingClientRect();return {lastBottom:last?.bottom??0,composerTop:composer?.top??0}});expect(geometry.lastBottom).toBeLessThan(geometry.composerTop);await page.getByRole("button",{name:"Settings"}).click();await expect(page.getByRole("heading",{name:"General"})).toBeVisible();await page.getByRole("button",{name:"Models"}).click();await expect(page.getByRole("heading",{name:"Models",exact:true})).toBeVisible();await expect(page.getByText("DeepSeek",{exact:true})).toBeVisible();await expect(page.getByText(/provider|vendor|runtime|electron|python|sidecar/i)).toHaveCount(0);await expect(page.getByLabel("Base URL")).toHaveCount(0)}
   finally{const process=application.process();const exited=new Promise<void>(resolve=>{if(process.exitCode!==null)resolve();else process.once("exit",()=>resolve())});await page.close();await exited;await rm(userData,{recursive:true,force:true})}
 });
 
@@ -148,13 +148,13 @@ test("persists appearance, language, and a resized project sidebar",async()=>{
     await page.mouse.up();
     await expect(separator).toHaveAttribute("aria-valuenow","350");
     await page.getByRole("button",{name:"Settings"}).click();
-    await expect(page.getByRole("heading",{name:"Private by design"})).toBeVisible();
+    await expect(page.getByRole("heading",{name:"General"})).toBeVisible();
     const navigation=page.getByRole("navigation",{name:"Settings sections"});
-    await expect(navigation.getByRole("button")).toHaveText(["Profile","Appearance","Models","Language"]);
-    if(screenshotDir)await page.screenshot({path:path.join(screenshotDir,"settings-profile.png")});
+    await expect(navigation.getByRole("button")).toHaveText(["General","Appearance","Models"]);
+    if(screenshotDir)await page.screenshot({path:path.join(screenshotDir,"settings-general.png")});
     await page.getByRole("button",{name:"Models"}).click();
     await expect(page.getByRole("heading",{name:"Models",exact:true})).toBeVisible();
-    await expect(page.getByLabel("Model provider")).toHaveValue("deepseek");
+    await expect(page.getByText("DeepSeek",{exact:true})).toBeVisible();
     await expect(page.getByLabel("Base URL")).toHaveCount(0);
     await page.getByRole("button",{name:"Appearance"}).click();
     await expect(page.getByRole("heading",{name:"Appearance"})).toBeVisible();
@@ -163,11 +163,14 @@ test("persists appearance, language, and a resized project sidebar",async()=>{
     await expect(page.locator("html")).toHaveAttribute("data-theme","dark");
     await expect(page.locator("html")).toHaveAttribute("data-density","compact");
     if(screenshotDir)await page.screenshot({path:path.join(screenshotDir,"settings-appearance-dark.png")});
-    await page.getByRole("button",{name:"Language"}).click();
+    await page.getByRole("button",{name:"General"}).click();
     await page.getByLabel("Display language").selectOption("zh-CN");
     await expect(page.locator("html")).toHaveAttribute("lang","zh-CN");
-    await expect(page.getByRole("heading",{name:"语言",exact:true})).toBeVisible();
-    if(screenshotDir)await page.screenshot({path:path.join(screenshotDir,"settings-language-zh.png")});
+    await expect(page.getByRole("heading",{name:"常规",exact:true})).toBeVisible();
+    await page.getByRole("button",{name:"模型"}).click();
+    await expect(page.getByLabel("API key")).toBeVisible();
+    await expect(page.getByText(/API 密钥/)).toHaveCount(0);
+    if(screenshotDir)await page.screenshot({path:path.join(screenshotDir,"settings-models-zh.png")});
     await page.getByRole("button",{name:/返回 Noval/i}).click();
     await expect(page.getByRole("button",{name:"设置"})).toBeVisible();
   }finally{
@@ -208,12 +211,12 @@ test("configures, switches during a Turn, and restores one durable model selecti
   try{
     let page=await application.firstWindow();
     await page.getByRole("button",{name:"Settings"}).click();
-    await expect(page.getByRole("heading",{name:"Private by design"})).toBeVisible();
+    await expect(page.getByRole("heading",{name:"General"})).toBeVisible();
     await page.getByRole("button",{name:"Models"}).click();
     await expect(page.getByRole("heading",{name:"Models",exact:true})).toBeVisible();
     await page.getByLabel("API key",{exact:true}).fill(secret);
     await page.getByRole("button",{name:"Save API key"}).click();
-    await expect(page.getByText("API key saved without restarting the Runtime.")).toBeVisible();
+    await expect(page.getByText("API key saved. No restart needed.")).toBeVisible();
     await expect(page.getByLabel("API key",{exact:true})).toHaveValue("");
     const persistedSettings=JSON.parse(await readFile(settingsPath,"utf8"));
     expect(persistedSettings.models.connections[0].api_key).toBe(secret);
@@ -223,15 +226,25 @@ test("configures, switches during a Turn, and restores one durable model selecti
     const project=page.getByRole("button",{name:"flow-project",exact:true});
     await project.hover();
     await page.getByRole("button",{name:/New task in flow-project/i}).click();
-    const selector=page.getByLabel("Session model");
-    await expect(selector).toHaveValue("model-primary");
-    await expect(page.getByLabel("Session access")).toHaveValue("ask");
+    const selector=page.getByRole("button",{name:"Session model"});
+    await expect(selector).toContainText("primary-model");
+    const access=page.getByRole("button",{name:"Session access"});
+    await expect(access).toContainText("Ask permission");
+    await access.click();
+    await expect(page.getByRole("menu",{name:"Session access"})).toBeVisible();
+    await page.getByRole("menuitemradio",{name:/Full access/i}).click();
+    await expect(page.getByRole("status")).toContainText("Full access enabled");
+    await page.getByRole("button",{name:"Undo"}).click();
+    await expect(page.getByRole("status")).toHaveCount(0);
+    await expect(access).toContainText("Ask permission");
     await page.getByLabel("Message Noval").fill("First model request");
     await page.getByRole("button",{name:"Send"}).click();
     await expect(page.getByText("Next turn",{exact:true})).toBeVisible();
     await expect.poll(()=>provider.models.length,{timeout:15_000}).toBe(1);
-    await selector.selectOption("model-judge");
-    await expect(selector).toHaveValue("model-judge");
+    await selector.click();
+    await expect(page.getByRole("menu",{name:"Session model"})).toBeVisible();
+    await page.getByRole("menuitemradio",{name:"alternate-model"}).click();
+    await expect(selector).toContainText("alternate-model");
     provider.releaseFirst();
     await expect(page.getByText("Reply from primary-model")).toBeVisible();
 
@@ -250,7 +263,7 @@ test("configures, switches during a Turn, and restores one durable model selecti
     page=await application.firstWindow();
     await expect(page.getByRole("button",{name:"First model request"})).toBeVisible();
     await page.getByRole("button",{name:"First model request"}).click();
-    await expect(page.getByLabel("Session model")).toHaveValue("model-judge");
+    await expect(page.getByRole("button",{name:"Session model"})).toContainText("alternate-model");
     await expect(page.getByText("Reply from primary-model")).toBeVisible();
     await expect(page.getByText("Reply from alternate-model")).toBeVisible();
   }finally{
