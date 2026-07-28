@@ -1,6 +1,6 @@
 import {FormEvent,useEffect,useMemo,useRef,useState} from "react";
 import {ArrowUp,AtSign,Check,CheckCircle2,Copy,Ellipsis,Folder,FolderOpen,KeyRound,MessageSquarePlus,Pencil,Plus,RotateCcw,Settings,Shield,Square,Trash2,X,XCircle} from "lucide-react";
-import type {AppInfo,AppearancePreferences,CompletionReport,ConfiguredModelUpsert,ConnectionUpsert,ModelConfigurationInfo,PermissionState,ProjectInfo,ProviderProfileInfo,SessionInfo,SidecarEvent,TranscriptEntry} from "../shared/protocol";
+import type {AppInfo,AppearancePreferences,CompletionReport,ConnectionUpsert,ModelConfigurationInfo,PermissionState,ProjectInfo,ProviderProfileInfo,SessionInfo,SidecarEvent,TranscriptEntry} from "../shared/protocol";
 import {MarkdownText} from "./MarkdownText";
 import {buildTimeline,MessageItem,ToolActivity} from "./ToolActivity";
 import {SettingsPage} from "./SettingsPage";
@@ -47,16 +47,12 @@ export function App(){
  async function refreshModels(){const [profileList,configuration]=await Promise.all([window.noval.listProviderProfiles(),window.noval.getModelConfiguration()]);setProfiles(profileList);setModelConfig(configuration);setDraftModelId(current=>current||configuration.default_model_id)}
  async function openSettings(){try{const [,info,storedAppearance]=await Promise.all([refreshModels(),window.noval.appInfo(),window.noval.getAppearance()]);setAppInfo(info);applyAppearance(storedAppearance);setShowSettings(true)}catch(e){setError(message(e))}}
  async function updateConnection(value:ConnectionUpsert){try{setModelConfig(await window.noval.upsertConnection(value))}catch(err){setError(message(err));throw err}}
- async function deleteConnection(id:string){if(!modelConfig||!confirm("Delete this Connection? It must not be referenced by a Configured Model."))return;try{setModelConfig(await window.noval.deleteConnection(id,modelConfig.revision))}catch(err){setError(message(err));throw err}}
- async function updateConfiguredModel(value:ConfiguredModelUpsert){try{setModelConfig(await window.noval.upsertConfiguredModel(value))}catch(err){setError(message(err));throw err}}
- async function deleteConfiguredModel(id:string){if(!modelConfig||!confirm("Delete this Configured Model?"))return;try{setModelConfig(await window.noval.deleteConfiguredModel(id,modelConfig.revision))}catch(err){setError(message(err));throw err}}
- async function setDefaultModel(id:string){if(!modelConfig)return;try{const updated=await window.noval.setDefaultModel(id,modelConfig.revision);setModelConfig(updated);if(!active)setDraftModelId(id)}catch(err){setError(message(err));throw err}}
  async function selectModel(id:string){if(!active){setDraftModelId(id);return}try{const updated=await window.noval.selectSessionModel(active.session_id,id);setActive(updated);setDraftModelId(updated.selected_model_id);setSessions(old=>Object.fromEntries(Object.entries(old).map(([path,items])=>[path,items.map(item=>item.session_id===updated.session_id?updated:item)])))}catch(err){setError(message(err))}}
  async function saveAppearance(value:AppearancePreferences){try{const saved=await window.noval.saveAppearance(value);applyAppearance(saved)}catch(err){setError(message(err))}}
  function applyAppearance(value:AppearancePreferences){setAppearance(value);document.documentElement.dataset.theme=value.theme;document.documentElement.dataset.density=value.density}
 
  const grouped=useMemo(()=>entries.filter(x=>x.text||x.tool_calls.length||x.tool_results.length),[entries]),timeline=useMemo(()=>buildTimeline(grouped),[grouped]),selectedModelId=active?.selected_model_id||draftModelId||modelConfig?.default_model_id||"";
- if(showSettings)return <SettingsPage profiles={profiles} models={modelConfig} upsertConnection={updateConnection} deleteConnection={deleteConnection} upsertConfiguredModel={updateConfiguredModel} deleteConfiguredModel={deleteConfiguredModel} setDefaultModel={setDefaultModel} appearance={appearance} saveAppearance={saveAppearance} appInfo={appInfo} workspace={workspace} projectCount={projects.length} sessionCount={Object.values(sessions).reduce((total,items)=>total+items.length,0)} close={()=>setShowSettings(false)} error={error} dismissError={()=>setError(null)}/>;
+ if(showSettings)return <SettingsPage profiles={profiles} models={modelConfig} upsertConnection={updateConnection} appearance={appearance} saveAppearance={saveAppearance} appInfo={appInfo} workspace={workspace} projectCount={projects.length} sessionCount={Object.values(sessions).reduce((total,items)=>total+items.length,0)} close={()=>setShowSettings(false)} error={error} dismissError={()=>setError(null)}/>;
  return <div className="shell">
   <aside className="sidebar project-sidebar">
    <header className="brand"><strong>Noval</strong></header>

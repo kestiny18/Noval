@@ -23,9 +23,5 @@ const api: NovalDesktopApi = {
   listProviderProfiles:()=>ipcRenderer.invoke("noval:model-profiles"),
   getModelConfiguration:()=>ipcRenderer.invoke("noval:model-configuration"),
   upsertConnection:value=>ipcRenderer.invoke("noval:connection-upsert",value),
-  deleteConnection:(id,revision)=>ipcRenderer.invoke("noval:connection-delete",id,revision),
-  upsertConfiguredModel:value=>ipcRenderer.invoke("noval:configured-upsert",value),
-  deleteConfiguredModel:(id,revision)=>ipcRenderer.invoke("noval:configured-delete",id,revision),
-  setDefaultModel:(id,revision)=>ipcRenderer.invoke("noval:model-default",id,revision),
 };
 contextBridge.exposeInMainWorld("noval",Object.freeze(api));
