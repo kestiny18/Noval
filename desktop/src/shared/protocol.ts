@@ -22,6 +22,8 @@ export interface SessionInfo {
 export interface ProjectInfo { path:string;name:string;active:boolean }
 export interface PermissionState { mode: "ask" | "full_access"; approved_tools: string[] }
 export interface AppearancePreferences {theme:"system"|"light"|"dark";density:"comfortable"|"compact"}
+export type LanguagePreference="zh-CN"|"en";
+export interface DesktopPreferences {appearance:AppearancePreferences;language:LanguagePreference;sidebarWidth:number}
 export interface AppInfo {desktopVersion:string;coreVersion:string;protocolVersion:number}
 export interface ProviderModelInfo {id:string;label:string}
 export interface ProviderProfileInfo {
@@ -80,8 +82,11 @@ export interface NovalDesktopApi {
   resolvePermission(permissionRequestId: string, decision: "allow_once" | "allow_session" | "deny"): Promise<void>;
   onEvent(listener: (event: SidecarEvent) => void): () => void;
   appInfo(): Promise<AppInfo>;
+  getPreferences():Promise<DesktopPreferences>;
   getAppearance():Promise<AppearancePreferences>;
   saveAppearance(value:AppearancePreferences):Promise<AppearancePreferences>;
+  saveLanguage(value:LanguagePreference):Promise<DesktopPreferences>;
+  saveSidebarWidth(value:number):Promise<DesktopPreferences>;
   listProviderProfiles():Promise<ProviderProfileInfo[]>;
   getModelConfiguration():Promise<ModelConfigurationInfo>;
   upsertConnection(value:ConnectionUpsert):Promise<ModelConfigurationInfo>;
