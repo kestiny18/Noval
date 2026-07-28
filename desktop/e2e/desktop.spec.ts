@@ -11,7 +11,10 @@ function runtimeSettings(sessionsDir:string,model="deepseek-v4-pro",judgeModel="
     schema_version:2,
     models:{
       revision:1,
-      connections:[{id:"connection-e2e",revision:1,label:"E2E Connection",profile_id:"custom",adapter:"openai-compatible",base_url:"https://api.example.test/v1",api_key:"",api_key_env:"NOVAL_E2E_API_KEY"}],
+      connections:[
+        {id:"connection-deepseek",revision:1,label:"DeepSeek",profile_id:"deepseek",adapter:"openai-compatible",base_url:"https://api.deepseek.com",api_key:"",api_key_env:"DEEPSEEK_API_KEY"},
+        {id:"connection-e2e",revision:1,label:"E2E Connection",profile_id:"custom",adapter:"openai-compatible",base_url:"https://api.example.test/v1",api_key:"",api_key_env:"NOVAL_E2E_API_KEY"},
+      ],
       configured:[
         {id:"model-primary",label:model,connection_id:"connection-e2e",model},
         {id:"model-judge",label:judgeModel,connection_id:"connection-e2e",model:judgeModel},
@@ -85,11 +88,11 @@ test("launches the real Electron host with a persistent single-page project shel
   const settingsPath=path.join(userData,"noval-settings.json");await writeFile(settingsPath,JSON.stringify(runtimeSettings(path.join(userData,"sessions"))),"utf8");
   const root=path.resolve(import.meta.dirname,"..");
   const executablePath=path.join(root,"node_modules","electron","dist",process.platform==="win32"?"electron.exe":"electron");
-  const application=await electron.launch({executablePath,args:[".",`--user-data-dir=${userData}`],cwd:root,env:{...process.env,NOVAL_PYTHON:process.env.NOVAL_PYTHON??"py",NOVAL_SETTINGS_PATH:settingsPath}});
+  const application=await electron.launch({executablePath,args:[".","--lang=en-US",`--user-data-dir=${userData}`],cwd:root,env:{...process.env,NOVAL_PYTHON:process.env.NOVAL_PYTHON??"py",NOVAL_SETTINGS_PATH:settingsPath}});
   const page=await application.firstWindow();
   try{
     await expect(page.getByRole("button",{name:/add project/i})).toBeVisible();
-    await expect(page.getByText(/添加一个项目以开始使用 Noval/i)).toBeVisible();
+    await expect(page.getByText(/Add a project to start using Noval/i)).toBeVisible();
     await expect(page.getByRole("button",{name:/settings/i})).toBeVisible();
     expect(await page.evaluate(()=>({node:(window as any).require,api:Boolean(window.noval)}))).toEqual({node:undefined,api:true});
   }finally{
@@ -103,10 +106,10 @@ test("uses folder state and hover actions for a persisted project",async()=>{
   const userData=await mkdtemp(path.join(tmpdir(),"noval-desktop-tree-e2e-"));
   const settingsPath=path.join(userData,"noval-settings.json");await writeFile(settingsPath,JSON.stringify(runtimeSettings(path.join(userData,"sessions"))),"utf8");
   const projectPath=path.join(userData,"sample-project");await mkdir(projectPath);
-  await writeFile(path.join(userData,"desktop-settings.json"),JSON.stringify({workspace:projectPath,workspaces:[projectPath]}),"utf8");
+  await writeFile(path.join(userData,"desktop-settings.json"),JSON.stringify({workspace:projectPath,workspaces:[projectPath],language:"en"}),"utf8");
   const root=path.resolve(import.meta.dirname,".."),executablePath=path.join(root,"node_modules","electron","dist",process.platform==="win32"?"electron.exe":"electron");
-  const application=await electron.launch({executablePath,args:[".",`--user-data-dir=${userData}`],cwd:root,env:{...process.env,NOVAL_PYTHON:process.env.NOVAL_PYTHON??"py",NOVAL_SETTINGS_PATH:settingsPath}});const page=await application.firstWindow();
-  try{const project=page.getByRole("button",{name:"sample-project",exact:true}),screenshotDir=process.env.NOVAL_OVERLAY_SCREENSHOT_DIR;await expect(project).toBeVisible();await expect(project.locator(".lucide-folder-open")).toBeVisible();await expect(page.getByRole("heading",{name:"我们应该在 sample-project 中构建什么？"})).toBeVisible();await project.hover();await expect(page.getByRole("button",{name:/New task in sample-project/i})).toBeVisible();await page.getByRole("button",{name:/Project actions for sample-project/i}).click();await expect(page.getByRole("menu",{name:/Actions for sample-project/i})).toBeVisible();if(screenshotDir){await mkdir(screenshotDir,{recursive:true});await page.screenshot({path:path.join(screenshotDir,"project-menu.png")})}await page.getByRole("menuitem",{name:/Remove project/i}).click();const dialog=page.getByRole("dialog",{name:/Remove sample-project/i});await expect(dialog).toBeVisible();await expect(dialog).toContainText("Files and Sessions on disk will not be deleted");if(screenshotDir)await page.screenshot({path:path.join(screenshotDir,"remove-project-dialog.png")});await dialog.getByRole("button",{name:"Cancel"}).click();await expect(dialog).toBeHidden();await expect(project).toBeVisible();await project.hover();await page.getByRole("button",{name:/New task in sample-project/i}).click();await expect(page.getByRole("heading",{name:"我们应该在 sample-project 中构建什么？"})).toBeVisible();await expect(page.locator(".tag-chip")).toHaveCount(0);await expect(page.getByText(/Export diagnostics/i)).toHaveCount(0)}
+  const application=await electron.launch({executablePath,args:[".","--lang=en-US",`--user-data-dir=${userData}`],cwd:root,env:{...process.env,NOVAL_PYTHON:process.env.NOVAL_PYTHON??"py",NOVAL_SETTINGS_PATH:settingsPath}});const page=await application.firstWindow();
+  try{const project=page.getByRole("button",{name:"sample-project",exact:true}),screenshotDir=process.env.NOVAL_OVERLAY_SCREENSHOT_DIR;await expect(project).toBeVisible();await expect(project.locator(".lucide-folder-open")).toBeVisible();await expect(page.getByRole("heading",{name:"What should we build in sample-project?"})).toBeVisible();await project.hover();await expect(page.getByRole("button",{name:/New task in sample-project/i})).toBeVisible();await page.getByRole("button",{name:/Project actions for sample-project/i}).click();await expect(page.getByRole("menu",{name:/Actions for sample-project/i})).toBeVisible();if(screenshotDir){await mkdir(screenshotDir,{recursive:true});await page.screenshot({path:path.join(screenshotDir,"project-menu.png")})}await page.getByRole("menuitem",{name:/Remove project/i}).click();const dialog=page.getByRole("dialog",{name:/Remove sample-project/i});await expect(dialog).toBeVisible();await expect(dialog).toContainText("Files and Sessions on disk will not be deleted");if(screenshotDir)await page.screenshot({path:path.join(screenshotDir,"remove-project-dialog.png")});await dialog.getByRole("button",{name:"Cancel"}).click();await expect(dialog).toBeHidden();await expect(project).toBeVisible();await project.hover();await page.getByRole("button",{name:/New task in sample-project/i}).click();await expect(page.getByRole("heading",{name:"What should we build in sample-project?"})).toBeVisible();await expect(page.locator(".tag-chip")).toHaveCount(0);await expect(page.getByText(/Export diagnostics/i)).toHaveCount(0)}
   finally{const process=application.process();const exited=new Promise<void>(resolve=>{if(process.exitCode!==null)resolve();else process.once("exit",()=>resolve())});await page.close();await exited;await rm(userData,{recursive:true,force:true})}
 });
 
@@ -125,25 +128,34 @@ test("discovers projects and Sessions from Noval Core storage",async()=>{
   await writeFile(path.join(projectStore,"legacy.jsonl"),`${JSON.stringify({_meta:{schema_version:2,session_id:"legacy",created_at:createdAt,workdir:path.resolve(projectPath),model:"legacy-model"}})}\n${JSON.stringify({seq:0,ts:createdAt,message:{role:"user",blocks:[{type:"text",text:"Legacy conversation"}]}})}\n`,"utf8");
   const settingsPath=path.join(userData,"noval-settings.json");await writeFile(settingsPath,JSON.stringify(runtimeSettings(sessionsRoot,"core-model","core-judge")),"utf8");
   const root=path.resolve(import.meta.dirname,".."),executablePath=path.join(root,"node_modules","electron","dist",process.platform==="win32"?"electron.exe":"electron");
-  const application=await electron.launch({executablePath,args:[".",`--user-data-dir=${userData}`],cwd:root,env:{...process.env,DEEPSEEK_API_KEY:"e2e-placeholder",NOVAL_PYTHON:process.env.NOVAL_PYTHON??"py",NOVAL_SETTINGS_PATH:settingsPath}});const page=await application.firstWindow();
-  try{await expect(page.getByRole("button",{name:"core-project",exact:true})).toBeVisible();await expect(page.getByRole("button",{name:/incompatible v2/i})).toHaveCount(0);await expect(page.getByRole("button",{name:"Stored conversation"})).toBeVisible();await page.getByRole("button",{name:"Stored conversation"}).click();await expect(page.getByRole("heading",{name:"Rendered Markdown",level:2})).toBeVisible({timeout:30000});await expect(page.locator("strong",{hasText:"formatted text"})).toBeVisible();const activity=page.getByText("Ran 2 commands");await expect(activity).toBeVisible();await expect(page.getByText("Tool completed")).toHaveCount(0);await activity.click();await expect(page.locator(".activity-details pre").first()).toHaveText("done");const viewport=page.locator(".conversation-viewport");expect(await viewport.evaluate(element=>getComputedStyle(element).scrollbarWidth)).toBe("thin");expect(await viewport.evaluate(element=>{element.scrollTop=element.scrollHeight;return element.scrollTop>0})).toBe(true);const geometry=await page.evaluate(()=>{const last=document.querySelector(".activity-row")?.getBoundingClientRect(),composer=document.querySelector(".composer")?.getBoundingClientRect();return {lastBottom:last?.bottom??0,composerTop:composer?.top??0}});expect(geometry.lastBottom).toBeLessThan(geometry.composerTop);await page.getByRole("button",{name:"Settings"}).click();await expect(page.getByRole("heading",{name:"Models",exact:true})).toBeVisible();await expect(page.getByText(/core-model via E2E Connection/).first()).toBeVisible();await expect(page.getByText(/core-judge via E2E Connection/).first()).toBeVisible();await expect(page.getByLabel("Base URL")).toHaveValue("https://api.example.test/v1")}
+  const application=await electron.launch({executablePath,args:[".","--lang=en-US",`--user-data-dir=${userData}`],cwd:root,env:{...process.env,DEEPSEEK_API_KEY:"e2e-placeholder",NOVAL_PYTHON:process.env.NOVAL_PYTHON??"py",NOVAL_SETTINGS_PATH:settingsPath}});const page=await application.firstWindow();
+  try{await expect(page.getByRole("button",{name:"core-project",exact:true})).toBeVisible();await expect(page.getByRole("button",{name:/incompatible v2/i})).toHaveCount(0);await expect(page.getByRole("button",{name:"Stored conversation"})).toBeVisible();await page.getByRole("button",{name:"Stored conversation"}).click();await expect(page.getByRole("heading",{name:"Rendered Markdown",level:2})).toBeVisible({timeout:30000});await expect(page.locator("strong",{hasText:"formatted text"})).toBeVisible();const activity=page.getByText("Ran 2 commands");await expect(activity).toBeVisible();await expect(page.getByText("Tool completed")).toHaveCount(0);await activity.click();await expect(page.locator(".activity-details pre").first()).toHaveText("done");const viewport=page.locator(".conversation-viewport");expect(await viewport.evaluate(element=>getComputedStyle(element).scrollbarWidth)).toBe("thin");expect(await viewport.evaluate(element=>{element.scrollTop=element.scrollHeight;return element.scrollTop>0})).toBe(true);const geometry=await page.evaluate(()=>{const last=document.querySelector(".activity-row")?.getBoundingClientRect(),composer=document.querySelector(".composer")?.getBoundingClientRect();return {lastBottom:last?.bottom??0,composerTop:composer?.top??0}});expect(geometry.lastBottom).toBeLessThan(geometry.composerTop);await page.getByRole("button",{name:"Settings"}).click();await expect(page.getByRole("heading",{name:"Private by design"})).toBeVisible();await page.getByRole("button",{name:"Models"}).click();await expect(page.getByRole("heading",{name:"Models",exact:true})).toBeVisible();await expect(page.getByLabel("Model provider")).toHaveValue("deepseek");await expect(page.getByLabel("Model provider")).toBeDisabled();await expect(page.getByLabel("Base URL")).toHaveCount(0)}
   finally{const process=application.process();const exited=new Promise<void>(resolve=>{if(process.exitCode!==null)resolve();else process.once("exit",()=>resolve())});await page.close();await exited;await rm(userData,{recursive:true,force:true})}
 });
 
-test("renders the focused Settings pages and persists appearance locally",async()=>{
+test("persists appearance, language, and a resized project sidebar",async()=>{
   const userData=await mkdtemp(path.join(tmpdir(),"noval-desktop-settings-e2e-"));
   const settingsPath=path.join(userData,"noval-settings.json");await writeFile(settingsPath,JSON.stringify(runtimeSettings(path.join(userData,"sessions"),"settings-model","settings-judge")),"utf8");
   const root=path.resolve(import.meta.dirname,".."),executablePath=path.join(root,"node_modules","electron","dist",process.platform==="win32"?"electron.exe":"electron");
-  const application=await electron.launch({executablePath,args:[".",`--user-data-dir=${userData}`],cwd:root,env:{...process.env,DEEPSEEK_API_KEY:"e2e-placeholder",NOVAL_PYTHON:process.env.NOVAL_PYTHON??"py",NOVAL_SETTINGS_PATH:settingsPath}});const page=await application.firstWindow();
+  const application=await electron.launch({executablePath,args:[".","--lang=en-US",`--user-data-dir=${userData}`],cwd:root,env:{...process.env,DEEPSEEK_API_KEY:"e2e-placeholder",NOVAL_PYTHON:process.env.NOVAL_PYTHON??"py",NOVAL_SETTINGS_PATH:settingsPath}});const page=await application.firstWindow();
   const screenshotDir=process.env.NOVAL_SETTINGS_SCREENSHOT_DIR;if(screenshotDir)await mkdir(screenshotDir,{recursive:true});
   try{
+    const separator=page.getByRole("separator",{name:"Resize project sidebar"});
+    const box=await separator.boundingBox();if(!box)throw new Error("Sidebar separator has no bounding box.");
+    await page.mouse.move(box.x+box.width/2,box.y+40);
+    await page.mouse.down();
+    await page.mouse.move(box.x+box.width/2+(350-278),box.y+40,{steps:4});
+    await page.mouse.up();
+    await expect(separator).toHaveAttribute("aria-valuenow","350");
     await page.getByRole("button",{name:"Settings"}).click();
-    await expect(page.getByRole("heading",{name:"Models",exact:true})).toBeVisible();
-    await expect(page.getByText(/settings-model via E2E Connection/).first()).toBeVisible();
-    if(screenshotDir)await page.screenshot({path:path.join(screenshotDir,"settings-general.png")});
-    await page.getByRole("button",{name:"Profile"}).click();
     await expect(page.getByRole("heading",{name:"Private by design"})).toBeVisible();
+    const navigation=page.getByRole("navigation",{name:"Settings sections"});
+    await expect(navigation.getByRole("button")).toHaveText(["Profile","Appearance","Models","Language"]);
     if(screenshotDir)await page.screenshot({path:path.join(screenshotDir,"settings-profile.png")});
+    await page.getByRole("button",{name:"Models"}).click();
+    await expect(page.getByRole("heading",{name:"Models",exact:true})).toBeVisible();
+    await expect(page.getByLabel("Model provider")).toHaveValue("deepseek");
+    await expect(page.getByLabel("Base URL")).toHaveCount(0);
     await page.getByRole("button",{name:"Appearance"}).click();
     await expect(page.getByRole("heading",{name:"Appearance"})).toBeVisible();
     await page.getByRole("button",{name:"Dark"}).click();
@@ -151,16 +163,25 @@ test("renders the focused Settings pages and persists appearance locally",async(
     await expect(page.locator("html")).toHaveAttribute("data-theme","dark");
     await expect(page.locator("html")).toHaveAttribute("data-density","compact");
     if(screenshotDir)await page.screenshot({path:path.join(screenshotDir,"settings-appearance-dark.png")});
-    await page.getByRole("button",{name:/Back to Noval/i}).click();
-    await expect(page.getByRole("button",{name:"Settings"})).toBeVisible();
+    await page.getByRole("button",{name:"Language"}).click();
+    await page.getByLabel("Display language").selectOption("zh-CN");
+    await expect(page.locator("html")).toHaveAttribute("lang","zh-CN");
+    await expect(page.getByRole("heading",{name:"语言",exact:true})).toBeVisible();
+    if(screenshotDir)await page.screenshot({path:path.join(screenshotDir,"settings-language-zh.png")});
+    await page.getByRole("button",{name:/返回 Noval/i}).click();
+    await expect(page.getByRole("button",{name:"设置"})).toBeVisible();
   }finally{
     const process=application.process();const exited=new Promise<void>(resolve=>{if(process.exitCode!==null)resolve();else process.once("exit",()=>resolve())});await page.close();await exited;
   }
   const stored=JSON.parse(await readFile(path.join(userData,"desktop-settings.json"),"utf8"));
   expect(stored.appearance).toEqual({theme:"dark",density:"compact"});
-  const relaunched=await electron.launch({executablePath,args:[".",`--user-data-dir=${userData}`],cwd:root,env:{...process.env,DEEPSEEK_API_KEY:"e2e-placeholder",NOVAL_PYTHON:process.env.NOVAL_PYTHON??"py",NOVAL_SETTINGS_PATH:settingsPath}});const restoredPage=await relaunched.firstWindow();
+  expect(stored.language).toBe("zh-CN");
+  expect(stored.sidebarWidth).toBe(350);
+  const relaunched=await electron.launch({executablePath,args:[".","--lang=en-US",`--user-data-dir=${userData}`],cwd:root,env:{...process.env,DEEPSEEK_API_KEY:"e2e-placeholder",NOVAL_PYTHON:process.env.NOVAL_PYTHON??"py",NOVAL_SETTINGS_PATH:settingsPath}});const restoredPage=await relaunched.firstWindow();
   await expect(restoredPage.locator("html")).toHaveAttribute("data-theme","dark");
   await expect(restoredPage.locator("html")).toHaveAttribute("data-density","compact");
+  await expect(restoredPage.locator("html")).toHaveAttribute("lang","zh-CN");
+  await expect(restoredPage.getByRole("separator",{name:"调整项目侧栏宽度"})).toHaveAttribute("aria-valuenow","350");
   const relaunchedProcess=relaunched.process(),relaunchExited=new Promise<void>(resolve=>{if(relaunchedProcess.exitCode!==null)resolve();else relaunchedProcess.once("exit",()=>resolve())});await restoredPage.close();await relaunchExited;
   await rm(userData,{recursive:true,force:true});
 });
@@ -175,27 +196,28 @@ test("configures, switches during a Turn, and restores one durable model selecti
   const secret="NOVAL_E2E_WRITE_ONLY_SECRET";
   await mkdir(projectPath);
   const settings=runtimeSettings(sessionsRoot,"primary-model","alternate-model");
-  settings.models.connections[0].base_url=provider.baseUrl;
+  settings.models.connections[1].base_url=provider.baseUrl;
   settings.request_timeout_seconds=5;
   settings.request_max_retries=0;
   await writeFile(settingsPath,JSON.stringify(settings),"utf8");
-  await writeFile(path.join(userData,"desktop-settings.json"),JSON.stringify({workspace:projectPath,workspaces:[projectPath]}),"utf8");
+  await writeFile(path.join(userData,"desktop-settings.json"),JSON.stringify({workspace:projectPath,workspaces:[projectPath],language:"en"}),"utf8");
   const root=path.resolve(import.meta.dirname,"..");
   const executablePath=path.join(root,"node_modules","electron","dist",process.platform==="win32"?"electron.exe":"electron");
-  const launch=()=>electron.launch({executablePath,args:[".",`--user-data-dir=${userData}`],cwd:root,env:{...process.env,NOVAL_PYTHON:process.env.NOVAL_PYTHON??"py",NOVAL_SETTINGS_PATH:settingsPath}});
+  const launch=()=>electron.launch({executablePath,args:[".","--lang=en-US",`--user-data-dir=${userData}`],cwd:root,env:{...process.env,NOVAL_E2E_API_KEY:"e2e-provider-key",NOVAL_PYTHON:process.env.NOVAL_PYTHON??"py",NOVAL_SETTINGS_PATH:settingsPath}});
   let application=await launch();
   try{
     let page=await application.firstWindow();
     await page.getByRole("button",{name:"Settings"}).click();
+    await expect(page.getByRole("heading",{name:"Private by design"})).toBeVisible();
+    await page.getByRole("button",{name:"Models"}).click();
     await expect(page.getByRole("heading",{name:"Models",exact:true})).toBeVisible();
-    await page.getByLabel("Connection label").fill("E2E Updated Connection");
     await page.getByLabel("API key",{exact:true}).fill(secret);
-    await page.getByRole("button",{name:"Save Connection"}).click();
-    await expect(page.getByText("Connection saved without restarting the Runtime.")).toBeVisible();
+    await page.getByRole("button",{name:"Save API key"}).click();
+    await expect(page.getByText("API key saved without restarting the Runtime.")).toBeVisible();
     await expect(page.getByLabel("API key",{exact:true})).toHaveValue("");
     const persistedSettings=JSON.parse(await readFile(settingsPath,"utf8"));
     expect(persistedSettings.models.connections[0].api_key).toBe(secret);
-    expect(persistedSettings.models.connections[0].base_url).toBe(provider.baseUrl);
+    expect(persistedSettings.models.connections[1].base_url).toBe(provider.baseUrl);
     await page.getByRole("button",{name:/Back to Noval/i}).click();
 
     const project=page.getByRole("button",{name:"flow-project",exact:true});
@@ -203,9 +225,10 @@ test("configures, switches during a Turn, and restores one durable model selecti
     await page.getByRole("button",{name:/New task in flow-project/i}).click();
     const selector=page.getByLabel("Session model");
     await expect(selector).toHaveValue("model-primary");
+    await expect(page.getByLabel("Session access")).toHaveValue("ask");
     await page.getByLabel("Message Noval").fill("First model request");
     await page.getByRole("button",{name:"Send"}).click();
-    await expect(page.getByText("Next Turn",{exact:true})).toBeVisible();
+    await expect(page.getByText("Next turn",{exact:true})).toBeVisible();
     await expect.poll(()=>provider.models.length,{timeout:15_000}).toBe(1);
     await selector.selectOption("model-judge");
     await expect(selector).toHaveValue("model-judge");
