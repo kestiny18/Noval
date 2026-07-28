@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted for implementation on 2026-07-24.
+Accepted for implementation on 2026-07-24. Phase 1 product-surface refinement
+accepted on 2026-07-28.
 
 ## Context
 
@@ -12,9 +13,11 @@ that configuration only by storing an encrypted credential in Electron,
 writing a temporary flat Runtime settings file, and restarting the Python
 Sidecar.
 
-The product now needs multiple Provider Connections, multiple selectable
-models, durable per-Session selection, and configuration changes that do not
-mutate an active Turn. The execution kernel must remain the sole owner of
+The product now needs multiple selectable models, durable per-Session
+selection, and configuration changes that do not mutate an active Turn. The
+execution kernel should retain a generic multi-Connection representation for
+future hosts and Providers, but the first Desktop release does not need to
+expose that machinery. The execution kernel must remain the sole owner of
 Provider resolution, Session state, request construction, redaction, and
 evidence. Desktop must not become a second Provider factory.
 
@@ -39,10 +42,17 @@ trusted Provider Profile
 → immutable per-Turn Model Binding
 ```
 
-Phase 1 exposes only OpenAI-compatible Profiles and Custom Connections. The
-Connection and binding schemas retain Adapter identity, but Desktop does not
-offer an Adapter selector. The existing Anthropic Adapter remains in the
+Phase 1 ships exactly one OpenAI-compatible Profile: DeepSeek. The generic
+Runtime/Application API representation continues to support multiple
+Connections and Configured Models, but Desktop exposes only the shipped
+Provider and one write-only credential form. Custom and advanced configuration
+remain outside the first-party Desktop. The Connection and binding schemas
+retain Adapter identity. The existing Anthropic Adapter remains in the
 repository and is not exposed through the new configuration product.
+
+OpenAI-compatible wire shape is not accepted as evidence that another Provider
+works. Each additional packaged Profile requires its own real non-streaming,
+streaming, and tool-call contract evidence.
 
 ### State and versions
 
@@ -111,11 +121,19 @@ Application API v2 is the only model-configuration authority. Desktop Sidecar
 protocol v2 maps that contract without duplicating validation or credential
 storage. CLI operations use the same Runtime methods.
 
+Desktop Settings orders Profile, Appearance, Models, and Language. Models
+contains only DeepSeek and its write-only API key. Model selection and
+permission mode are Session controls in the conversation composer. Language
+and project-sidebar width are presentation-only Electron preferences; the
+first launch resolves Chinese for a `zh` system locale and English otherwise,
+and an explicit choice persists.
+
 ## Consequences
 
 ### Positive
 
-- Multiple Providers and models do not add dispatch logic to the Agent loop.
+- Future Providers and multiple models do not add dispatch logic to the Agent
+  loop.
 - Active Turns are deterministic under selection and configuration changes.
 - Desktop no longer restarts the Sidecar to update model configuration.
 - Provider-private replay cannot cross accounts or endpoints that share one
@@ -132,11 +150,15 @@ storage. CLI operations use the same Runtime methods.
 - API keys are stored locally as plaintext in Phase 1.
 - Runtime gains configuration locking and transport-lifecycle complexity.
 - Application API and Sidecar consumers must update to v2 together.
+- The Phase 1 Desktop intentionally does not expose the full generic
+  Connection/Configured Model API.
 
 ### Neutral
 
 - Existing Anthropic Adapter code and tests remain, but Anthropic is not a Phase
   1 product capability.
+- Additional OpenAI-compatible candidates remain unshipped until separately
+  verified with real credentials.
 - Runtime does not watch settings files for external changes.
 - Session references to deleted Configured Models are weak and fail only when a
   later Turn resolves them.
