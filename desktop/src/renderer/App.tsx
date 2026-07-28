@@ -1,5 +1,5 @@
 import {type CSSProperties,FormEvent,useEffect,useMemo,useRef,useState} from "react";
-import {ArrowUp,Check,CheckCircle2,Copy,Ellipsis,Folder,FolderOpen,KeyRound,MessageSquarePlus,Pencil,Plus,RotateCcw,Settings,Shield,Square,Trash2,X,XCircle} from "lucide-react";
+import {ArrowUp,Check,CheckCircle2,ChevronDown,Copy,Ellipsis,Folder,FolderOpen,Hand,KeyRound,MessageSquarePlus,Pencil,Plus,RotateCcw,Settings,Shield,ShieldCheck,Square,Trash2,Undo2,X,XCircle} from "lucide-react";
 import type {AppInfo,AppearancePreferences,CompletionReport,ConnectionUpsert,LanguagePreference,ModelConfigurationInfo,PermissionState,ProjectInfo,ProviderProfileInfo,SessionInfo,SidecarEvent,TranscriptEntry} from "../shared/protocol";
 import {MarkdownText} from "./MarkdownText";
 import {buildTimeline,MessageItem,ToolActivity} from "./ToolActivity";
@@ -9,6 +9,8 @@ import "./model-selector.css";
 
 type PendingPermission={request_id:string;tool_name:string;risk:string;arguments:Record<string,unknown>};
 type Connection="connected"|"recovering"|"disconnected";
+type ComposerMenu="permission"|"model"|null;
+type PermissionToast={previousMode:PermissionState["mode"]};
 const MIN_SIDEBAR_WIDTH=220,MAX_SIDEBAR_WIDTH=480,DEFAULT_SIDEBAR_WIDTH=278;
 
 export function App(){
@@ -21,6 +23,8 @@ export function App(){
  const previousConnection=useRef(connection),eventSequence=useRef(0),viewport=useRef<HTMLDivElement|null>(null),loadingOlder=useRef(false),lastScrollTop=useRef(0),resizeStart=useRef<{x:number;width:number}|null>(null);
  const [showSettings,setShowSettings]=useState(false),[profiles,setProfiles]=useState<ProviderProfileInfo[]>([]),[modelConfig,setModelConfig]=useState<ModelConfigurationInfo|null>(null),[draftModelId,setDraftModelId]=useState("");
  const [appearance,setAppearance]=useState<AppearancePreferences>({theme:"system",density:"comfortable"}),[language,setLanguage]=useState<LanguagePreference>(()=>localeLanguage(navigator.language)),[sidebarWidth,setSidebarWidth]=useState(DEFAULT_SIDEBAR_WIDTH),[appInfo,setAppInfo]=useState<AppInfo|null>(null);
+ const [composerMenu,setComposerMenu]=useState<ComposerMenu>(null),[permissionToast,setPermissionToast]=useState<PermissionToast|null>(null);
+ const permissionToastTimer=useRef<ReturnType<typeof setTimeout>|null>(null);
  const t=(key:Parameters<typeof translate>[1],values?:Record<string,string|number>)=>translate(language,key,values);
  const title=active?.title||t("newTask"),hasTask=Boolean(active||draftProject);
 
@@ -28,9 +32,11 @@ export function App(){
  useEffect(()=>window.noval.onEvent(handleEvent),[language]);
  useEffect(()=>{const recovered=previousConnection.current!=="connected"&&connection==="connected";previousConnection.current=connection;if(!recovered||!active)return;void restoreActive()},[connection,active?.session_id]);
  useEffect(()=>{if(!projectMenu&&!projectToRemove)return;function keydown(event:KeyboardEvent){if(event.key==="Escape"&&!removingProject){setProjectMenu(null);setProjectToRemove(null)}}function pointerdown(event:PointerEvent){const target=event.target;if(projectMenu&&target instanceof Element&&!target.closest(".project-menu")&&!target.closest(".project-actions-trigger"))setProjectMenu(null)}document.addEventListener("keydown",keydown);document.addEventListener("pointerdown",pointerdown);return()=>{document.removeEventListener("keydown",keydown);document.removeEventListener("pointerdown",pointerdown)}},[projectMenu,projectToRemove,removingProject]);
+ useEffect(()=>{if(!composerMenu)return;function keydown(event:KeyboardEvent){if(event.key==="Escape")setComposerMenu(null)}function pointerdown(event:PointerEvent){const target=event.target;if(target instanceof Element&&!target.closest(".composer-menu-anchor"))setComposerMenu(null)}document.addEventListener("keydown",keydown);document.addEventListener("pointerdown",pointerdown);return()=>{document.removeEventListener("keydown",keydown);document.removeEventListener("pointerdown",pointerdown)}},[composerMenu]);
+ useEffect(()=>()=>{if(permissionToastTimer.current)clearTimeout(permissionToastTimer.current)},[]);
 
  async function refreshProjects(){const list=await window.noval.listProjects();setProjects(list);const current=list.find(item=>item.active)?.path??null;setWorkspace(current);setExpanded(old=>{const next=new Set(old);if(current)next.add(current);return next});const pages=await Promise.all(list.map(async project=>[project.path,await window.noval.projectSessions(project.path)] as const));setSessions(Object.fromEntries(pages))}
- async function restoreActive(){if(!active)return;try{const result=await window.noval.resumeSession(active.session_id);setActive(result.session);setPermissions(result.permissions);const replay=await window.noval.replayEvents(active.session_id,eventSequence.current);eventSequence.current=replay.next_sequence;if(replay.gap_detected)setStatus(t("recoveredTranscript"));await loadLatest(active.session_id);setBusy(false);setStream("")}catch(e){setError(`Runtime recovered, but the task could not be restored: ${message(e)}`)}}
+ async function restoreActive(){if(!active)return;try{const result=await window.noval.resumeSession(active.session_id);setActive(result.session);setPermissions(result.permissions);const replay=await window.noval.replayEvents(active.session_id,eventSequence.current);eventSequence.current=replay.next_sequence;if(replay.gap_detected)setStatus(t("recoveredTranscript"));await loadLatest(active.session_id);setBusy(false);setStream("")}catch(e){setError(`${t("restoreTaskFailed")}: ${message(e)}`)}}
  function handleEvent(value:SidecarEvent){const e=value.event,p=value.payload as any;if(typeof p.sequence==="number")eventSequence.current=Math.max(eventSequence.current,p.sequence);if(e==="host.connection"){setConnection(p.state);if(p.state!=="connected")setPending(null);setStatus(p.state==="connected"?t("ready"):p.state==="recovering"?t("runtimeRecovering"):t("runtimeUnavailable"));return}if(e==="model.started"){setStatus(t("generating"));setStream("")}if(e==="model.output.delta")setStream(v=>v+String(p.text??p.delta??""));if(e==="tool.started")setStatus(`${t("running")} ${p.tool_name??t("tool")}`);if(e==="validation.started")setStatus(t("validating"));if(e==="permission.request"){setPending(p.request as PendingPermission);setStatus(t("waitingApproval"))}if(e==="turn.completed"||e==="turn.failed"){setPending(null);setStatus(e==="turn.completed"?t("ready"):t("turnFailed"))}}
  async function addProject(){try{const value=await window.noval.chooseWorkspace();if(!value)return;await refreshProjects();setWorkspace(value);setExpanded(old=>new Set(old).add(value));setActive(null);setDraftProject(null);setEntries([])}catch(e){setError(message(e))}}
  async function activateProject(path:string){await window.noval.activateProject(path);setWorkspace(path);setProjects(items=>items.map(item=>({...item,active:item.path===path})))}
@@ -44,14 +50,18 @@ export function App(){
  async function loadOlder(){if(!active||!hasOlder||historyCursor===null||loadingOlder.current)return;const element=viewport.current;if(!element)return;loadingOlder.current=true;const oldHeight=element.scrollHeight,oldTop=element.scrollTop;try{const page=await window.noval.transcriptHistory(active.session_id,historyCursor);setEntries(current=>{const known=new Set(current.map(item=>item.sequence));return [...page.entries.filter(item=>!known.has(item.sequence)),...current]});setHistoryCursor(page.previous_sequence);setHasOlder(page.has_more);window.requestAnimationFrame(()=>{if(viewport.current){viewport.current.scrollTop=viewport.current.scrollHeight-oldHeight+oldTop;lastScrollTop.current=viewport.current.scrollTop}loadingOlder.current=false})}catch(e){loadingOlder.current=false;setError(message(e))}}
  function scrollToBottom(){window.requestAnimationFrame(()=>{if(viewport.current){viewport.current.scrollTop=viewport.current.scrollHeight;lastScrollTop.current=viewport.current.scrollTop}})}
  function handleConversationScroll(element:HTMLDivElement){const current=element.scrollTop,movingUp=current<lastScrollTop.current;lastScrollTop.current=current;if(movingUp&&current<=32)void loadOlder()}
- async function selectPermissionMode(next:PermissionState["mode"]){if(next===permissions.mode)return;if(next==="full_access"&&!confirm(t("fullAccessConfirm")))return;try{if(active)setPermissions(await window.noval.setPermissionMode(active.session_id,next));else setPermissions(current=>({...current,mode:next}))}catch(e){setError(message(e))}}
+ function dismissPermissionToast(){if(permissionToastTimer.current)clearTimeout(permissionToastTimer.current);permissionToastTimer.current=null;setPermissionToast(null)}
+ function showPermissionToast(previousMode:PermissionState["mode"]){dismissPermissionToast();setPermissionToast({previousMode});permissionToastTimer.current=setTimeout(()=>{setPermissionToast(null);permissionToastTimer.current=null},6000)}
+ async function selectPermissionMode(next:PermissionState["mode"],notify=true){setComposerMenu(null);if(next===permissions.mode)return;const previousMode=permissions.mode;try{if(active)setPermissions(await window.noval.setPermissionMode(active.session_id,next));else setPermissions(current=>({...current,mode:next}));if(next==="full_access"&&notify)showPermissionToast(previousMode)}catch(e){setError(message(e))}}
+ async function undoPermissionMode(){const previousMode=permissionToast?.previousMode;if(!previousMode)return;dismissPermissionToast();await selectPermissionMode(previousMode,false)}
  async function resolve(decision:"allow_once"|"allow_session"|"deny"){if(!pending)return;try{await window.noval.resolvePermission(pending.request_id,decision);setPending(null);setStatus(t("running"))}catch(e){setError(message(e))}}
  async function revokeTool(tool:string){if(active)try{setPermissions(await window.noval.revokeTool(active.session_id,tool))}catch(e){setError(message(e))}}
  async function resetPermissions(){if(!active||!confirm(t("resetPermissionsConfirm")))return;try{setPermissions(await window.noval.resetPermissions(active.session_id))}catch(e){setError(message(e))}}
  async function refreshModels(){const [profileList,configuration]=await Promise.all([window.noval.listProviderProfiles(),window.noval.getModelConfiguration()]);setProfiles(profileList);setModelConfig(configuration);setDraftModelId(current=>current||configuration.default_model_id)}
  async function openSettings(){try{const [,info,preferences]=await Promise.all([refreshModels(),window.noval.appInfo(),window.noval.getPreferences()]);setAppInfo(info);applyAppearance(preferences.appearance);applyLanguage(preferences.language);setShowSettings(true)}catch(e){setError(message(e))}}
  async function updateConnection(value:ConnectionUpsert){try{setModelConfig(await window.noval.upsertConnection(value))}catch(err){setError(message(err));throw err}}
- async function selectModel(id:string){if(!active){setDraftModelId(id);return}try{const updated=await window.noval.selectSessionModel(active.session_id,id);setActive(updated);setDraftModelId(updated.selected_model_id);setSessions(old=>Object.fromEntries(Object.entries(old).map(([path,items])=>[path,items.map(item=>item.session_id===updated.session_id?updated:item)])))}catch(err){setError(message(err))}}
+ async function selectModel(id:string){setComposerMenu(null);if(!active){setDraftModelId(id);return}try{const updated=await window.noval.selectSessionModel(active.session_id,id);setActive(updated);setDraftModelId(updated.selected_model_id);setSessions(old=>Object.fromEntries(Object.entries(old).map(([path,items])=>[path,items.map(item=>item.session_id===updated.session_id?updated:item)])))}catch(err){setError(message(err))}}
+ function navigateComposerMenu(event:React.KeyboardEvent<HTMLDivElement>){if(!["ArrowDown","ArrowUp","Home","End"].includes(event.key))return;const items=Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]'));if(!items.length)return;event.preventDefault();const current=items.indexOf(document.activeElement as HTMLButtonElement);const next=event.key==="Home"?0:event.key==="End"?items.length-1:event.key==="ArrowDown"?(current+1+items.length)%items.length:(current-1+items.length)%items.length;items[next]?.focus()}
  async function saveAppearance(value:AppearancePreferences){try{const saved=await window.noval.saveAppearance(value);applyAppearance(saved)}catch(err){setError(message(err))}}
  async function saveLanguage(value:LanguagePreference){try{const saved=await window.noval.saveLanguage(value);applyLanguage(saved.language)}catch(err){setError(message(err))}}
  async function persistSidebarWidth(value:number){try{const saved=await window.noval.saveSidebarWidth(value);setSidebarWidth(saved.sidebarWidth)}catch(err){setError(message(err))}}
@@ -67,6 +77,7 @@ export function App(){
  const grouped=useMemo(()=>entries.filter(x=>x.text||x.tool_calls.length||x.tool_results.length),[entries]);
  const timeline=useMemo(()=>buildTimeline(grouped),[grouped]);
  const selectedModelId=active?.selected_model_id||draftModelId||modelConfig?.default_model_id||"";
+ const selectedModel=modelConfig?.configured.find(item=>item.id===selectedModelId);
  if(showSettings)return <SettingsPage
    profiles={profiles}
    models={modelConfig}
@@ -158,17 +169,43 @@ export function App(){
          <textarea aria-label={t("messageNoval")} value={draft} onChange={event=>setDraft(event.target.value)} placeholder={t("composerPlaceholder")} disabled={connection!=="connected"} onKeyDown={event=>{if(event.key==="Enter"&&!event.shiftKey){event.preventDefault();event.currentTarget.form?.requestSubmit()}}}/>
          <div className="composer-row">
            <div className="composer-controls">
-             <label className={`permission-selector ${permissions.mode}`}><Shield size={15}/><span className="sr-only">{t("sessionAccess")}</span><select aria-label={t("sessionAccess")} value={permissions.mode} onChange={event=>void selectPermissionMode(event.target.value as PermissionState["mode"])}><option value="ask">{t("askPermission")}</option><option value="full_access">{t("fullAccess")}</option></select></label>
+             <div className="composer-menu-anchor">
+               <button type="button" className={`composer-menu-trigger permission-selector ${permissions.mode}`} aria-label={t("sessionAccess")} aria-haspopup="menu" aria-expanded={composerMenu==="permission"} onClick={()=>{setShowPermissions(false);setComposerMenu(value=>value==="permission"?null:"permission")}}>
+                 <Shield size={15}/><span>{permissions.mode==="full_access"?t("fullAccess"):t("askPermission")}</span><ChevronDown size={13}/>
+               </button>
+               {composerMenu==="permission"&&<div className="composer-menu permission-menu" role="menu" aria-label={t("sessionAccess")} onKeyDown={navigateComposerMenu}>
+                 <button type="button" role="menuitemradio" aria-checked={permissions.mode==="ask"} onClick={()=>void selectPermissionMode("ask")}>
+                   <Hand size={18}/><span><strong>{t("askPermission")}</strong><small>{t("askPermissionDescription")}</small></span>{permissions.mode==="ask"&&<Check size={17}/>}
+                 </button>
+                 <button type="button" className="full-access-option" role="menuitemradio" aria-checked={permissions.mode==="full_access"} onClick={()=>void selectPermissionMode("full_access")}>
+                   <ShieldCheck size={18}/><span><strong>{t("fullAccess")}</strong><small>{t("fullAccessDescription")}</small></span>{permissions.mode==="full_access"&&<Check size={17}/>}
+                 </button>
+               </div>}
+             </div>
              {active&&permissions.approved_tools.length>0&&<button type="button" className="grant-button" onClick={()=>setShowPermissions(value=>!value)}><KeyRound size={14}/>{t("grants",{count:permissions.approved_tools.length})}</button>}
              <span className="composer-status"><span className={`status-dot ${connection}`}/>{status}</span>
            </div>
            <div className="composer-actions">
-             <label className="model-selector"><span className="sr-only">{t("sessionModel")}</span><select aria-label={t("sessionModel")} value={selectedModelId} onChange={event=>void selectModel(event.target.value)}>{modelConfig?.configured.map(item=><option key={item.id} value={item.id}>{item.label}</option>)}</select>{busy&&<small>{t("nextTurn")}</small>}</label>
+             <div className="composer-menu-anchor model-menu-anchor">
+               <button type="button" className="composer-menu-trigger model-selector" aria-label={t("sessionModel")} aria-haspopup="menu" aria-expanded={composerMenu==="model"} disabled={!modelConfig?.configured.length} onClick={()=>setComposerMenu(value=>value==="model"?null:"model")}>
+                 <span>{selectedModel?.label??t("notConfigured")}</span>{busy&&<small>{t("nextTurn")}</small>}<ChevronDown size={13}/>
+               </button>
+               {composerMenu==="model"&&<div className="composer-menu model-menu" role="menu" aria-label={t("sessionModel")} onKeyDown={navigateComposerMenu}>
+                 {modelConfig?.configured.map(item=><button type="button" key={item.id} role="menuitemradio" aria-checked={item.id===selectedModelId} onClick={()=>void selectModel(item.id)}>
+                   <span><strong>{item.label}</strong></span>{item.id===selectedModelId&&<Check size={17}/>}
+                 </button>)}
+               </div>}
+             </div>
              {busy?<button type="button" className="send stop" aria-label={t("stop")} onClick={()=>active&&window.noval.cancelTurn(active.session_id)}><Square size={13}/></button>:<button className="send" disabled={!draft.trim()||connection!=="connected"} aria-label={t("send")}><ArrowUp size={17}/></button>}
            </div>
          </div>
        </form>
      </>}
+     {permissionToast&&<div className="permission-toast" role="status" aria-live="polite">
+       <ShieldCheck size={18}/><div><strong>{t("fullAccessEnabled")}</strong><span>{t("fullAccessToastDescription")}</span></div>
+       <button type="button" className="toast-undo" onClick={()=>void undoPermissionMode()}><Undo2 size={14}/>{t("undo")}</button>
+       <button type="button" className="toast-dismiss" aria-label={t("dismissToast")} onClick={dismissPermissionToast}><X size={15}/></button>
+     </div>}
      {error&&<div className="error" role="alert"><strong>{t("attention")}</strong><span>{error}</span><button onClick={()=>setError(null)}>{t("dismiss")}</button></div>}
      {pending&&<div className="scrim"><section className="permission">
        <div className="permission-icon"><KeyRound size={20}/></div><p className="eyebrow">{t("permissionRequired")}</p><h2>{t("allowTool",{tool:pending.tool_name})}</h2><p>{t("actionApproval",{risk:pending.risk})}</p><pre>{safePreview(pending.arguments)}</pre>
