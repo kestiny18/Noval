@@ -21,6 +21,8 @@ htmlcov/
 .coverage
 .eval-results/
 /evals/private/
+desktop/test-results/
+desktop/playwright-report/
 
 # IDE / OS
 .vscode/
