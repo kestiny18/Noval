@@ -1,21 +1,95 @@
-.model-selector {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  height: 30px;
-  padding: 0 8px;
-  border: 1px solid #dce0e3;
-  border-radius: 8px;
-  background: #fff;
-  color: #8a9198;
-  font-size: 9px;
+.sr-only{
+  position:absolute;
+  width:1px;
+  height:1px;
+  padding:0;
+  margin:-1px;
+  overflow:hidden;
+  clip:rect(0,0,0,0);
+  white-space:nowrap;
+  border:0;
 }
 
-.model-selector select {
-  max-width: 150px;
-  border: 0;
-  outline: 0;
-  background: transparent;
-  color: #30353a;
-  font-size: 10px;
+.composer-controls,.composer-actions{
+  display:flex;
+  align-items:center;
+  gap:6px;
+  min-width:0;
+}
+
+.permission-selector,.model-selector{
+  display:flex;
+  align-items:center;
+  gap:5px;
+  min-width:0;
+  height:30px;
+  padding:0 7px;
+  border:0;
+  border-radius:8px;
+  background:transparent;
+  color:var(--muted);
+}
+
+.permission-selector:hover,.model-selector:hover,.grant-button:hover{
+  background:var(--hover);
+  color:var(--text);
+}
+
+.permission-selector:focus-within,.model-selector:focus-within{
+  outline:2px solid #477596;
+  outline-offset:1px;
+}
+
+.permission-selector.full_access{
+  background:var(--warning-soft);
+  color:var(--warning-text);
+}
+
+.permission-selector select,.model-selector select{
+  min-width:0;
+  max-width:170px;
+  border:0;
+  outline:0;
+  background:transparent;
+  color:inherit;
+  font:inherit;
+  font-size:11px;
+  font-weight:560;
+}
+
+.model-selector small{
+  color:var(--faint);
+  font-size:9px;
+  white-space:nowrap;
+}
+
+.grant-button{
+  display:flex;
+  align-items:center;
+  gap:5px;
+  height:30px;
+  padding:0 7px;
+  border:0;
+  border-radius:8px;
+  background:transparent;
+  color:var(--muted);
+  font-size:10px;
+}
+
+.composer-status{
+  color:var(--faint);
+  font-size:9.5px;
+  white-space:nowrap;
+}
+
+.workspace-pane>.grants-panel{
+  top:auto;
+  right:auto;
+  bottom:74px;
+  left:24px;
+}
+
+@media(max-width:760px){
+  .composer-status{display:none}
+  .permission-selector select,.model-selector select{max-width:125px}
 }
