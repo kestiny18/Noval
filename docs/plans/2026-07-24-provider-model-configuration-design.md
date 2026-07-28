@@ -2,7 +2,8 @@
 
 ## Status
 
-Approved for implementation.
+Approved for implementation. Product-surface refinement approved on
+2026-07-28.
 
 This design supersedes the Provider portion of
 `2026-07-24-desktop-settings-design.md`. ADR-0010 is the normative decision
@@ -13,8 +14,10 @@ record. This document supplies the implementation-level contract.
 Phase 1 replaces Noval's flat single-Provider configuration with a deterministic
 model-configuration system:
 
-- Noval ships trusted OpenAI-compatible Provider profiles.
-- A user can configure multiple Connections and Configured Models.
+- Noval ships one trusted DeepSeek OpenAI-compatible Provider Profile.
+- The Runtime contract remains capable of representing multiple Connections
+  and Configured Models without exposing that machinery in the Phase 1
+  Desktop.
 - A persistent Session selects one Configured Model for its next Turn.
 - A selection made during an active Turn applies only to the following Turn.
 - Every Turn captures immutable agent and completion-judge bindings.
@@ -24,17 +27,18 @@ model-configuration system:
   secret may enter public DTOs, Session state, events, logs, traces, journals,
   diagnostics, or generated representations.
 
-Phase 1 deliberately proves one protocol across multiple Providers,
-Connections, and models. It does not expose Anthropic configuration or
-cross-Adapter Session switching.
+Phase 1 deliberately proves one protocol and one real Provider across multiple
+models and immutable Turn bindings. It does not claim that API-shape
+compatibility alone proves another Provider, and it does not expose Anthropic
+configuration or cross-Adapter Session switching.
 
 ## Phase boundary
 
 ### Included
 
-- built-in OpenAI-compatible Provider profiles;
-- Custom OpenAI-compatible Connections;
-- multiple Connections and models;
+- one built-in DeepSeek OpenAI-compatible Provider Profile;
+- generic Runtime, Application API, and CLI support for multiple Connections
+  and Configured Models;
 - write-only API-key configuration;
 - immutable configuration snapshots;
 - Session model selection and restoration;
@@ -43,12 +47,19 @@ cross-Adapter Session switching.
 - same-Adapter replay isolation;
 - Application API v2, Desktop Sidecar protocol v2, Session schema v3, and
   settings schema v2;
-- Desktop Models settings and conversation model selector;
+- a focused Desktop Models setting for the shipped Provider and write-only API
+  key;
+- Session-scoped model and permission controls in the conversation composer;
+- persistent Desktop language and sidebar-width preferences;
 - CLI list and Session-selection operations.
 
 ### Deferred
 
 - Anthropic Provider profiles and Custom Anthropic Connections;
+- additional built-in OpenAI-compatible Provider Profiles until each passes the
+  real Adapter contract;
+- Custom Connections and advanced Connection/Configured Model CRUD in the
+  first-party Desktop;
 - an Adapter selector in Desktop;
 - cross-Adapter Session switching and canonical-block representability;
 - Anthropic thinking/redacted-thinking routing changes;
@@ -148,24 +159,22 @@ judging.
 
 ## Built-in profiles
 
-Phase 1 initially packages these OpenAI-compatible profiles:
+Phase 1 packages exactly one OpenAI-compatible Profile:
 
 | Profile id | Base URL | Environment | Selectable models | Default | Hidden judge |
 |---|---|---|---|---|---|
 | `deepseek` | `https://api.deepseek.com` | `DEEPSEEK_API_KEY` | `deepseek-v4-pro`, `deepseek-v4-flash` | `deepseek-v4-pro` | `deepseek-v4-flash` |
-| `qwen` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `DASHSCOPE_API_KEY` | `qwen3.7-plus`, `qwen3.6-flash` | `qwen3.7-plus` | `qwen3.6-flash` |
-| `moonshot` | `https://api.moonshot.cn/v1` | `MOONSHOT_API_KEY` | `kimi-k2.6` | `kimi-k2.6` | `kimi-k2.6` |
-| `zhipu` | `https://open.bigmodel.cn/api/paas/v4` | `ZAI_API_KEY` | `glm-5.2` | `glm-5.2` | `glm-5.2` |
-| `openai` | `https://api.openai.com/v1` | `OPENAI_API_KEY` | `gpt-5.2`, `gpt-5-mini` | `gpt-5.2` | `gpt-5-mini` |
-| `google` | `https://generativelanguage.googleapis.com/v1beta/openai/` | `GEMINI_API_KEY` | `gemini-3.6-flash`, `gemini-3.5-flash-lite` | `gemini-3.6-flash` | `gemini-3.6-flash` |
 
 The catalog is a release input, not an evergreen promise. Every shipped Profile
 must pass Noval's non-streaming, streaming, and tool-call Adapter contract suite
 with a maintainer-provided credential. A Profile that cannot pass is removed
-before release; Phase 1 has no fixed Profile-count requirement.
+before release. Phase 1 intentionally fixes the shipped Profile count at one so
+the product contract matches the real evidence available for this release.
 
-MiniMax may be added through its OpenAI-compatible endpoint only after it passes
-the same suite. Anthropic-format endpoints are deferred.
+Qwen, Moonshot, Zhipu, OpenAI, Google, MiniMax, or another compatible endpoint
+may be added only after its exact models pass the same suite. Similar wire shape
+is not evidence of equivalent Provider behavior. Anthropic-format endpoints are
+deferred.
 
 Changing a built-in endpoint is a Noval release because it changes a trusted
 credential destination.
@@ -568,59 +577,58 @@ scope.
   `provider_replay_incompatible`;
 - core compares routing metadata but never inspects opaque payloads.
 
-Phase 1 tests same-Adapter isolation across Providers, Connections, models,
-credential revisions, and endpoints. Cross-Adapter switching remains deferred.
+Phase 1 tests same-Adapter isolation across Connections, models, credential
+revisions, and endpoints, using DeepSeek for the real contract and a local fake
+compatible endpoint for deterministic adversarial cases. Cross-Adapter
+switching remains deferred.
 
 ## Desktop
 
 Settings navigation is:
 
 ```text
-General
-Models
 Profile
 Appearance
+Models
+Language
 ```
-
-General contains no Provider, model, judge, endpoint, or API-key controls.
 
 Models contains:
 
-1. Configured Models;
-2. Connections;
-3. Add/edit flow.
+1. the shipped Provider identity;
+2. credential availability;
+3. one write-only API-key replace/clear field.
 
-Built-in flow:
-
-```text
-Provider
-Connection name
-API key
-Model
-Configured-model label
-```
-
-Custom flow:
+The Phase 1 form is deliberately:
 
 ```text
-Connection name
-Base URL
+Provider: DeepSeek
 API key
-API-key environment variable, optional
-Model
-Configured-model label
 ```
 
-There is no Phase 1 Adapter selector. Built-in endpoint and Adapter values are
-not editable. Existing stored key values never reach the Renderer.
+There is no Connection name, endpoint, environment-variable, Configured Model,
+default-model, Custom Provider, or Adapter control in Desktop. Built-in
+endpoint and Adapter values are not editable. Existing stored key values never
+reach the Renderer. The underlying Runtime API remains generic for CLI and
+future hosts.
 
-The conversation selector:
+The conversation composer owns two Session controls:
 
-- displays the durable selected id after restoration;
-- may change while a Turn is active;
-- shows `Applies next turn` while active;
-- does not silently substitute unavailable models;
-- displays product labels, not Adapter names.
+- a model selector that displays the durable selected id after restoration,
+  may change while a Turn is active, and shows `Applies next turn` while active;
+- an access selector backed by the existing Session permission mode.
+
+Both controls display product language rather than internal ids. Neither is
+duplicated in Settings.
+
+The project sidebar and conversation area are separated by a draggable,
+keyboard-operable separator. Desktop clamps and persists the sidebar width.
+
+Language is a Desktop-only choice between Simplified Chinese and English. On
+the first launch, a `zh` system locale selects Chinese and every other locale
+selects English. An explicit user choice persists and wins on later launches.
+All first-party visible copy and accessibility labels use the selected locale;
+Provider/Core error messages remain safe source text in Phase 1.
 
 Desktop Sidecar protocol v2 mirrors Application API v2. A schema failure is a
 typed startup failure, not an automatic restart loop.
@@ -674,12 +682,13 @@ Adapter, Connection, or model automatically.
 5. Add replay scope, transport pooling, `TurnExecution`, and explicit
    Agent/Context/Judge client injection.
 6. Upgrade Sidecar protocol v2 and CLI.
-7. Build Desktop Models settings and conversation selector.
-8. Validate the vertical slice with DeepSeek plus a Custom fake
+7. Build the focused Desktop credential setting and Session composer controls.
+8. Add persisted language and resizable-sidebar preferences.
+9. Validate the vertical slice with DeepSeek plus a Custom fake
    OpenAI-compatible endpoint.
-9. Run each candidate Profile through the real Adapter suite and remove any
-   unverified Profile.
-10. Update canonical docs, examples, fixtures, and release notes.
+10. Run DeepSeek through the real Adapter suite and keep every other candidate
+    Profile out of the shipped catalog.
+11. Update canonical docs, examples, fixtures, and release notes.
 
 Each coherent step is validated and committed separately. The public contract
 flip lands through one feature branch and pull request; `main` never contains a
@@ -726,11 +735,16 @@ half-migrated contract.
 ### Desktop, CLI, and contracts
 
 - API v2 and Sidecar v2 reject v1 DTOs/envelopes;
-- General contains no model controls;
-- Models supports built-in and Custom OpenAI-compatible Connections;
+- Models is the third Settings item and exposes only DeepSeek plus a write-only
+  API-key control;
 - Renderer never receives an existing key;
-- the conversation selector restores the durable selection;
+- the composer model selector restores the durable selection;
+- the composer permission selector uses Session permission state;
 - active selection displays `Applies next turn`;
+- first launch resolves Chinese only for a `zh` system locale, while an
+  explicit Chinese or English choice survives restart;
+- the sidebar separator supports pointer and keyboard adjustment, clamps the
+  width, and restores it after restart;
 - a schema startup error stops the recovery loop;
 - CLI list/select shares Runtime validation;
 - JSON fixtures cover all new DTOs and events;
@@ -744,8 +758,11 @@ Phase 1 is complete only when:
 1. settings v2, Session v3, Application API v2, and Sidecar v2 are the only
    accepted current contracts;
 2. a clean installation produces valid defaults;
-3. users can configure multiple OpenAI-compatible Connections and models;
-4. Custom Connections require an endpoint but no Adapter selection;
+3. the shipped catalog contains only the real-contract-verified DeepSeek
+   Profile while the Runtime schema remains capable of multiple Connections
+   and models;
+4. Desktop exposes only DeepSeek credential configuration and does not expose
+   advanced Connection or Configured Model CRUD;
 5. Session selection is durable and active-Turn-safe;
 6. every Turn has immutable agent and judge bindings;
 7. agent, compaction, and judge use the captured Turn clients;
@@ -753,6 +770,9 @@ Phase 1 is complete only when:
 9. no credential crosses a prohibited persistence or observation boundary;
 10. configuration mutation is atomic and conflict-safe;
 11. no failure silently changes Adapter, Connection, model, or judge;
-12. Desktop and CLI expose the same Session-selection semantics;
-13. every shipped Profile passes the real Adapter contract suite or is removed;
-14. ADRs and canonical documentation describe the delivered behavior.
+12. Desktop composer and CLI expose the same Session model-selection
+    semantics, while the composer permission control uses the existing Session
+    permission API;
+13. language and sidebar width are Desktop-owned, accessible, and persistent;
+14. every shipped Profile passes the real Adapter contract suite or is removed;
+15. ADRs and canonical documentation describe the delivered behavior.

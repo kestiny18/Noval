@@ -1,9 +1,11 @@
 # OpenAI-compatible Provider and Model Configuration Implementation Plan
 
-**Delivery status (2026-07-25):** implementation and automated validation are
-in progress on the feature pull request. Final completion remains gated by
-(1) running the real Adapter contract against every shipped Profile with
-maintainer-provided credentials, removing any Profile that fails, and
+**Delivery status (2026-07-28):** the architecture and first vertical slice are
+implemented on the feature pull request. The approved product refinement now
+ships only DeepSeek, simplifies Desktop configuration, moves model and
+permission controls into the Session composer, and adds language/sidebar
+preferences. Final completion remains gated by
+(1) running the real Adapter contract against the shipped DeepSeek Profile and
 (2) human installation and product-flow acceptance of the final Windows
 installer. Neither gate may be inferred from mocked tests or package creation.
 
@@ -180,15 +182,24 @@ installer. Neither gate may be inferred from mocked tests or package creation.
 - Modify: `desktop/e2e/desktop.spec.ts`
 
 **Steps:**
-1. Write failing renderer tests for profile/model listing, active selection, credential status, validation errors, and revision conflicts.
-2. Implement a Models settings section centered on built-in OpenAI-compatible profiles with custom compatible profiles as an advanced path.
+1. Write failing renderer tests for Settings order, DeepSeek identity,
+   credential status, write-only replacement, and validation errors.
+2. Implement the third Models section with only the shipped DeepSeek Provider
+   and one write-only API-key replace/clear form.
 3. Make API-key fields write-only: blank means unchanged, explicit replace/delete actions are separate, and saved values are never rehydrated.
-4. Add one Configured Model selector. Runtime owns the same-Connection judge; the UI observes selected versus active ids while a Turn is running.
-5. Preserve responsive layout, keyboard access, focus visibility, and reduced-motion behavior.
-6. Add E2E coverage for configure, select, run, switch-during-run, and reopen flows.
-7. Run `npm test -- --run src/renderer/App.test.tsx` from `desktop`.
-8. Run `npm run test:e2e` from `desktop`.
-9. Run `git diff --check`, inspect the staged diff, and commit as `feat(desktop): add model configuration settings`.
+4. Put the Configured Model and permission-mode selectors in the Session
+   composer. Runtime owns the same-Connection judge; the UI observes selected
+   versus active ids while a Turn is running.
+5. Add Desktop-only persisted language and sidebar-width preferences, locale
+   resolution, full first-party copy translation, and an accessible separator.
+6. Preserve responsive layout, keyboard access, focus visibility, and
+   reduced-motion behavior.
+7. Add E2E coverage for configure, select, permission change, run,
+   switch-during-run, language/sidebar persistence, and reopen flows.
+8. Run `npm test -- --run src/renderer/App.test.tsx` from `desktop`.
+9. Run `npm run test:e2e` from `desktop`.
+10. Run `git diff --check`, inspect each scoped diff, and commit the settings,
+    composer, localization, and sidebar changes separately.
 
 ## Task 10: Complete adversarial validation and delivery
 
@@ -200,9 +211,10 @@ installer. Neither gate may be inferred from mocked tests or package creation.
 2. Run `python -m compileall -q noval desktop/sidecar/noval_sidecar`.
 3. Run `npm run typecheck`, `npm test`, `npm run build`, and `npm run test:e2e` from `desktop`.
 4. Run targeted adversarial credential-persistence, replay-mismatch, schema-hard-break, and close/admission/configuration race tests again.
-5. With every packaged Profile environment variable populated, run
+5. With `DEEPSEEK_API_KEY` populated, run
    `$env:NOVAL_RUN_LIVE_PROVIDER_CONTRACT='1'; python -m pytest tests/live/test_provider_profiles.py -q`;
-   remove an unverified or failing Profile/model before release.
+   remove an unverified or failing DeepSeek model before release. Do not ship
+   another Provider based only on OpenAI-compatible wire shape.
 6. Run `git diff --check` and inspect the full branch diff against its base.
 7. Scan the diff and generated artifacts for credential-like content and provider-private replay data.
 8. Update related documentation and changelog only where the delivered behavior requires it.

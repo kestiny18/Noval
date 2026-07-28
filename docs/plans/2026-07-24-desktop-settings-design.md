@@ -10,17 +10,17 @@ model configuration is superseded by
 ## Information architecture
 
 The Settings surface replaces the project shell temporarily and has four
-sections:
+sections in this order:
 
-1. **General** — application and Runtime information plus general behavior.
-2. **Models** — connections, configured models, and write-only credential
-   inputs as
-   defined by the Phase 1 Provider and model configuration design.
-3. **Profile** — a read-only local profile derived from the current project,
+1. **Profile** — a read-only local profile derived from the current project,
    Session, Runtime, and version state. It does not invent an account, billing,
    usage heatmap, or cloud identity.
-4. **Appearance** — System, Light, and Dark themes plus Comfortable and Compact
+2. **Appearance** — System, Light, and Dark themes plus Comfortable and Compact
    interface density.
+3. **Models** — the shipped DeepSeek Provider and one write-only API-key
+   replace/clear control. Connection, endpoint, environment-variable,
+   Configured Model, default-model, and Adapter controls are not exposed.
+4. **Language** — Simplified Chinese and English.
 
 The Back action restores the existing project shell without recreating or
 resetting project state.
@@ -35,9 +35,15 @@ never return to the Renderer, Desktop does not describe them as encrypted, and
 model configuration updates through Runtime APIs without requiring a Sidecar
 restart.
 
-Theme and density are Desktop-only preferences stored in Electron's
-`desktop-settings.json`. They do not enter `~/.noval/settings.json`, canonical
-Sessions, the sidecar protocol, or the Noval kernel.
+Theme, density, language, and project-sidebar width are Desktop-only
+preferences stored in Electron's `desktop-settings.json`. They do not enter
+`~/.noval/settings.json`, canonical Sessions, the sidecar protocol, or the
+Noval kernel. The first launch resolves language from Electron's system locale:
+`zh` selects Simplified Chinese and every other locale selects English. Once a
+user chooses a language, that explicit choice persists.
+
+Model identity and permission mode are Session concerns. They appear in the
+conversation composer and are not duplicated in Settings.
 
 ## Interaction and accessibility
 
@@ -45,16 +51,24 @@ Sessions, the sidecar protocol, or the Noval kernel.
   `aria-current`.
 - Theme choices and density choices expose pressed state.
 - Appearance changes apply immediately and persist across application restarts.
+- Language changes apply immediately, translate first-party visible copy and
+  accessible labels, and persist across restarts.
+- The project sidebar separator supports pointer drag, Left/Right arrow keys,
+  visible focus, clamping, and persisted restoration.
+- Composer model and permission controls remain usable by keyboard and expose
+  their current state with explicit labels.
 - Form controls retain explicit labels and visible focus states.
 - Light and dark themes share the existing Noval semantic tokens.
 - Errors remain visible inside the Settings surface instead of closing it.
 
 ## Verification
 
-- Renderer tests cover all four sections, navigation, Runtime values,
-  appearance persistence calls, document theme/density state, and Back
-  behavior.
-- Electron E2E covers real settings navigation, local preference persistence,
-  and restoration after relaunch.
-- Manual screenshots cover General and Profile in light mode and Appearance in
-  dark compact mode.
+- Renderer tests cover all four sections, their exact order, the focused
+  DeepSeek credential form, Runtime values, appearance/language/sidebar
+  persistence calls, document theme/density/language state, composer controls,
+  and Back behavior.
+- Electron E2E covers real settings navigation, credential save, language and
+  sidebar persistence, Session model/permission controls, and restoration after
+  relaunch.
+- Manual screenshots cover Chinese and English composer/settings states plus
+  the resized sidebar in light and dark modes.
