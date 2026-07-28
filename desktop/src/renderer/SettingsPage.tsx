@@ -1,7 +1,7 @@
 import {FormEvent,useState} from "react";
 import {
-  ArrowLeft,Check,ChevronRight,CircleUserRound,Cpu,FolderKanban,Languages,
-  KeyRound,MonitorCog,Moon,Palette,ServerCog,Settings2,ShieldCheck,Sun,SunMoon,
+  ArrowLeft,Check,ChevronRight,Languages,KeyRound,MonitorCog,Moon,Palette,
+  Settings2,ShieldCheck,SlidersHorizontal,Sun,SunMoon,
 } from "lucide-react";
 import type {
   AppInfo,AppearancePreferences,ConnectionUpsert,LanguagePreference,
@@ -10,7 +10,7 @@ import type {
 import {API_SCHEMA_VERSION} from "../shared/protocol";
 import {translate} from "./i18n";
 
-type Section="profile"|"appearance"|"models"|"language";
+type Section="general"|"appearance"|"models";
 type Props={
   profiles:ProviderProfileInfo[];
   models:ModelConfigurationInfo|null;
@@ -29,7 +29,7 @@ type Props={
 };
 
 export function SettingsPage(props:Props){
-  const [section,setSection]=useState<Section>("profile");
+  const [section,setSection]=useState<Section>("general");
   const t=(key:Parameters<typeof translate>[1],values?:Record<string,string|number>)=>translate(props.language,key,values);
   return <div className="settings-shell" data-testid="settings-shell">
     <aside className="settings-sidebar">
@@ -37,19 +37,16 @@ export function SettingsPage(props:Props){
       <div className="settings-brand"><span>Noval</span><strong>{t("settings")}</strong></div>
       <nav aria-label={t("settingsSections")}>
         <p>{t("desktop")}</p>
-        <NavButton active={section==="profile"} icon={<CircleUserRound size={15}/>} onClick={()=>setSection("profile")}>{t("profile")}</NavButton>
+        <NavButton active={section==="general"} icon={<SlidersHorizontal size={15}/>} onClick={()=>setSection("general")}>{t("general")}</NavButton>
         <NavButton active={section==="appearance"} icon={<Palette size={15}/>} onClick={()=>setSection("appearance")}>{t("appearance")}</NavButton>
         <NavButton active={section==="models"} icon={<Settings2 size={15}/>} onClick={()=>setSection("models")}>{t("models")}</NavButton>
-        <NavButton active={section==="language"} icon={<Languages size={15}/>} onClick={()=>setSection("language")}>{t("language")}</NavButton>
       </nav>
-      <footer><ShieldCheck size={14}/><span>{t("settingsBoundary")}</span></footer>
     </aside>
     <main className="settings-content">
       {props.error&&<div className="settings-error" role="alert"><span>{props.error}</span><button onClick={props.dismissError}>{t("dismiss")}</button></div>}
-      {section==="profile"&&<ProfileSettings {...props}/>}
+      {section==="general"&&<GeneralSettings {...props}/>}
       {section==="appearance"&&<AppearanceSettings {...props}/>}
       {section==="models"&&<ModelSettings {...props}/>}
-      {section==="language"&&<LanguageSettings {...props}/>}
     </main>
   </div>;
 }
@@ -62,7 +59,6 @@ function NavButton({active,icon,onClick,children}:{active:boolean;icon:React.Rea
 
 function ModelSettings(props:Props){
   const t=(key:Parameters<typeof translate>[1])=>translate(props.language,key);
-  const profile=props.profiles.find(item=>item.id==="deepseek"&&item.kind==="builtin");
   const connection=props.models?.connections.find(item=>item.profile_id==="deepseek");
   const [apiKey,setApiKey]=useState("");
   const [clearKey,setClearKey]=useState(false);
@@ -71,7 +67,7 @@ function ModelSettings(props:Props){
 
   async function save(event:FormEvent){
     event.preventDefault();
-    if(!profile||!connection||!props.models)return;
+    if(!connection||!props.models)return;
     setSaving(true);
     setSaved(false);
     try{
@@ -80,8 +76,8 @@ function ModelSettings(props:Props){
         expected_configuration_revision:props.models.revision,
         connection_id:connection.id,
         expected_connection_revision:connection.revision,
-        label:profile.label,
-        profile_id:profile.id,
+        label:"DeepSeek",
+        profile_id:"deepseek",
         api_key:apiKey.trim()||undefined,
         clear_api_key:clearKey,
       });
@@ -92,19 +88,14 @@ function ModelSettings(props:Props){
   }
 
   return <section className="settings-page">
-    <PageHeader eyebrow={t("runtime")} title={t("models")} description={t("modelsDescription")}/>
-    <SettingsGroup title={t("provider")}>
-      <SettingRow title={t("modelProvider")} description={t("providerDescription")}>
-        <select aria-label={t("modelProvider")} value="deepseek" disabled>
-          <option value="deepseek">{profile?.label??"DeepSeek"}</option>
-        </select>
-      </SettingRow>
-      <SettingRow title={t("credentialStatus")} description={t("credentialStatusDescription")}>
-        <span className="privacy-badge"><ShieldCheck size={13}/>{connection?.credential_available?t("available"):t("notConfigured")}</span>
-      </SettingRow>
-    </SettingsGroup>
-    <SettingsGroup title={t("apiKeyGroup")}>
+    <PageHeader eyebrow={t("modelSettingsEyebrow")} title={t("models")} description={t("modelsDescription")}/>
+    <SettingsGroup title={t("modelConfiguration")}>
       <form className="connection-form" onSubmit={save}>
+        <div className="model-summary">
+          <div className="model-mark">D</div>
+          <div><strong>DeepSeek</strong><span>{t("deepseekDescription")}</span></div>
+          <span className="privacy-badge"><ShieldCheck size={13}/>{connection?.credential_available?t("available"):t("notConfigured")}</span>
+        </div>
         <SettingRow title={t("deepseekApiKey")} description={t("apiKeyDescription")}>
           <div className="credential-stack">
             <div className="credential-field">
@@ -137,33 +128,29 @@ function ModelSettings(props:Props){
   </section>;
 }
 
-function ProfileSettings(props:Props){
+function GeneralSettings(props:Props){
   const t=(key:Parameters<typeof translate>[1])=>translate(props.language,key);
   return <section className="settings-page">
-    <PageHeader eyebrow={t("localProfile")} title={t("privateByDesign")} description={t("profileDescription")}/>
-    <div className="profile-hero">
-      <div className="profile-mark">N</div>
-      <div>
-        <span className="profile-status"><i/>{t("localRuntimeConnected")}</span>
-        <h2>{t("novalDesktop")}</h2>
-        <p>{t("profileOwnership")}</p>
-      </div>
-    </div>
-    <div className="profile-stats">
-      <Stat icon={<FolderKanban size={17}/>} value={String(props.projectCount)} label={t("projectsCount")}/>
-      <Stat icon={<CircleUserRound size={17}/>} value={String(props.sessionCount)} label={t("storedSessions")}/>
-      <Stat icon={<Cpu size={17}/>} value={props.appInfo?.coreVersion??"—"} label={t("coreVersion")}/>
-    </div>
-    <SettingsGroup title={t("currentEnvironment")}>
-      <SettingRow title={t("activeWorkspace")} description={t("activeWorkspaceDescription")}>
-        <span className="setting-value truncate" title={props.workspace??undefined}>{props.workspace??t("noProjectSelected")}</span>
+    <PageHeader eyebrow={t("preferences")} title={t("general")} description={t("generalDescription")}/>
+    <SettingsGroup title={t("application")}>
+      <SettingRow title={t("displayLanguage")} description={t("displayLanguageDescription")}>
+        <select
+          aria-label={t("displayLanguage")}
+          value={props.language}
+          onChange={event=>void props.saveLanguage(event.target.value as LanguagePreference)}
+        >
+          <option value="zh-CN">{t("chinese")}</option>
+          <option value="en">{t("english")}</option>
+        </select>
       </SettingRow>
-      <SettingRow title={t("runtimeBoundary")} description={t("runtimeBoundaryDescription")}>
-        <span className="privacy-badge"><ServerCog size={13}/>{t("local")}</span>
+      <SettingRow title={t("appVersion")} description={t("appVersionDescription")}>
+        <code>{props.appInfo?.desktopVersion??"—"}</code>
       </SettingRow>
-      <SettingRow title={t("desktopVersion")} description={t("previewBuild")}><code>{props.appInfo?.desktopVersion??"—"}</code></SettingRow>
-      <SettingRow title={t("sidecarProtocol")} description={t("sidecarDescription")}><code>v{props.appInfo?.protocolVersion??"—"}</code></SettingRow>
     </SettingsGroup>
+    <div className="appearance-note">
+      <Languages size={17}/>
+      <div><strong>{t("languagePreference")}</strong><p>{t("languageNote")}</p></div>
+    </div>
   </section>;
 }
 
@@ -193,30 +180,7 @@ function AppearanceSettings(props:Props){
     </SettingsGroup>
     <div className="appearance-note">
       <MonitorCog size={17}/>
-      <div><strong>{t("desktopPreference")}</strong><p>{t("appearanceBoundary")}</p></div>
-    </div>
-  </section>;
-}
-
-function LanguageSettings(props:Props){
-  const t=(key:Parameters<typeof translate>[1])=>translate(props.language,key);
-  return <section className="settings-page">
-    <PageHeader eyebrow={t("languageEyebrow")} title={t("languageTitle")} description={t("languageDescription")}/>
-    <SettingsGroup title={t("displayLanguage")}>
-      <SettingRow title={t("displayLanguage")} description={t("displayLanguageDescription")}>
-        <select
-          aria-label={t("displayLanguage")}
-          value={props.language}
-          onChange={event=>void props.saveLanguage(event.target.value as LanguagePreference)}
-        >
-          <option value="zh-CN">{t("chinese")}</option>
-          <option value="en">{t("english")}</option>
-        </select>
-      </SettingRow>
-    </SettingsGroup>
-    <div className="appearance-note">
-      <Languages size={17}/>
-      <div><strong>{t("desktopPreference")}</strong><p>{t("languageNote")}</p></div>
+      <div><strong>{t("appearancePreference")}</strong><p>{t("appearanceNote")}</p></div>
     </div>
   </section>;
 }
@@ -229,9 +193,6 @@ function SettingsGroup({title,children}:{title:string;children:React.ReactNode})
 }
 function SettingRow({title,description,children}:{title:string;description:string;children:React.ReactNode}){
   return <div className="setting-row"><div className="setting-copy"><strong>{title}</strong><span>{description}</span></div><div className="setting-control">{children}</div></div>;
-}
-function Stat({icon,value,label}:{icon:React.ReactNode;value:string;label:string}){
-  return <div className="profile-stat">{icon}<strong title={value}>{value}</strong><span>{label}</span></div>;
 }
 function ThemeChoice({label,icon,value,current,onChoose}:{label:string;icon:React.ReactNode;value:AppearancePreferences["theme"];current:AppearancePreferences["theme"];onChoose:(value:AppearancePreferences["theme"])=>void}){
   return <button className={`theme-choice ${current===value?"active":""}`} aria-pressed={current===value} onClick={()=>onChoose(value)}>
