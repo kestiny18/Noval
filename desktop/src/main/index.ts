@@ -142,10 +142,6 @@ function registerIpc(): void {
   ipcMain.handle("noval:model-profiles",async()=>((await sidecar.request<{profiles:unknown[]}>("model.profiles",{})).profiles));
   ipcMain.handle("noval:model-configuration",()=>sidecar.request("model.configuration",{}));
   ipcMain.handle("noval:connection-upsert",(_e,value:Record<string,unknown>)=>sidecar.request("model.connection.upsert",value));
-  ipcMain.handle("noval:connection-delete",(_e,id:string,revision:number)=>sidecar.request("model.connection.delete",{connection_id:id,expected_configuration_revision:revision}));
-  ipcMain.handle("noval:configured-upsert",(_e,value:Record<string,unknown>)=>sidecar.request("model.configured.upsert",value));
-  ipcMain.handle("noval:configured-delete",(_e,id:string,revision:number)=>sidecar.request("model.configured.delete",{configured_model_id:id,expected_configuration_revision:revision}));
-  ipcMain.handle("noval:model-default",(_e,id:string,revision:number)=>sidecar.request("model.default.set",{configured_model_id:id,expected_configuration_revision:revision}));
   ipcMain.handle("noval:open-external",async(_e,url:string)=>{if(/^https:\/\/(github\.com|docs\.noval\.)/i.test(url)) await shell.openExternal(url);});
 }
 

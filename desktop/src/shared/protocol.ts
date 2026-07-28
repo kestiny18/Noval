@@ -44,10 +44,6 @@ export interface ConnectionUpsert {
   expected_connection_revision?:number|null;label:string;profile_id:string;
   base_url?:string|null;api_key_env?:string|null;api_key?:string;clear_api_key?:boolean;
 }
-export interface ConfiguredModelUpsert {
-  schema_version:2;expected_configuration_revision:number;configured_model_id?:string|null;
-  label:string;connection_id:string;model:string;
-}
 export interface TranscriptEntry { sequence: number; role: "user" | "assistant" | "tool"; text: string; timestamp: string | null; tool_calls: Array<{call_id:string;name:string;argument_keys:string[]}>; tool_results: Array<{call_id:string;content:string;is_error:boolean}> }
 export interface TranscriptHistoryPage {entries:TranscriptEntry[];previous_sequence:number|null;has_more:boolean}
 export interface CompletionCriterion { criterion_id:string;status:"passed"|"failed"|"missing"|"stale"|"unknown";source:string|null;observed_at:string|null }
@@ -90,8 +86,4 @@ export interface NovalDesktopApi {
   listProviderProfiles():Promise<ProviderProfileInfo[]>;
   getModelConfiguration():Promise<ModelConfigurationInfo>;
   upsertConnection(value:ConnectionUpsert):Promise<ModelConfigurationInfo>;
-  deleteConnection(connectionId:string,expectedRevision:number):Promise<ModelConfigurationInfo>;
-  upsertConfiguredModel(value:ConfiguredModelUpsert):Promise<ModelConfigurationInfo>;
-  deleteConfiguredModel(configuredModelId:string,expectedRevision:number):Promise<ModelConfigurationInfo>;
-  setDefaultModel(configuredModelId:string,expectedRevision:number):Promise<ModelConfigurationInfo>;
 }
