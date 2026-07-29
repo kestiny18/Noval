@@ -1,5 +1,5 @@
 import {type CSSProperties,FormEvent,useEffect,useMemo,useRef,useState} from "react";
-import {ArrowUp,Check,CheckCircle2,ChevronDown,Copy,Ellipsis,Folder,FolderOpen,Hand,KeyRound,MessageSquarePlus,Pencil,Plus,RotateCcw,Settings,Shield,ShieldCheck,Square,Trash2,Undo2,X,XCircle} from "lucide-react";
+import {ArrowUp,Check,ChevronDown,Copy,Ellipsis,Folder,FolderOpen,Hand,KeyRound,MessageSquarePlus,Plus,RotateCcw,Settings,Shield,ShieldCheck,Square,Trash2,Undo2,X} from "lucide-react";
 import type {AppInfo,AppearancePreferences,CompletionReport,ConnectionUpsert,LanguagePreference,ModelConfigurationInfo,PermissionState,ProjectInfo,ProviderProfileInfo,SessionInfo,SidecarEvent,TranscriptEntry} from "../shared/protocol";
 import {MarkdownText} from "./MarkdownText";
 import {buildTimeline,MessageItem,ToolActivity} from "./ToolActivity";
@@ -18,7 +18,7 @@ export function App(){
  const [active,setActive]=useState<SessionInfo|null>(null),[permissions,setPermissions]=useState<PermissionState>({mode:"ask",approved_tools:[]}),[entries,setEntries]=useState<TranscriptEntry[]>([]);
  const [historyCursor,setHistoryCursor]=useState<number|null>(null),[hasOlder,setHasOlder]=useState(false);
  const [draft,setDraft]=useState(""),[stream,setStream]=useState(""),[busy,setBusy]=useState(false),[status,setStatus]=useState("Ready"),[error,setError]=useState<string|null>(null),[pending,setPending]=useState<PendingPermission|null>(null);
- const [connection,setConnection]=useState<Connection>("connected"),[completion,setCompletion]=useState<CompletionReport|null>(null),[renaming,setRenaming]=useState(false),[renameDraft,setRenameDraft]=useState("");
+ const [connection,setConnection]=useState<Connection>("connected"),[completion,setCompletion]=useState<CompletionReport|null>(null);
  const [showPermissions,setShowPermissions]=useState(false),[projectMenu,setProjectMenu]=useState<string|null>(null),[projectToRemove,setProjectToRemove]=useState<string|null>(null),[removingProject,setRemovingProject]=useState(false),[draftProject,setDraftProject]=useState<string|null>(null);
  const previousConnection=useRef(connection),eventSequence=useRef(0),viewport=useRef<HTMLDivElement|null>(null),loadingOlder=useRef(false),lastScrollTop=useRef(0),resizeStart=useRef<{x:number;width:number}|null>(null);
  const [showSettings,setShowSettings]=useState(false),[profiles,setProfiles]=useState<ProviderProfileInfo[]>([]),[modelConfig,setModelConfig]=useState<ModelConfigurationInfo|null>(null),[draftModelId,setDraftModelId]=useState("");
@@ -26,7 +26,7 @@ export function App(){
  const [composerMenu,setComposerMenu]=useState<ComposerMenu>(null),[permissionToast,setPermissionToast]=useState<PermissionToast|null>(null);
  const permissionToastTimer=useRef<ReturnType<typeof setTimeout>|null>(null);
  const t=(key:Parameters<typeof translate>[1],values?:Record<string,string|number>)=>translate(language,key,values);
- const title=active?.title||t("newTask"),hasTask=Boolean(active||draftProject);
+ const title=active?.title||t("untitledTask"),canCompose=Boolean(active||draftProject||workspace);
 
  useEffect(()=>{void Promise.all([refreshProjects(),refreshModels(),window.noval.getPreferences().then(preferences=>{applyAppearance(preferences.appearance);applyLanguage(preferences.language);setSidebarWidth(preferences.sidebarWidth)})]).catch(e=>setError(message(e)))},[]);
  useEffect(()=>window.noval.onEvent(handleEvent),[language]);
@@ -44,8 +44,7 @@ export function App(){
  async function beginSession(path:string){try{await activateProject(path);setExpanded(old=>new Set(old).add(path));setActive(null);setDraftModelId(modelConfig?.default_model_id??"");setDraftProject(path);setPermissions({mode:"ask",approved_tools:[]});setPending(null);setEntries([]);setCompletion(null);setDraft("")}catch(e){setError(message(e))}}
  async function openSession(path:string,item:SessionInfo){try{setError(null);setCompletion(null);setPending(null);await activateProject(path);const result=active?.session_id===item.session_id?{session:active,permissions}:await window.noval.resumeSession(item.session_id);setActive(result.session);setDraftModelId(result.session.selected_model_id);setDraftProject(null);setPermissions(result.permissions);const replay=await window.noval.replayEvents(item.session_id,0);eventSequence.current=replay.next_sequence;await loadLatest(item.session_id)}catch(e){setError(message(e))}}
  async function removeProject(){const path=projectToRemove;if(!path||removingProject)return;setRemovingProject(true);try{const list=await window.noval.removeProject(path);setProjects(list);setSessions(old=>{const next={...old};delete next[path];return next});if(workspace===path){setWorkspace(list.find(item=>item.active)?.path??null);setActive(null);setDraftProject(null);setEntries([])}setProjectToRemove(null)}catch(e){setError(message(e))}finally{setRemovingProject(false)}}
- async function renameSession(){if(!active||!renameDraft.trim())return;try{const updated=await window.noval.renameSession(active.session_id,renameDraft.trim());setActive(updated);setSessions(old=>Object.fromEntries(Object.entries(old).map(([path,items])=>[path,items.map(item=>item.session_id===updated.session_id?updated:item)])));setRenaming(false)}catch(e){setError(message(e))}}
- async function send(event:FormEvent){event.preventDefault();const projectPath=active?.workdir??draftProject;if(!projectPath||!draft.trim()||busy||connection!=="connected")return;const text=draft.trim();let current=active;setDraft("");setBusy(true);setCompletion(null);try{if(!current){await activateProject(projectPath);const requestedPermissionMode=permissions.mode;const created=await window.noval.createSession(draftModelId?{selected_model_id:draftModelId}:{});current=created.session;setActive(current);setDraftModelId(current.selected_model_id);setDraftProject(null);const createdPermissions=requestedPermissionMode===created.permissions.mode?created.permissions:await window.noval.setPermissionMode(current.session_id,requestedPermissionMode);setPermissions(createdPermissions)}setEntries(old=>[...old,{sequence:Date.now(),role:"user",text,timestamp:null,tool_calls:[],tool_results:[]}]);scrollToBottom();const result=await window.noval.startTurn(current.session_id,text);setCompletion(result.completion);await loadLatest(current.session_id);setStream("")}catch(e){setError(message(e))}finally{const persisted=await window.noval.projectSessions(projectPath).catch(()=>sessions[projectPath]??[]);setSessions(old=>({...old,[projectPath]:persisted}));if(current){const stored=persisted.find(item=>item.session_id===current!.session_id);if(stored)setActive({...stored,is_open:true});else{setActive(null);setDraftProject(projectPath)}}setBusy(false);setStatus(t("ready"))}}
+ async function send(event:FormEvent){event.preventDefault();const projectPath=active?.workdir??draftProject??workspace;if(!projectPath||!draft.trim()||busy||connection!=="connected")return;const text=draft.trim();let current=active;setDraft("");setBusy(true);setCompletion(null);try{if(!current){await activateProject(projectPath);const requestedPermissionMode=permissions.mode;const created=await window.noval.createSession(draftModelId?{selected_model_id:draftModelId}:{});current=created.session;setActive(current);setDraftModelId(current.selected_model_id);setDraftProject(null);const createdPermissions=requestedPermissionMode===created.permissions.mode?created.permissions:await window.noval.setPermissionMode(current.session_id,requestedPermissionMode);setPermissions(createdPermissions)}setEntries(old=>[...old,{sequence:Date.now(),role:"user",text,timestamp:null,tool_calls:[],tool_results:[]}]);scrollToBottom();const result=await window.noval.startTurn(current.session_id,text);setCompletion(result.completion);await loadLatest(current.session_id);setStream("")}catch(e){setError(message(e))}finally{const persisted=await window.noval.projectSessions(projectPath).catch(()=>sessions[projectPath]??[]);setSessions(old=>({...old,[projectPath]:persisted}));if(current){const stored=persisted.find(item=>item.session_id===current!.session_id);if(stored)setActive({...stored,is_open:true});else{setActive(null);setDraftProject(projectPath)}}setBusy(false);setStatus(t("ready"))}}
  async function loadLatest(sessionId:string){const page=await window.noval.transcriptHistory(sessionId);setEntries(page.entries);setHistoryCursor(page.previous_sequence);setHasOlder(page.has_more);scrollToBottom()}
  async function loadOlder(){if(!active||!hasOlder||historyCursor===null||loadingOlder.current)return;const element=viewport.current;if(!element)return;loadingOlder.current=true;const oldHeight=element.scrollHeight,oldTop=element.scrollTop;try{const page=await window.noval.transcriptHistory(active.session_id,historyCursor);setEntries(current=>{const known=new Set(current.map(item=>item.sequence));return [...page.entries.filter(item=>!known.has(item.sequence)),...current]});setHistoryCursor(page.previous_sequence);setHasOlder(page.has_more);window.requestAnimationFrame(()=>{if(viewport.current){viewport.current.scrollTop=viewport.current.scrollHeight-oldHeight+oldTop;lastScrollTop.current=viewport.current.scrollTop}loadingOlder.current=false})}catch(e){loadingOlder.current=false;setError(message(e))}}
  function scrollToBottom(){window.requestAnimationFrame(()=>{if(viewport.current){viewport.current.scrollTop=viewport.current.scrollHeight;lastScrollTop.current=viewport.current.scrollTop}})}
@@ -114,7 +113,7 @@ export function App(){
              </div>}
            </div>
            {open&&<div className="session-list">
-             {items.slice(0,limit).map(item=><button key={item.session_id} className={`session-row ${active?.session_id===item.session_id?"active":""}`} onClick={()=>openSession(project.path,item)}><span>{item.title||t("untitledTask")}</span></button>)}
+             {items.slice(0,limit).map(item=>{const selected=active?.session_id===item.session_id;return <button key={item.session_id} className={`session-row ${selected?"active":""}`} aria-current={selected?"page":undefined} onClick={()=>openSession(project.path,item)}><span>{item.title||t("untitledTask")}</span></button>})}
              {items.length>limit&&<button className="show-more" onClick={()=>setVisible(old=>({...old,[project.path]:limit+5}))}>{t("showMore",{count:Math.min(5,items.length-limit)})}</button>}
              {items.length===0&&<p className="no-sessions">{t("noTasks")}</p>}
            </div>}
@@ -143,25 +142,17 @@ export function App(){
      onKeyDown={resizeSidebarByKeyboard}
    />
    <main className="workspace-pane">
-     <header className="topbar">
-       {active?<div>{renaming?<form className="rename" onSubmit={event=>{event.preventDefault();void renameSession()}}>
-         <input aria-label={t("taskTitle")} autoFocus value={renameDraft} onChange={event=>setRenameDraft(event.target.value)}/>
-         <button aria-label={t("saveTitle")}><CheckCircle2 size={15}/></button>
-         <button type="button" aria-label={t("cancelRename")} onClick={()=>setRenaming(false)}><XCircle size={15}/></button>
-       </form>:<h1>{title}<button className="rename-trigger" aria-label={t("renameTask")} onClick={()=>{setRenameDraft(title);setRenaming(true)}}><Pencil size={12}/></button></h1>}<p>{workspace}</p></div>
-       :draftProject?<div><h1>{t("newTask")}</h1><p>{draftProject}</p></div>
-       :<div><h1>{workspace?leaf(workspace):"Noval"}</h1><p>{workspace||t("addProjectSidebar")}</p></div>}
-     </header>
+     {active&&<header className="topbar"><h1>{title}</h1></header>}
      {showPermissions&&active&&<section className="grants-panel">
        <header><div><strong>{t("sessionPermissions")}</strong><small>{t("runtimePermissions")}</small></div><button onClick={resetPermissions}><RotateCcw size={13}/>{t("resetAll")}</button></header>
        {permissions.approved_tools.length?<ul>{permissions.approved_tools.map(tool=><li key={tool}><code>{tool}</code><button onClick={()=>revokeTool(tool)}>{t("revoke")}</button></li>)}</ul>:<p>{t("noApprovedTools")}</p>}
      </section>}
-     {!hasTask?<EmptyState projectName={workspace?leaf(workspace):null} language={language}/>:<>
+     {!canCompose?<EmptyState projectName={null} language={language}/>:<>
        <div className="conversation-viewport" ref={viewport} onScroll={event=>handleConversationScroll(event.currentTarget)} onWheel={event=>{if(event.deltaY<0&&event.currentTarget.scrollTop<=32)void loadOlder()}}>
-         {timeline.length===0&&!stream&&!completion?<EmptyState projectName={leaf(active?.workdir??draftProject!)} language={language}/>:<div className="conversation">
+         {timeline.length===0&&!stream&&!completion?<EmptyState projectName={leaf(active?.workdir??draftProject??workspace!)} language={language}/>:<div className="conversation">
            {hasOlder&&<div className="history-loader" aria-label={t("olderMessages")}>{t("scrollOlder")}</div>}
            {timeline.map(item=>item.type==="message"?<ConversationMessage key={item.key} item={item} language={language}/>:<ToolActivity key={item.key} activity={item} language={language}/>)}
-           {stream&&<article className="message message-assistant"><MarkdownText text={stream} streaming/></article>}
+           {stream&&<article className="message message-assistant"><div className="message-content"><MarkdownText text={stream} streaming/></div></article>}
            {completion&&<CompletionCard report={completion} language={language}/>}
          </div>}
        </div>
@@ -231,7 +222,7 @@ function EmptyState({projectName,language}:{projectName:string|null;language:Lan
 function ConversationMessage({item,language}:{item:MessageItem;language:LanguagePreference}){
  const [copied,setCopied]=useState(false),displayTime=formatTimestamp(item.timestamp,language);
  async function copy(){await window.noval.copyText(item.text);setCopied(true);window.setTimeout(()=>setCopied(false),1400)}
- return <article className={`message message-${item.role}`}><MarkdownText text={item.text}/>{item.showMeta&&<footer className="message-meta">{displayTime&&<time dateTime={item.timestamp!} title={formatFullTimestamp(item.timestamp!,language)}>{displayTime}</time>}<button type="button" aria-label={translate(language,copied?"copied":"copyMessage")} onClick={copy}>{copied?<Check size={14}/>:<Copy size={14}/>}</button></footer>}</article>;
+ return <article className={`message message-${item.role}`}><div className="message-content"><MarkdownText text={item.text}/></div>{item.showMeta&&<footer className="message-meta">{displayTime&&<time dateTime={item.timestamp!} title={formatFullTimestamp(item.timestamp!,language)}>{displayTime}</time>}<button type="button" aria-label={translate(language,copied?"copied":"copyMessage")} onClick={copy}>{copied?<Check size={14}/>:<Copy size={14}/>}</button></footer>}</article>;
 }
 function CompletionCard({report,language}:{report:CompletionReport;language:LanguagePreference}){
  return <section className={`completion ${report.status}`} aria-label={translate(language,"completionEvidence")}><div><strong>{translate(language,report.status==="completed"?"verifiedComplete":report.status==="incomplete"?"incomplete":"completionUncertain")}</strong><small>{translate(language,"evidenceEvaluated")}</small></div>{report.criteria.length>0&&<ul>{report.criteria.map(item=><li key={item.criterion_id}><span>{item.criterion_id}</span><strong>{item.status}</strong><small>{item.source||translate(language,"noVerificationSource")}</small></li>)}</ul>}</section>;
