@@ -53,7 +53,24 @@ def test_hello_reports_stable_capabilities():
     assert "sessions" in result["capabilities"]
     assert "transcript_history" in result["capabilities"]
     assert "model_configuration" in result["capabilities"]
+    assert "usage_analytics" in result["capabilities"]
     assert result["core_version"]
+
+
+def test_runtime_exposes_safe_fixed_usage_analytics(tmp_path):
+    server = SidecarServer(io.BytesIO(), io.BytesIO())
+    start_runtime(server, tmp_path)
+
+    analytics = server.dispatch(parse_request(request("usage.analytics")))
+
+    assert analytics["schema_version"] == API_SCHEMA_VERSION
+    assert len(analytics["days"]) == 364
+    assert analytics["total_tokens"] == 0
+    assert analytics["models"] == []
+    encoded = json.dumps(analytics)
+    assert "usage_dir" not in encoded
+    assert "session_id" not in encoded
+    server.close()
 
 
 def test_server_returns_safe_error_without_echoing_input():

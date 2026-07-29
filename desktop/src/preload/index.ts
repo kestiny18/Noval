@@ -22,6 +22,7 @@ const api: NovalDesktopApi = {
   saveSidebarWidth:value=>ipcRenderer.invoke("noval:save-sidebar-width",value),
   listProviderProfiles:()=>ipcRenderer.invoke("noval:model-profiles"),
   getModelConfiguration:()=>ipcRenderer.invoke("noval:model-configuration"),
+  getUsageAnalytics:()=>ipcRenderer.invoke("noval:usage-analytics"),
   upsertConnection:value=>ipcRenderer.invoke("noval:connection-upsert",value),
 };
 contextBridge.exposeInMainWorld("noval",Object.freeze(api));
