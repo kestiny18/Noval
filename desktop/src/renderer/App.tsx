@@ -1,6 +1,6 @@
 import {type CSSProperties,FormEvent,useEffect,useMemo,useRef,useState} from "react";
 import {ArrowUp,Check,ChevronDown,Copy,Ellipsis,Folder,FolderOpen,Hand,KeyRound,MessageSquarePlus,Pencil,Plus,RotateCcw,Settings,Shield,ShieldCheck,Square,Trash2,Undo2,X} from "lucide-react";
-import type {AppInfo,AppearancePreferences,CompletionReport,ConnectionUpsert,LanguagePreference,ModelConfigurationInfo,PermissionState,ProjectInfo,ProviderProfileInfo,SessionInfo,SidecarEvent,TranscriptEntry} from "../shared/protocol";
+import type {AppInfo,AppearancePreferences,CompletionReport,ConnectionUpsert,LanguagePreference,ModelConfigurationInfo,PermissionState,ProjectInfo,ProviderProfileInfo,SessionInfo,SidecarEvent,TranscriptEntry,UsageAnalytics} from "../shared/protocol";
 import {MarkdownText} from "./MarkdownText";
 import {buildTimeline,MessageItem,ToolActivity} from "./ToolActivity";
 import {SettingsPage} from "./SettingsPage";
@@ -25,6 +25,7 @@ export function App(){
  const previousConnection=useRef(connection),eventSequence=useRef(0),viewport=useRef<HTMLDivElement|null>(null),loadingOlder=useRef(false),lastScrollTop=useRef(0),resizeStart=useRef<{x:number;width:number}|null>(null);
  const [showSettings,setShowSettings]=useState(false),[profiles,setProfiles]=useState<ProviderProfileInfo[]>([]),[modelConfig,setModelConfig]=useState<ModelConfigurationInfo|null>(null),[draftModelId,setDraftModelId]=useState("");
  const [appearance,setAppearance]=useState<AppearancePreferences>({theme:"system",density:"comfortable"}),[language,setLanguage]=useState<LanguagePreference>(()=>localeLanguage(navigator.language)),[sidebarWidth,setSidebarWidth]=useState(DEFAULT_SIDEBAR_WIDTH),[appInfo,setAppInfo]=useState<AppInfo|null>(null);
+ const [usageAnalytics,setUsageAnalytics]=useState<UsageAnalytics|null>(null),[usageLoading,setUsageLoading]=useState(false),[usageError,setUsageError]=useState<string|null>(null);
  const [composerMenu,setComposerMenu]=useState<ComposerMenu>(null),[permissionToast,setPermissionToast]=useState<PermissionToast|null>(null);
  const permissionToastTimer=useRef<ReturnType<typeof setTimeout>|null>(null);
  const t=(key:Parameters<typeof translate>[1],values?:Record<string,string|number>)=>translate(language,key,values);
@@ -63,7 +64,8 @@ export function App(){
  async function revokeTool(tool:string){if(active)try{setPermissions(await window.noval.revokeTool(active.session_id,tool))}catch(e){setError(message(e))}}
  async function resetPermissions(){if(!active||!confirm(t("resetPermissionsConfirm")))return;try{setPermissions(await window.noval.resetPermissions(active.session_id))}catch(e){setError(message(e))}}
  async function refreshModels(){const [profileList,configuration]=await Promise.all([window.noval.listProviderProfiles(),window.noval.getModelConfiguration()]);setProfiles(profileList);setModelConfig(configuration);setDraftModelId(current=>current||configuration.default_model_id)}
- async function openSettings(){try{const [,info,preferences]=await Promise.all([refreshModels(),window.noval.appInfo(),window.noval.getPreferences()]);setAppInfo(info);applyAppearance(preferences.appearance);applyLanguage(preferences.language);setShowSettings(true)}catch(e){setError(message(e))}}
+ async function loadUsageAnalytics(){setUsageLoading(true);setUsageError(null);try{setUsageAnalytics(await window.noval.getUsageAnalytics())}catch(e){setUsageError(message(e))}finally{setUsageLoading(false)}}
+ async function openSettings(){try{const [,info,preferences]=await Promise.all([refreshModels(),window.noval.appInfo(),window.noval.getPreferences()]);setAppInfo(info);applyAppearance(preferences.appearance);applyLanguage(preferences.language);setShowSettings(true);void loadUsageAnalytics()}catch(e){setError(message(e))}}
  async function updateConnection(value:ConnectionUpsert){try{setModelConfig(await window.noval.upsertConnection(value))}catch(err){setError(message(err));throw err}}
  async function selectModel(id:string){setComposerMenu(null);if(!active){setDraftModelId(id);return}try{const updated=await window.noval.selectSessionModel(active.session_id,id);setActive(updated);setDraftModelId(updated.selected_model_id);setSessions(old=>Object.fromEntries(Object.entries(old).map(([path,items])=>[path,items.map(item=>item.session_id===updated.session_id?updated:item)])))}catch(err){setError(message(err))}}
  function toggleComposerMenu(next:Exclude<ComposerMenu,null>){const opening=composerMenu!==next;if(opening&&next==="permission")dismissPermissionToast();setComposerMenu(opening?next:null)}
@@ -99,6 +101,10 @@ export function App(){
    close={()=>setShowSettings(false)}
    error={error}
    dismissError={()=>setError(null)}
+   usage={usageAnalytics}
+   usageLoading={usageLoading}
+   usageError={usageError}
+   reloadUsage={()=>void loadUsageAnalytics()}
  />;
  return <div className="shell" style={{"--sidebar-width":`${sidebarWidth}px`} as CSSProperties}>
    <aside className="sidebar project-sidebar">
