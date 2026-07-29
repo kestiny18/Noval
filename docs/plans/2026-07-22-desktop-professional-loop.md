@@ -47,7 +47,19 @@
 9. Both menus close after selection, on outside pointer input, and on Escape;
    opening a menu focuses its selected item, and Arrow/Home/End keys move
    between options.
-10. Add focused interaction tests and visually inspect the light and dark
+10. The Session access trigger uses its shield icon without a redundant
+    chevron. Label `ask` as "Request approval" / "请求批准", and left-align
+    option titles and descriptions regardless of whether a trailing check is
+    present.
+11. Keep the model trigger label and chevron on one horizontal line, with the
+    chevron pinned to the right edge of the pill.
+12. Do not show the connection-ready status inside the composer. The persistent
+    connection status remains in the application sidebar.
+13. Give each Session row a hover/focus `...` action matching project actions.
+    Phase 1 exposes Rename only: open an in-app dialog, reject an empty or
+    unchanged title, call the existing idle-only `renameSession` API, and update
+    both the Session tree and active header without reopening the Session.
+14. Add focused interaction tests and visually inspect the light and dark
     results against the supplied HTML references.
 
 ### Task 4: Validate and deliver
