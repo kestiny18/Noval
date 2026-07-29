@@ -39,6 +39,26 @@ export interface ModelConfigurationInfo {
   schema_version:2;revision:number;connections:ConnectionInfo[];
   configured:ConfiguredModelInfo[];default_model_id:string;
 }
+export const UsageModelTokensSchema=z.object({model:z.string().min(1),total_tokens:z.number().int().nonnegative()});
+export const UsageDailyPointSchema=z.object({
+  day:z.string().regex(/^\d{4}-\d{2}-\d{2}$/),total_tokens:z.number().int().nonnegative(),
+  by_model:z.array(UsageModelTokensSchema),
+});
+export const UsageModelSummarySchema=z.object({
+  model:z.string().min(1),total_tokens:z.number().int().nonnegative(),
+  peak_daily_tokens:z.number().int().nonnegative(),longest_turn_duration_ms:z.number().int().nonnegative(),
+});
+export const UsageAnalyticsSchema=z.object({
+  schema_version:z.literal(API_SCHEMA_VERSION),generated_at:z.string().min(1),
+  window_start:z.string().regex(/^\d{4}-\d{2}-\d{2}$/),window_end:z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  total_tokens:z.number().int().nonnegative(),peak_daily_tokens:z.number().int().nonnegative(),
+  longest_turn_duration_ms:z.number().int().nonnegative(),models:z.array(UsageModelSummarySchema),
+  days:z.array(UsageDailyPointSchema).length(364),
+});
+export type UsageModelTokens=z.infer<typeof UsageModelTokensSchema>;
+export type UsageDailyPoint=z.infer<typeof UsageDailyPointSchema>;
+export type UsageModelSummary=z.infer<typeof UsageModelSummarySchema>;
+export type UsageAnalytics=z.infer<typeof UsageAnalyticsSchema>;
 export interface ConnectionUpsert {
   schema_version:2;expected_configuration_revision:number;connection_id?:string|null;
   expected_connection_revision?:number|null;label:string;profile_id:string;
@@ -85,5 +105,6 @@ export interface NovalDesktopApi {
   saveSidebarWidth(value:number):Promise<DesktopPreferences>;
   listProviderProfiles():Promise<ProviderProfileInfo[]>;
   getModelConfiguration():Promise<ModelConfigurationInfo>;
+  getUsageAnalytics():Promise<UsageAnalytics>;
   upsertConnection(value:ConnectionUpsert):Promise<ModelConfigurationInfo>;
 }

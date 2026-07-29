@@ -7,7 +7,7 @@ import { AppearancePreferences, LanguagePreference, Preferences } from "./prefer
 import { sendToRenderer } from "./renderer-events.js";
 import { SidecarSupervisor } from "./sidecar.js";
 import { isConfigurationStartupError } from "./startup-error.js";
-import { PROTOCOL_VERSION } from "../shared/protocol.js";
+import { PROTOCOL_VERSION, UsageAnalyticsSchema } from "../shared/protocol.js";
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
 const sidecar = new SidecarSupervisor();
@@ -141,6 +141,7 @@ function registerIpc(): void {
   });
   ipcMain.handle("noval:model-profiles",async()=>((await sidecar.request<{profiles:unknown[]}>("model.profiles",{})).profiles));
   ipcMain.handle("noval:model-configuration",()=>sidecar.request("model.configuration",{}));
+  ipcMain.handle("noval:usage-analytics",async()=>UsageAnalyticsSchema.parse(await sidecar.request("usage.analytics",{})));
   ipcMain.handle("noval:connection-upsert",(_e,value:Record<string,unknown>)=>sidecar.request("model.connection.upsert",value));
   ipcMain.handle("noval:open-external",async(_e,url:string)=>{if(/^https:\/\/(github\.com|docs\.noval\.)/i.test(url)) await shell.openExternal(url);});
 }

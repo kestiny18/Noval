@@ -74,6 +74,7 @@ class SidecarServer:
             "model.configured.upsert": self._model_configured_upsert,
             "model.configured.delete": self._model_configured_delete,
             "model.default.set": self._model_default_set,
+            "usage.analytics": self._usage_analytics,
             "workspace.list": self._workspace_list,
             "workspace.select": self._workspace_select,
             "workspace.sessions": self._workspace_sessions,
@@ -114,6 +115,7 @@ class SidecarServer:
                 "visible_streaming",
                 "cancellation",
                 "model_configuration",
+                "usage_analytics",
             ],
         }
 
@@ -192,6 +194,9 @@ class SidecarServer:
                 params, "expected_configuration_revision"
             ),
         ).to_dict()
+
+    def _usage_analytics(self, params: dict[str, Any]) -> dict[str, Any]:
+        return self._runtime_required().usage_analytics(days=364).to_dict()
 
     def _workspace_list(self, params: dict[str, Any]) -> dict[str, Any]:
         projects = self._runtime_required().list_persisted_projects()
