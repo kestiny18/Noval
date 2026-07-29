@@ -15,6 +15,7 @@ a core seam, or a cross-cutting invariant.
 | [0008](0008-current-session-schema-discovery.md) | Accepted; current version superseded by 0010 | Discover only the current canonical Session schema |
 | [0009](0009-bidirectional-transcript-pagination.md) | Accepted | Add bounded reverse transcript pagination |
 | [0010](0010-runtime-owned-model-configuration.md) | Accepted for implementation | Adopt Runtime-owned OpenAI-compatible model configuration |
+| [0011](0011-safe-usage-analytics.md) | Accepted for implementation | Expose safe daily and per-model usage analytics |
 
 The earlier Chinese decision ledger is preserved in
 [DESIGN.zh-CN.md](../../DESIGN.zh-CN.md). New decisions should use an ADR rather
