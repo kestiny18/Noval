@@ -5,10 +5,11 @@ import {
 } from "lucide-react";
 import type {
   AppInfo,AppearancePreferences,ConnectionUpsert,LanguagePreference,
-  ModelConfigurationInfo,ProviderProfileInfo,
+  ModelConfigurationInfo,ProviderProfileInfo,UsageAnalytics,
 } from "../shared/protocol";
 import {API_SCHEMA_VERSION} from "../shared/protocol";
 import {translate} from "./i18n";
+import {UsageAnalyticsPanel} from "./UsageAnalyticsPanel";
 
 type Section="general"|"appearance"|"models";
 type Props={
@@ -26,6 +27,10 @@ type Props={
   close:()=>void;
   error:string|null;
   dismissError:()=>void;
+  usage:UsageAnalytics|null;
+  usageLoading:boolean;
+  usageError:string|null;
+  reloadUsage:()=>void;
 };
 
 export function SettingsPage(props:Props){
@@ -89,6 +94,7 @@ function ModelSettings(props:Props){
 
   return <section className="settings-page">
     <PageHeader eyebrow={t("modelSettingsEyebrow")} title={t("models")} description={t("modelsDescription")}/>
+    <UsageAnalyticsPanel analytics={props.usage} loading={props.usageLoading} error={props.usageError} language={props.language} retry={props.reloadUsage}/>
     <SettingsGroup title={t("modelConfiguration")}>
       <form className="connection-form" onSubmit={save}>
         <div className="model-summary">
