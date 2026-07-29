@@ -35,7 +35,7 @@ export function App(){
  useEffect(()=>{const recovered=previousConnection.current!=="connected"&&connection==="connected";previousConnection.current=connection;if(!recovered||!active)return;void restoreActive()},[connection,active?.session_id]);
  useEffect(()=>{if(!projectMenu&&!projectToRemove)return;function keydown(event:KeyboardEvent){if(event.key==="Escape"&&!removingProject){setProjectMenu(null);setProjectToRemove(null)}}function pointerdown(event:PointerEvent){const target=event.target;if(projectMenu&&target instanceof Element&&!target.closest(".project-menu")&&!target.closest(".project-actions-trigger"))setProjectMenu(null)}document.addEventListener("keydown",keydown);document.addEventListener("pointerdown",pointerdown);return()=>{document.removeEventListener("keydown",keydown);document.removeEventListener("pointerdown",pointerdown)}},[projectMenu,projectToRemove,removingProject]);
  useEffect(()=>{if(!sessionMenu&&!sessionToRename)return;function keydown(event:KeyboardEvent){if(event.key==="Escape"&&!renamingSession){setSessionMenu(null);setSessionToRename(null);setSessionTitle("")}}function pointerdown(event:PointerEvent){const target=event.target;if(sessionMenu&&target instanceof Element&&!target.closest(".session-menu")&&!target.closest(".session-actions-trigger"))setSessionMenu(null)}document.addEventListener("keydown",keydown);document.addEventListener("pointerdown",pointerdown);return()=>{document.removeEventListener("keydown",keydown);document.removeEventListener("pointerdown",pointerdown)}},[sessionMenu,sessionToRename,renamingSession]);
- useEffect(()=>{if(!composerMenu)return;function keydown(event:KeyboardEvent){if(event.key==="Escape")setComposerMenu(null)}function pointerdown(event:PointerEvent){const target=event.target;if(target instanceof Element&&!target.closest(".composer-menu-anchor"))setComposerMenu(null)}document.addEventListener("keydown",keydown);document.addEventListener("pointerdown",pointerdown);return()=>{document.removeEventListener("keydown",keydown);document.removeEventListener("pointerdown",pointerdown)}},[composerMenu]);
+ useEffect(()=>{if(!composerMenu&&!showPermissions)return;function keydown(event:KeyboardEvent){if(event.key==="Escape"){setComposerMenu(null);setShowPermissions(false)}}function pointerdown(event:PointerEvent){const target=event.target;if(!(target instanceof Element))return;if(composerMenu&&!target.closest(".composer-menu-anchor"))setComposerMenu(null);if(showPermissions&&!target.closest(".grants-anchor"))setShowPermissions(false)}document.addEventListener("keydown",keydown);document.addEventListener("pointerdown",pointerdown);return()=>{document.removeEventListener("keydown",keydown);document.removeEventListener("pointerdown",pointerdown)}},[composerMenu,showPermissions]);
  useEffect(()=>()=>{if(permissionToastTimer.current)clearTimeout(permissionToastTimer.current)},[]);
 
  async function refreshProjects(){const list=await window.noval.listProjects();setProjects(list);const current=list.find(item=>item.active)?.path??null;setWorkspace(current);setExpanded(old=>{const next=new Set(old);if(current)next.add(current);return next});const pages=await Promise.all(list.map(async project=>[project.path,await window.noval.projectSessions(project.path)] as const));setSessions(Object.fromEntries(pages))}
@@ -44,8 +44,8 @@ export function App(){
  async function addProject(){try{const value=await window.noval.chooseWorkspace();if(!value)return;await refreshProjects();setWorkspace(value);setExpanded(old=>new Set(old).add(value));setActive(null);setDraftProject(null);setEntries([])}catch(e){setError(message(e))}}
  async function activateProject(path:string){await window.noval.activateProject(path);setWorkspace(path);setProjects(items=>items.map(item=>({...item,active:item.path===path})))}
  async function toggleProject(project:ProjectInfo){try{await activateProject(project.path);setExpanded(old=>{const next=new Set(old);next.has(project.path)?next.delete(project.path):next.add(project.path);return next});setActive(null);setDraftProject(null);setEntries([])}catch(e){setError(message(e))}}
- async function beginSession(path:string){try{await activateProject(path);setExpanded(old=>new Set(old).add(path));setActive(null);setDraftModelId(modelConfig?.default_model_id??"");setDraftProject(path);setPermissions({mode:"ask",approved_tools:[]});setPending(null);setEntries([]);setCompletion(null);setDraft("")}catch(e){setError(message(e))}}
- async function openSession(path:string,item:SessionInfo){try{setError(null);setCompletion(null);setPending(null);await activateProject(path);const result=active?.session_id===item.session_id?{session:active,permissions}:await window.noval.resumeSession(item.session_id),restored={...result.session,title:result.session.title??item.title};setActive(restored);setDraftModelId(restored.selected_model_id);setDraftProject(null);setPermissions(result.permissions);const replay=await window.noval.replayEvents(item.session_id,0);eventSequence.current=replay.next_sequence;await loadLatest(item.session_id)}catch(e){setError(message(e))}}
+ async function beginSession(path:string){try{await activateProject(path);setExpanded(old=>new Set(old).add(path));setActive(null);setDraftModelId(modelConfig?.default_model_id??"");setDraftProject(path);setPermissions({mode:"ask",approved_tools:[]});setShowPermissions(false);setPending(null);setEntries([]);setCompletion(null);setDraft("")}catch(e){setError(message(e))}}
+ async function openSession(path:string,item:SessionInfo){try{setError(null);setCompletion(null);setPending(null);setShowPermissions(false);await activateProject(path);const result=active?.session_id===item.session_id?{session:active,permissions}:await window.noval.resumeSession(item.session_id),restored={...result.session,title:result.session.title??item.title};setActive(restored);setDraftModelId(restored.selected_model_id);setDraftProject(null);setPermissions(result.permissions);const replay=await window.noval.replayEvents(item.session_id,0);eventSequence.current=replay.next_sequence;await loadLatest(item.session_id)}catch(e){setError(message(e))}}
  async function removeProject(){const path=projectToRemove;if(!path||removingProject)return;setRemovingProject(true);try{const list=await window.noval.removeProject(path);setProjects(list);setSessions(old=>{const next={...old};delete next[path];return next});if(workspace===path){setWorkspace(list.find(item=>item.active)?.path??null);setActive(null);setDraftProject(null);setEntries([])}setProjectToRemove(null)}catch(e){setError(message(e))}finally{setRemovingProject(false)}}
  function openSessionRename(projectPath:string,session:SessionInfo){setSessionMenu(null);setSessionToRename({projectPath,session});setSessionTitle(session.title??"")}
  function closeSessionRename(){if(renamingSession)return;setSessionToRename(null);setSessionTitle("")}
@@ -156,11 +156,7 @@ export function App(){
    />
    <main className="workspace-pane">
      {active&&<header className="topbar"><h1>{title}</h1></header>}
-     {showPermissions&&active&&<section className="grants-panel">
-       <header><div><strong>{t("sessionPermissions")}</strong><small>{t("runtimePermissions")}</small></div><button onClick={resetPermissions}><RotateCcw size={13}/>{t("resetAll")}</button></header>
-       {permissions.approved_tools.length?<ul>{permissions.approved_tools.map(tool=><li key={tool}><code>{tool}</code><button onClick={()=>revokeTool(tool)}>{t("revoke")}</button></li>)}</ul>:<p>{t("noApprovedTools")}</p>}
-     </section>}
-     {!canCompose?<EmptyState projectName={null} language={language}/>:<>
+      {!canCompose?<EmptyState projectName={null} language={language}/>:<>
        <div className="conversation-viewport" ref={viewport} onScroll={event=>handleConversationScroll(event.currentTarget)} onWheel={event=>{if(event.deltaY<0&&event.currentTarget.scrollTop<=32)void loadOlder()}}>
          {timeline.length===0&&!stream&&!completion?<EmptyState projectName={leaf(active?.workdir??draftProject??workspace!)} language={language}/>:<div className="conversation">
            {hasOlder&&<div className="history-loader" aria-label={t("olderMessages")}>{t("scrollOlder")}</div>}
@@ -180,14 +176,20 @@ export function App(){
                {composerMenu==="permission"&&<div className="composer-menu permission-menu" role="menu" aria-label={t("sessionAccess")} onKeyDown={navigateComposerMenu}>
                  <div className="composer-menu-header">{t("accessMenuTitle")}</div>
                  <button type="button" role="menuitemradio" aria-checked={permissions.mode==="ask"} autoFocus={permissions.mode==="ask"} onClick={()=>void selectPermissionMode("ask")}>
-                   <Hand size={18}/><span><strong>{t("askPermission")}</strong><small>{t("askPermissionDescription")}</small></span>{permissions.mode==="ask"&&<Check size={17}/>}
-                 </button>
-                 <button type="button" className="full-access-option" role="menuitemradio" aria-checked={permissions.mode==="full_access"} autoFocus={permissions.mode==="full_access"} onClick={()=>void selectPermissionMode("full_access")}>
-                   <ShieldCheck size={18}/><span><strong>{t("fullAccess")}</strong><small>{t("fullAccessDescription")}</small></span>{permissions.mode==="full_access"&&<Check size={17}/>}
-                 </button>
-               </div>}
-             </div>
-             {active&&permissions.approved_tools.length>0&&<button type="button" className="grant-button" onClick={()=>setShowPermissions(value=>!value)}><KeyRound size={14}/>{t("grants",{count:permissions.approved_tools.length})}</button>}
+                    <Hand size={18}/><span className="permission-choice-copy"><strong>{t("askPermission")}</strong><small>{t("askPermissionDescription")}</small></span>{permissions.mode==="ask"&&<Check size={17}/>}
+                  </button>
+                  <button type="button" className="full-access-option" role="menuitemradio" aria-checked={permissions.mode==="full_access"} autoFocus={permissions.mode==="full_access"} onClick={()=>void selectPermissionMode("full_access")}>
+                    <ShieldCheck size={18}/><span className="permission-choice-copy"><strong>{t("fullAccess")}</strong><small>{t("fullAccessDescription")}</small></span>{permissions.mode==="full_access"&&<Check size={17}/>}
+                  </button>
+                </div>}
+              </div>
+              {active&&permissions.approved_tools.length>0&&<div className="grants-anchor">
+                <button type="button" className="grant-button" aria-haspopup="dialog" aria-expanded={showPermissions} onClick={()=>setShowPermissions(value=>!value)}><KeyRound size={14}/><span>{t("grants",{count:permissions.approved_tools.length})}</span></button>
+                {showPermissions&&<section className="grants-panel" role="dialog" aria-label={t("sessionPermissions")}>
+                  <header><div><strong>{t("sessionPermissions")}</strong><small>{t("runtimePermissions")}</small></div><div className="grants-panel-actions"><button onClick={resetPermissions}><RotateCcw size={13}/>{t("resetAll")}</button><button className="grants-close" aria-label={t("hidePermissions")} onClick={()=>setShowPermissions(false)}><X size={14}/></button></div></header>
+                  {permissions.approved_tools.length?<ul>{permissions.approved_tools.map(tool=><li key={tool}><code>{tool}</code><button onClick={()=>revokeTool(tool)}>{t("revoke")}</button></li>)}</ul>:<p>{t("noApprovedTools")}</p>}
+                </section>}
+              </div>}
              {(busy||connection!=="connected")&&<span className="composer-status"><span className={`status-dot ${connection}`}/>{status}</span>}
            </div>
            <div className="composer-actions">

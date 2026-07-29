@@ -159,7 +159,7 @@
 
 .permission-menu{
   left:0;
-  width:min(380px,calc(100vw - 54px));
+  width:min(340px,calc(100vw - 54px));
   gap:4px;
   padding:14px;
 }
@@ -172,8 +172,15 @@
 }
 
 .permission-menu button{
+  grid-template-columns:30px minmax(0,1fr) 20px;
   min-height:54px;
   padding:9px 10px!important;
+}
+
+.permission-menu .permission-choice-copy{
+  justify-self:start;
+  width:100%;
+  text-align:left;
 }
 
 .permission-menu .full-access-option[aria-checked="true"]{
@@ -204,8 +211,19 @@
   font-weight:560;
 }
 
+.model-menu button>span{
+  justify-self:start;
+  width:100%;
+  text-align:left;
+}
+
+.grants-anchor{
+  position:relative;
+  min-width:0;
+}
+
 .grant-button{
-  display:flex;
+  display:flex!important;
   align-items:center;
   gap:5px;
   height:30px;
@@ -216,6 +234,8 @@
   color:var(--muted);
   font-size:10px;
 }
+
+.grant-button>span{white-space:nowrap}
 
 .composer-status{
   color:var(--faint);
@@ -250,11 +270,26 @@
 .permission-toast .toast-undo{padding:7px 9px;color:var(--warning-text);font-weight:650}
 .permission-toast .toast-dismiss{padding:7px}
 
-.workspace-pane>.grants-panel{
+.grants-anchor>.grants-panel{
   top:auto;
   right:auto;
-  bottom:74px;
-  left:24px;
+  bottom:calc(100% + 8px);
+  left:0;
+}
+
+.grants-panel-actions{
+  display:flex!important;
+  align-items:center;
+  gap:4px!important;
+}
+
+.grants-panel .grants-close{
+  display:grid;
+  place-items:center;
+  width:26px;
+  height:26px;
+  padding:0;
+  border-radius:7px;
 }
 
 @media(max-width:760px){
