@@ -155,7 +155,7 @@ test("discovers projects and Sessions from Noval Core storage",async()=>{
   try{
     await expect(page.getByRole("button",{name:"core-project",exact:true})).toBeVisible();
     await expect(page.getByRole("button",{name:/incompatible v2/i})).toHaveCount(0);
-    const sessionButton=page.getByRole("button",{name:"Stored conversation"});
+    const sessionButton=page.getByRole("button",{name:"Stored conversation",exact:true});
     await expect(sessionButton).toBeVisible();
     await sessionButton.click();
     await expect(page.locator(".topbar")).toHaveText("Stored conversation",{timeout:30000});
@@ -179,6 +179,20 @@ test("discovers projects and Sessions from Noval Core storage",async()=>{
     expect(await viewport.evaluate(element=>{element.scrollTop=element.scrollHeight;return element.scrollTop>0})).toBe(true);
     const geometry=await page.evaluate(()=>{const last=document.querySelector(".activity-row")?.getBoundingClientRect(),composer=document.querySelector(".composer")?.getBoundingClientRect();return {lastBottom:last?.bottom??0,composerTop:composer?.top??0}});
     expect(geometry.lastBottom).toBeLessThan(geometry.composerTop);
+    await sessionButton.hover();
+    await page.getByRole("button",{name:"Task actions for Stored conversation"}).click();
+    await expect(page.getByRole("menu",{name:"Actions for Stored conversation"})).toBeVisible();
+    if(screenshotDir)await page.screenshot({path:path.join(screenshotDir,"session-menu.png")});
+    await page.getByRole("menuitem",{name:"Rename task"}).click();
+    const renameDialog=page.getByRole("dialog",{name:"Rename task"}),titleInput=page.getByLabel("Task title");
+    await expect(renameDialog).toBeVisible();
+    await expect(titleInput).toHaveValue("Stored conversation");
+    if(screenshotDir)await page.screenshot({path:path.join(screenshotDir,"session-rename-dialog.png")});
+    await titleInput.fill("Renamed conversation");
+    await renameDialog.getByRole("button",{name:"Save title"}).click();
+    await expect(renameDialog).toBeHidden();
+    await expect(page.getByRole("button",{name:"Renamed conversation",exact:true})).toHaveAttribute("aria-current","page");
+    await expect(page.locator(".topbar")).toHaveText("Renamed conversation");
     await page.getByRole("button",{name:"Settings"}).click();
     await expect(page.getByRole("heading",{name:"General"})).toBeVisible();
     await page.getByRole("button",{name:"Models"}).click();
@@ -286,9 +300,9 @@ test("configures, switches during a Turn, and restores one durable model selecti
     const selector=page.getByRole("button",{name:"Session model"});
     await expect(selector).toContainText("primary-model");
     const access=page.getByRole("button",{name:"Session access"});
-    await expect(access).toContainText("Ask permission");
+    await expect(access).toContainText("Request approval");
     await access.click();
-    const permissionMenu=page.getByRole("menu",{name:"Session access"}),askOption=page.getByRole("menuitemradio",{name:/Ask permission/i});
+    const permissionMenu=page.getByRole("menu",{name:"Session access"}),askOption=page.getByRole("menuitemradio",{name:/Request approval/i});
     await expect(permissionMenu).toBeVisible();
     await expect(permissionMenu).toContainText("How should Noval approve actions?");
     await expect(askOption).toBeFocused();
@@ -309,8 +323,8 @@ test("configures, switches during a Turn, and restores one durable model selecti
     await expect(page.getByRole("status")).toHaveCount(0);
     await expect(page.getByRole("menuitemradio",{name:/Full access/i})).toBeFocused();
     if(screenshotDir)await page.screenshot({path:path.join(screenshotDir,"permission-menu-full-access.png")});
-    await page.getByRole("menuitemradio",{name:/Ask permission/i}).click();
-    await expect(access).toContainText("Ask permission");
+    await page.getByRole("menuitemradio",{name:/Request approval/i}).click();
+    await expect(access).toContainText("Request approval");
     await page.getByLabel("Message Noval").fill("First model request");
     await page.getByRole("button",{name:"Send"}).click();
     await expect(page.getByText("Next turn",{exact:true})).toBeVisible();
@@ -346,8 +360,8 @@ test("configures, switches during a Turn, and restores one durable model selecti
 
     application=await launch();
     page=await application.firstWindow();
-    await expect(page.getByRole("button",{name:"First model request"})).toBeVisible();
-    await page.getByRole("button",{name:"First model request"}).click();
+    await expect(page.getByRole("button",{name:"First model request",exact:true})).toBeVisible();
+    await page.getByRole("button",{name:"First model request",exact:true}).click();
     await expect(page.getByRole("button",{name:"Session model"})).toContainText("alternate-model");
     await expect(page.getByText("Reply from primary-model")).toBeVisible();
     await expect(page.getByText("Reply from alternate-model")).toBeVisible();

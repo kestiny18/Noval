@@ -22,14 +22,17 @@ body{background:var(--sidebar);color:var(--text)}
 .project-tree{scrollbar-color:var(--line-strong) transparent}
 .project-row{min-height:34px;border-radius:7px}.project-row.current{background:transparent}.project-row:hover{background:var(--hover)}
 .project-main{height:34px;gap:8px;padding:0 9px;color:var(--text)}.project-main span{font-size:12.5px;font-weight:560}.project-main svg{color:var(--muted)}
-.session-list{padding:1px 0 7px 26px}.session-row,.show-more{height:31px;padding:0 10px;border-radius:7px;font-size:11.5px;color:var(--muted)}
-.session-row:hover{background:var(--hover)}.session-row.active{background:var(--active);color:var(--text);font-weight:560}.show-more,.no-sessions,.no-projects{color:var(--faint)}
+.session-list{padding:1px 0 7px 26px}.session-item{position:relative;display:flex;align-items:center;min-width:0;height:31px;border-radius:7px;color:var(--muted)}.session-item:hover{background:var(--hover)}.session-item.active{background:var(--active);color:var(--text);font-weight:560}
+.session-row,.show-more{height:31px;padding:0 10px;border-radius:7px;font-size:11.5px;color:var(--muted)}.session-row{flex:1;min-width:0;background:transparent!important;color:inherit}.session-row span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.session-item.active .session-row{color:var(--text);font-weight:560}
+.session-actions-trigger{display:grid;place-items:center;flex:none;width:27px;height:27px;margin-right:2px;padding:0;border:0;border-radius:6px;background:transparent;color:var(--muted);opacity:0;pointer-events:none}.session-item:hover .session-actions-trigger,.session-item:focus-within .session-actions-trigger{opacity:1;pointer-events:auto}.session-actions-trigger:hover{background:color-mix(in srgb,var(--text) 7%,transparent);color:var(--text)}
+.show-more,.no-sessions,.no-projects{color:var(--faint)}
 .menu{background:var(--panel);border-color:var(--line);border-radius:10px;box-shadow:var(--shadow)}
 .menu button{color:var(--text)!important}.menu button:hover{background:var(--hover)}
 .project-menu{right:3px;top:36px;min-width:218px;padding:6px;border:1px solid var(--line);border-radius:13px;box-shadow:0 14px 40px rgba(30,35,40,.13)}
 .project-menu button{min-height:37px;padding:0 10px!important;border:0;border-radius:8px;background:transparent;font-size:12px;font-weight:520}
 .project-menu button svg{flex:none;color:var(--muted);stroke-width:1.8}.project-menu .danger{color:var(--muted)!important}
 .project-menu .danger:hover{background:var(--danger-soft);color:var(--red)!important}.project-menu .danger:hover svg{color:var(--red)}
+.session-menu{z-index:24;top:29px;right:0;min-width:164px}
 .sidebar footer{padding:8px 9px 2px;border-top:1px solid var(--line)}.settings-link{height:29px;color:var(--muted);font-size:11.5px}.settings-link:hover{color:var(--text);background:var(--hover)}.connection{color:var(--faint);font-size:9.5px}
 .workspace-pane{margin:0;background:var(--paper);border:0;border-left:1px solid var(--line);border-radius:0;box-shadow:none}
 .topbar{height:60px;padding:0 26px;border-bottom:1px solid var(--line);background:var(--paper)}.topbar h1{font-size:13px;font-weight:650;color:var(--text)}.topbar p{color:var(--faint);font-size:9.5px}
@@ -59,6 +62,7 @@ body{background:var(--sidebar);color:var(--text)}
 .dialog-close{position:absolute;top:16px;right:16px;display:grid;place-items:center;width:32px;height:32px;padding:0;border:0;border-radius:8px;background:transparent;color:var(--muted)}.dialog-close:hover{background:var(--hover);color:var(--text)}
 .dialog-actions{display:flex;justify-content:flex-end;gap:9px;margin-top:25px}.dialog-actions button{min-width:78px;height:38px;padding:0 15px;border:0;border-radius:10px;background:transparent;color:var(--muted);font-weight:580}.dialog-actions button:hover{background:var(--hover);color:var(--text)}
 .dialog-actions .danger-action{background:var(--danger-soft);color:var(--red)}.dialog-actions .danger-action:hover{background:color-mix(in srgb,var(--red) 16%,var(--panel));color:var(--red)}.dialog-actions button:disabled{cursor:default;opacity:.55}
+.session-rename-dialog form{display:grid;gap:7px;margin-top:20px}.session-rename-dialog label{color:var(--muted);font-size:11px;font-weight:580}.session-rename-dialog input{width:100%;height:40px;padding:0 12px;border:1px solid var(--line-strong);border-radius:10px;outline:0;background:var(--panel-soft);color:var(--text);font-size:13px}.session-rename-dialog input:focus{border-color:var(--muted);box-shadow:0 0 0 3px color-mix(in srgb,var(--muted) 13%,transparent)}.session-rename-dialog .dialog-actions{margin-top:13px}.dialog-actions .primary-action{background:var(--accent);color:var(--paper);font-weight:630}.dialog-actions .primary-action:hover{background:color-mix(in srgb,var(--accent) 88%,var(--paper));color:var(--paper)}
 
 @media(prefers-color-scheme:dark){
  :root:not([data-theme="light"]){
