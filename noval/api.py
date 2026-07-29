@@ -6,7 +6,7 @@ import json
 import math
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from enum import Enum
 from typing import Any, Dict, Mapping, Optional, Tuple
 
@@ -204,6 +204,15 @@ def _timestamp(value: Any, label: str) -> str:
         raise ApiFormatError(f"{label} must be an ISO-8601 timestamp") from error
     if moment.tzinfo is None or moment.utcoffset() is None:
         raise ApiFormatError(f"{label} must include a timezone offset")
+    return parsed
+
+
+def _date_string(value: Any, label: str) -> str:
+    parsed = _bounded_string(value, label, maximum=10) or ""
+    try:
+        date.fromisoformat(parsed)
+    except ValueError as error:
+        raise ApiFormatError(f"{label} must be an ISO-8601 date") from error
     return parsed
 
 
@@ -1873,6 +1882,207 @@ def _public_message_dict(message: ConversationMessage) -> Dict[str, JSONValue]:
             separators=(",", ":"),
         )
     return data
+
+
+@dataclass(frozen=True)
+class UsageModelTokens:
+    model: str
+    total_tokens: int
+
+    def __post_init__(self) -> None:
+        _bounded_string(self.model, "usage_model_tokens.model", maximum=256)
+        _integer(self.total_tokens, "usage_model_tokens.total_tokens")
+
+    def to_dict(self) -> Dict[str, JSONValue]:
+        return {
+            "model": self.model,
+            "total_tokens": self.total_tokens,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "UsageModelTokens":
+        obj = _object(data, "usage_model_tokens")
+        return cls(
+            model=_bounded_string(
+                obj.get("model"),
+                "usage_model_tokens.model",
+                maximum=256,
+            ) or "",
+            total_tokens=_integer(
+                obj.get("total_tokens"),
+                "usage_model_tokens.total_tokens",
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class UsageDailyPoint:
+    day: str
+    total_tokens: int
+    by_model: Tuple[UsageModelTokens, ...] = ()
+
+    def __post_init__(self) -> None:
+        _date_string(self.day, "usage_daily_point.day")
+        _integer(self.total_tokens, "usage_daily_point.total_tokens")
+        if not isinstance(self.by_model, tuple):
+            raise ApiFormatError("usage_daily_point.by_model must be an immutable tuple")
+        if any(not isinstance(item, UsageModelTokens) for item in self.by_model):
+            raise ApiFormatError("usage_daily_point.by_model items must be UsageModelTokens")
+
+    def to_dict(self) -> Dict[str, JSONValue]:
+        return {
+            "day": self.day,
+            "total_tokens": self.total_tokens,
+            "by_model": [item.to_dict() for item in self.by_model],
+        }
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "UsageDailyPoint":
+        obj = _object(data, "usage_daily_point")
+        by_model = obj.get("by_model", [])
+        if not isinstance(by_model, list):
+            raise ApiFormatError("usage_daily_point.by_model must be an array")
+        return cls(
+            day=_date_string(obj.get("day"), "usage_daily_point.day"),
+            total_tokens=_integer(
+                obj.get("total_tokens"),
+                "usage_daily_point.total_tokens",
+            ),
+            by_model=tuple(UsageModelTokens.from_dict(item) for item in by_model),
+        )
+
+
+@dataclass(frozen=True)
+class UsageModelSummary:
+    model: str
+    total_tokens: int
+    peak_daily_tokens: int
+    longest_turn_duration_ms: int
+
+    def __post_init__(self) -> None:
+        _bounded_string(self.model, "usage_model_summary.model", maximum=256)
+        _integer(self.total_tokens, "usage_model_summary.total_tokens")
+        _integer(self.peak_daily_tokens, "usage_model_summary.peak_daily_tokens")
+        _integer(
+            self.longest_turn_duration_ms,
+            "usage_model_summary.longest_turn_duration_ms",
+        )
+
+    def to_dict(self) -> Dict[str, JSONValue]:
+        return {
+            "model": self.model,
+            "total_tokens": self.total_tokens,
+            "peak_daily_tokens": self.peak_daily_tokens,
+            "longest_turn_duration_ms": self.longest_turn_duration_ms,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "UsageModelSummary":
+        obj = _object(data, "usage_model_summary")
+        return cls(
+            model=_bounded_string(
+                obj.get("model"),
+                "usage_model_summary.model",
+                maximum=256,
+            ) or "",
+            total_tokens=_integer(
+                obj.get("total_tokens"),
+                "usage_model_summary.total_tokens",
+            ),
+            peak_daily_tokens=_integer(
+                obj.get("peak_daily_tokens"),
+                "usage_model_summary.peak_daily_tokens",
+            ),
+            longest_turn_duration_ms=_integer(
+                obj.get("longest_turn_duration_ms"),
+                "usage_model_summary.longest_turn_duration_ms",
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class UsageAnalytics:
+    generated_at: str
+    window_start: str
+    window_end: str
+    total_tokens: int
+    peak_daily_tokens: int
+    longest_turn_duration_ms: int
+    models: Tuple[UsageModelSummary, ...] = ()
+    days: Tuple[UsageDailyPoint, ...] = ()
+
+    def __post_init__(self) -> None:
+        _timestamp(self.generated_at, "usage_analytics.generated_at")
+        start = _date_string(self.window_start, "usage_analytics.window_start")
+        end = _date_string(self.window_end, "usage_analytics.window_end")
+        if date.fromisoformat(start) > date.fromisoformat(end):
+            raise ApiFormatError("usage_analytics.window_start must not follow window_end")
+        _integer(self.total_tokens, "usage_analytics.total_tokens")
+        _integer(self.peak_daily_tokens, "usage_analytics.peak_daily_tokens")
+        _integer(
+            self.longest_turn_duration_ms,
+            "usage_analytics.longest_turn_duration_ms",
+        )
+        if not isinstance(self.models, tuple):
+            raise ApiFormatError("usage_analytics.models must be an immutable tuple")
+        if any(not isinstance(item, UsageModelSummary) for item in self.models):
+            raise ApiFormatError("usage_analytics.models items must be UsageModelSummary")
+        if not isinstance(self.days, tuple):
+            raise ApiFormatError("usage_analytics.days must be an immutable tuple")
+        if any(not isinstance(item, UsageDailyPoint) for item in self.days):
+            raise ApiFormatError("usage_analytics.days items must be UsageDailyPoint")
+
+    def to_dict(self) -> Dict[str, JSONValue]:
+        return {
+            "schema_version": API_SCHEMA_VERSION,
+            "generated_at": self.generated_at,
+            "window_start": self.window_start,
+            "window_end": self.window_end,
+            "total_tokens": self.total_tokens,
+            "peak_daily_tokens": self.peak_daily_tokens,
+            "longest_turn_duration_ms": self.longest_turn_duration_ms,
+            "models": [item.to_dict() for item in self.models],
+            "days": [item.to_dict() for item in self.days],
+        }
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "UsageAnalytics":
+        obj = _object(data, "usage_analytics")
+        _schema(obj, "usage_analytics")
+        models = obj.get("models", [])
+        days = obj.get("days", [])
+        if not isinstance(models, list):
+            raise ApiFormatError("usage_analytics.models must be an array")
+        if not isinstance(days, list):
+            raise ApiFormatError("usage_analytics.days must be an array")
+        return cls(
+            generated_at=_timestamp(
+                obj.get("generated_at"),
+                "usage_analytics.generated_at",
+            ),
+            window_start=_date_string(
+                obj.get("window_start"),
+                "usage_analytics.window_start",
+            ),
+            window_end=_date_string(
+                obj.get("window_end"),
+                "usage_analytics.window_end",
+            ),
+            total_tokens=_integer(
+                obj.get("total_tokens"),
+                "usage_analytics.total_tokens",
+            ),
+            peak_daily_tokens=_integer(
+                obj.get("peak_daily_tokens"),
+                "usage_analytics.peak_daily_tokens",
+            ),
+            longest_turn_duration_ms=_integer(
+                obj.get("longest_turn_duration_ms"),
+                "usage_analytics.longest_turn_duration_ms",
+            ),
+            models=tuple(UsageModelSummary.from_dict(item) for item in models),
+            days=tuple(UsageDailyPoint.from_dict(item) for item in days),
+        )
 
 
 @dataclass(frozen=True)

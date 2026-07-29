@@ -6,11 +6,17 @@ import logging
 import os
 import re
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional, Protocol, Sequence
+from typing import Any, Callable, Dict, Iterator, Optional, Protocol, Sequence
 from uuid import uuid4
 
+from .api import (
+    UsageAnalytics,
+    UsageDailyPoint,
+    UsageModelSummary,
+    UsageModelTokens,
+)
 from .client import (
     LLMClient,
     LLMResponse,
@@ -82,7 +88,8 @@ class JsonlUsageStore:
     def record(self, model: str, usage: TokenUsage, *, purpose: str = "agent") -> Path:
         timestamp = self._now()
         event: Dict[str, Any] = {
-            "schema_version": 1,
+            "schema_version": 2,
+            "event_type": "model_usage",
             "timestamp": timestamp.isoformat(timespec="seconds"),
             "model": model or "unknown",
             "purpose": _safe_purpose(purpose),
@@ -94,7 +101,20 @@ class JsonlUsageStore:
             value = getattr(usage, name)
             if value is not None:
                 event[name] = value
+        return self._append(timestamp, event)
 
+    def record_turn(self, model: str, duration_ms: float) -> Path:
+        timestamp = self._now()
+        event: Dict[str, Any] = {
+            "schema_version": 2,
+            "event_type": "turn",
+            "timestamp": timestamp.isoformat(timespec="seconds"),
+            "model": model or "unknown",
+            "duration_ms": max(0, round(duration_ms)),
+        }
+        return self._append(timestamp, event)
+
+    def _append(self, timestamp: datetime, event: Dict[str, Any]) -> Path:
         day_dir = self.root / timestamp.date().isoformat()
         day_dir.mkdir(parents=True, exist_ok=True)
         path = day_dir / f"noval-{self.identity}-{os.getpid()}.jsonl"
@@ -117,8 +137,104 @@ class JsonlUsageStore:
             self._read_file(path, summary)
         return summary
 
+    def analytics(self, days: int = 364) -> UsageAnalytics:
+        if not isinstance(days, int) or isinstance(days, bool) or not 1 <= days <= 3660:
+            raise ValueError("days must be an integer between 1 and 3660")
+        generated_at = self._now()
+        window_end = generated_at.date()
+        window_start = window_end - timedelta(days=days - 1)
+        tokens_by_day: Dict[date, int] = {}
+        tokens_by_model: Dict[str, int] = {}
+        model_tokens_by_day: Dict[date, Dict[str, int]] = {}
+        longest_turn_duration_ms = 0
+        longest_turn_by_model: Dict[str, int] = {}
+
+        if self.root.is_dir():
+            for day_dir in self.root.iterdir():
+                if not day_dir.is_dir():
+                    continue
+                try:
+                    event_day = date.fromisoformat(day_dir.name)
+                except ValueError:
+                    continue
+                if event_day > window_end:
+                    continue
+                for path in day_dir.glob("*.jsonl"):
+                    for kind, event in self._iter_file(path):
+                        model = event["model"]
+                        if kind == "model_usage":
+                            total = event["total_tokens"]
+                            tokens_by_day[event_day] = tokens_by_day.get(event_day, 0) + total
+                            tokens_by_model[model] = tokens_by_model.get(model, 0) + total
+                            daily_models = model_tokens_by_day.setdefault(event_day, {})
+                            daily_models[model] = daily_models.get(model, 0) + total
+                        else:
+                            duration = event["duration_ms"]
+                            longest_turn_duration_ms = max(
+                                longest_turn_duration_ms,
+                                duration,
+                            )
+                            longest_turn_by_model[model] = max(
+                                longest_turn_by_model.get(model, 0),
+                                duration,
+                            )
+
+        model_names = sorted(set(tokens_by_model) | set(longest_turn_by_model))
+        model_summaries = tuple(
+            UsageModelSummary(
+                model=model,
+                total_tokens=tokens_by_model.get(model, 0),
+                peak_daily_tokens=max(
+                    (
+                        totals.get(model, 0)
+                        for totals in model_tokens_by_day.values()
+                    ),
+                    default=0,
+                ),
+                longest_turn_duration_ms=longest_turn_by_model.get(model, 0),
+            )
+            for model in model_names
+        )
+        daily_points = tuple(
+            UsageDailyPoint(
+                day=current.isoformat(),
+                total_tokens=tokens_by_day.get(current, 0),
+                by_model=tuple(
+                    UsageModelTokens(model=model, total_tokens=total)
+                    for model, total in sorted(
+                        model_tokens_by_day.get(current, {}).items()
+                    )
+                ),
+            )
+            for current in (
+                window_start + timedelta(days=offset)
+                for offset in range(days)
+            )
+        )
+        return UsageAnalytics(
+            generated_at=generated_at.isoformat(timespec="seconds"),
+            window_start=window_start.isoformat(),
+            window_end=window_end.isoformat(),
+            total_tokens=sum(tokens_by_day.values()),
+            peak_daily_tokens=max(tokens_by_day.values(), default=0),
+            longest_turn_duration_ms=longest_turn_duration_ms,
+            models=model_summaries,
+            days=daily_points,
+        )
+
     @staticmethod
     def _read_file(path: Path, summary: UsageSummary) -> None:
+        for kind, event in JsonlUsageStore._iter_file(path):
+            if kind != "model_usage":
+                continue
+            summary.total.add(event)
+            model = event.get("model") or "unknown"
+            summary.by_model.setdefault(model, UsageBreakdown()).add(event)
+            purpose = event.get("purpose") or "agent"
+            summary.by_purpose.setdefault(purpose, UsageBreakdown()).add(event)
+
+    @staticmethod
+    def _iter_file(path: Path) -> Iterator[tuple[str, Dict[str, Any]]]:
         try:
             file = path.open("r", encoding="utf-8")
         except OSError:
@@ -128,24 +244,49 @@ class JsonlUsageStore:
             for line_number, line in enumerate(file, 1):
                 try:
                     event = json.loads(line)
-                    if not _valid_event(event):
+                    kind = _event_kind(event)
+                    if kind is None:
                         raise ValueError("invalid usage event")
                 except (json.JSONDecodeError, ValueError, TypeError):
                     log.warning("skipping corrupt token usage record: %s:%s", path, line_number)
                     continue
-                summary.total.add(event)
-                model = event.get("model") or "unknown"
-                summary.by_model.setdefault(model, UsageBreakdown()).add(event)
-                purpose = event.get("purpose") or "agent"
-                summary.by_purpose.setdefault(purpose, UsageBreakdown()).add(event)
+                yield kind, event
 
 
-def _valid_event(event: Any) -> bool:
+def _event_kind(event: Any) -> Optional[str]:
     if not isinstance(event, dict):
-        return False
-    if event.get("schema_version") != 1:
-        return False
+        return None
+    schema_version = event.get("schema_version")
+    event_type = event.get("event_type")
+    if schema_version == 1 and event_type is None:
+        return "model_usage" if _valid_usage_event(event) else None
+    if schema_version != 2:
+        return None
+    if event_type == "model_usage":
+        return "model_usage" if _valid_usage_event(event) else None
+    if event_type == "turn":
+        return "turn" if _valid_turn_event(event) else None
+    return None
+
+
+def _valid_identity(event: Dict[str, Any]) -> bool:
     if not isinstance(event.get("model"), str) or not event["model"]:
+        return False
+    timestamp = event.get("timestamp")
+    if timestamp is not None:
+        if not isinstance(timestamp, str):
+            return False
+        try:
+            parsed = datetime.fromisoformat(timestamp)
+        except ValueError:
+            return False
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            return False
+    return True
+
+
+def _valid_usage_event(event: Dict[str, Any]) -> bool:
+    if not _valid_identity(event):
         return False
     if "purpose" in event and (
         not isinstance(event["purpose"], str) or not event["purpose"]
@@ -156,6 +297,10 @@ def _valid_event(event: Any) -> bool:
     if not all(_is_token_count(event.get(name)) for name in required):
         return False
     return all(name not in event or _is_token_count(event[name]) for name in optional)
+
+
+def _valid_turn_event(event: Dict[str, Any]) -> bool:
+    return _valid_identity(event) and _is_token_count(event.get("duration_ms"))
 
 
 def _is_token_count(value: Any) -> bool:
