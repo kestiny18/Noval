@@ -36,7 +36,19 @@
    the first submitted message lazily creates the Session.
 6. Place user-message time and copy actions outside the message bubble, using
    the same metadata treatment as assistant messages.
-7. Add focused interaction tests and visually inspect the result.
+7. Present Session access as a 380 px descriptive popover above the composer:
+   include a short heading, icon, title, safety description, and trailing check
+   for each Runtime-supported mode. Keep `ask` neutral and use the warning
+   accent only when `full_access` is selected; do not invent a third permission
+   mode that Core does not support.
+8. Present Session model selection as a compact 220 px list above a persistent
+   neutral pill. Each row contains only the public model label and a trailing
+   check for the selected model.
+9. Both menus close after selection, on outside pointer input, and on Escape;
+   opening a menu focuses its selected item, and Arrow/Home/End keys move
+   between options.
+10. Add focused interaction tests and visually inspect the light and dark
+    results against the supplied HTML references.
 
 ### Task 4: Validate and deliver
 
