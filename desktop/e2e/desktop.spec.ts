@@ -28,6 +28,22 @@ function runtimeSettings(sessionsDir:string,model="deepseek-v4-pro",judgeModel="
   };
 }
 
+async function seedUsage(root:string){
+  const localDay=(date:Date)=>[date.getFullYear(),String(date.getMonth()+1).padStart(2,"0"),String(date.getDate()).padStart(2,"0")].join("-");
+  const now=new Date(),today=localDay(now),yesterdayDate=new Date(now);yesterdayDate.setDate(now.getDate()-1);
+  const yesterday=localDay(yesterdayDate),daily=[
+    [yesterday,[
+      {schema_version:2,event_type:"model_usage",timestamp:`${yesterday}T09:00:00+08:00`,model:"deepseek-v4-pro",purpose:"agent",prompt_tokens:210000,completion_tokens:30000,total_tokens:240000},
+      {schema_version:2,event_type:"turn",timestamp:`${yesterday}T10:05:00+08:00`,model:"deepseek-v4-pro",duration_ms:3_720_000},
+    ]],
+    [today,[{schema_version:2,event_type:"model_usage",timestamp:`${today}T10:00:00+08:00`,model:"deepseek-v4-flash",purpose:"judge",prompt_tokens:90000,completion_tokens:30000,total_tokens:120000}]],
+  ] as const;
+  for(const [day,events] of daily){
+    const directory=path.join(root,"usage",day);await mkdir(directory,{recursive:true});
+    await writeFile(path.join(directory,"noval-e2e.jsonl"),`${events.map(event=>JSON.stringify(event)).join("\n")}\n`,"utf8");
+  }
+}
+
 async function startMockOpenAIProvider(){
   const models:string[]=[];
   let releaseFirst!:()=>void;
@@ -147,7 +163,7 @@ test("discovers projects and Sessions from Noval Core storage",async()=>{
   const commandResult=(id:string)=>({role:"tool",blocks:[{type:"tool_result",call_id:id,content:"done",is_error:false}]});
   await writeFile(path.join(projectStore,"project.json"),JSON.stringify({real_workdir:path.resolve(projectPath),created_at:createdAt}),"utf8");
   await writeFile(path.join(projectStore,`${sessionId}.jsonl`),`${JSON.stringify({_meta:{schema_version:3,session_id:sessionId,created_at:createdAt,workdir:path.resolve(projectPath)}})}\n${JSON.stringify({seq:0,ts:createdAt,message:{role:"user",blocks:[{type:"text",text:"Stored conversation"}]}})}\n${JSON.stringify({seq:1,ts:createdAt,message:{role:"assistant",blocks:[{type:"text",text:markdown}]}})}\n${JSON.stringify({seq:2,ts:createdAt,message:commandCall("call-1")})}\n${JSON.stringify({seq:3,ts:createdAt,message:commandResult("call-1")})}\n${JSON.stringify({seq:4,ts:createdAt,message:commandCall("call-2")})}\n${JSON.stringify({seq:5,ts:createdAt,message:commandResult("call-2")})}\n`,"utf8");
-  await writeFile(path.join(projectStore,`${sessionId}.meta.json`),JSON.stringify({application:{schema_version:2,selected_model_id:"model-primary",selected_judge_model_id:"model-judge",configuration_revision:1}}),"utf8");
+  await writeFile(path.join(projectStore,`${sessionId}.meta.json`),JSON.stringify({application:{schema_version:2,selected_model_id:"model-primary",selected_judge_model_id:"model-judge",configuration_revision:1},permissions:{mode:"ask",approved_tools:["call_mcp_tool","run_bash"]}}),"utf8");
   await writeFile(path.join(projectStore,"legacy.jsonl"),`${JSON.stringify({_meta:{schema_version:2,session_id:"legacy",created_at:createdAt,workdir:path.resolve(projectPath),model:"legacy-model"}})}\n${JSON.stringify({seq:0,ts:createdAt,message:{role:"user",blocks:[{type:"text",text:"Legacy conversation"}]}})}\n`,"utf8");
   const settingsPath=path.join(userData,"noval-settings.json");await writeFile(settingsPath,JSON.stringify(runtimeSettings(sessionsRoot,"core-model","core-judge")),"utf8");
   const root=path.resolve(import.meta.dirname,".."),executablePath=path.join(root,"node_modules","electron","dist",process.platform==="win32"?"electron.exe":"electron");
@@ -163,6 +179,20 @@ test("discovers projects and Sessions from Noval Core storage",async()=>{
     await expect(page.locator(".topbar")).not.toContainText(projectPath);
     await expect(page.getByRole("button",{name:/Rename task/i})).toHaveCount(0);
     await expect(page.getByRole("heading",{name:"Rendered Markdown",level:2})).toBeVisible({timeout:30000});
+    const grants=page.getByRole("button",{name:"2 grants"});await expect(grants).toBeVisible();
+    const grantGeometry=await grants.evaluate(element=>{const icon=element.querySelector("svg")!.getBoundingClientRect(),label=element.querySelector("span")!.getBoundingClientRect();return {iconX:icon.x,labelX:label.x,verticalDistance:Math.abs(icon.y+icon.height/2-(label.y+label.height/2))}});
+    expect(grantGeometry.labelX).toBeGreaterThan(grantGeometry.iconX);expect(grantGeometry.verticalDistance).toBeLessThan(2);
+    await grants.click();const grantsDialog=page.getByRole("dialog",{name:"Session permissions"});await expect(grantsDialog).toBeVisible();expect((await grantsDialog.boundingBox())!.width).toBeLessThanOrEqual(360);
+    if(process.env.NOVAL_OVERLAY_SCREENSHOT_DIR){await mkdir(process.env.NOVAL_OVERLAY_SCREENSHOT_DIR,{recursive:true});await page.screenshot({path:path.join(process.env.NOVAL_OVERLAY_SCREENSHOT_DIR,"session-grants.png")})}
+    await grants.click();await expect(grantsDialog).toBeHidden();
+    await page.getByRole("button",{name:"Session access"}).click();
+    const accessMenu=page.getByRole("menu",{name:"Session access"}),choices=accessMenu.locator(".permission-choice-copy");
+    await expect(accessMenu).toBeVisible();expect((await accessMenu.boundingBox())!.width).toBeLessThanOrEqual(360);
+    const choiceX=await choices.evaluateAll(elements=>elements.map(element=>element.getBoundingClientRect().x));expect(choiceX[0]).toBeCloseTo(choiceX[1],0);
+    await page.keyboard.press("Escape");await expect(accessMenu).toBeHidden();
+    await page.getByRole("button",{name:"Session model"}).click();
+    await expect(page.getByRole("menu",{name:"Session model"}).locator("strong").first()).toHaveCSS("text-align","left");
+    await page.keyboard.press("Escape");
     await expect(page.locator("strong",{hasText:"formatted text"})).toBeVisible();
     const userMessage=page.locator(".message-user").filter({hasText:"Stored conversation"});
     await expect(userMessage.locator(":scope > .message-content")).toHaveCount(1);
@@ -206,6 +236,7 @@ test("discovers projects and Sessions from Noval Core storage",async()=>{
 
 test("persists appearance, language, and a resized project sidebar",async()=>{
   const userData=await mkdtemp(path.join(tmpdir(),"noval-desktop-settings-e2e-"));
+  await seedUsage(userData);
   const settingsPath=path.join(userData,"noval-settings.json");await writeFile(settingsPath,JSON.stringify(runtimeSettings(path.join(userData,"sessions"),"settings-model","settings-judge")),"utf8");
   const root=path.resolve(import.meta.dirname,".."),executablePath=path.join(root,"node_modules","electron","dist",process.platform==="win32"?"electron.exe":"electron");
   const application=await electron.launch({executablePath,args:[".","--lang=en-US",`--user-data-dir=${userData}`],cwd:root,env:{...process.env,DEEPSEEK_API_KEY:"e2e-placeholder",NOVAL_PYTHON:process.env.NOVAL_PYTHON??"py",NOVAL_SETTINGS_PATH:settingsPath}});const page=await application.firstWindow();
@@ -226,6 +257,13 @@ test("persists appearance, language, and a resized project sidebar",async()=>{
     await page.getByRole("button",{name:"Models"}).click();
     await expect(page.getByRole("heading",{name:"Models",exact:true})).toBeVisible();
     await expect(page.getByText("DeepSeek",{exact:true})).toBeVisible();
+    await expect(page.getByRole("gridcell")).toHaveCount(364);
+    await expect(page.locator(".usage-metric",{hasText:"Cumulative Tokens"})).toContainText("360K");
+    await expect(page.locator(".usage-metric",{hasText:"Peak daily Tokens"})).toContainText("240K");
+    await expect(page.locator(".usage-metric",{hasText:"Longest task duration"})).toContainText("1h 2m");
+    await page.getByLabel("Usage model").selectOption("deepseek-v4-flash");
+    await expect(page.locator(".usage-metric",{hasText:"Cumulative Tokens"})).toContainText("120K");
+    if(screenshotDir)await page.screenshot({path:path.join(screenshotDir,"settings-token-activity.png")});
     await expect(page.getByLabel("Base URL")).toHaveCount(0);
     await page.getByRole("button",{name:"Appearance"}).click();
     await expect(page.getByRole("heading",{name:"Appearance"})).toBeVisible();
