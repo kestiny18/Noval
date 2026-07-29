@@ -288,21 +288,46 @@ test("configures, switches during a Turn, and restores one durable model selecti
     const access=page.getByRole("button",{name:"Session access"});
     await expect(access).toContainText("Ask permission");
     await access.click();
-    await expect(page.getByRole("menu",{name:"Session access"})).toBeVisible();
-    if(screenshotDir)await page.screenshot({path:path.join(screenshotDir,"permission-menu.png")});
+    const permissionMenu=page.getByRole("menu",{name:"Session access"}),askOption=page.getByRole("menuitemradio",{name:/Ask permission/i});
+    await expect(permissionMenu).toBeVisible();
+    await expect(permissionMenu).toContainText("How should Noval approve actions?");
+    await expect(askOption).toBeFocused();
+    const permissionMenuWidth=await permissionMenu.evaluate(element=>Math.round(element.getBoundingClientRect().width));
+    expect(permissionMenuWidth).toBeGreaterThanOrEqual(376);
+    expect(permissionMenuWidth).toBeLessThanOrEqual(382);
+    if(screenshotDir){
+      await page.screenshot({path:path.join(screenshotDir,"permission-menu.png")});
+      await page.evaluate(()=>document.documentElement.dataset.theme="dark");
+      await page.screenshot({path:path.join(screenshotDir,"permission-menu-dark.png")});
+      await page.evaluate(()=>document.documentElement.dataset.theme="light");
+    }
     await page.getByRole("menuitemradio",{name:/Full access/i}).click();
     await expect(page.getByRole("status")).toContainText("Full access enabled");
+    await expect(access).toHaveClass(/full_access/);
     if(screenshotDir)await page.screenshot({path:path.join(screenshotDir,"full-access-toast.png")});
-    await page.getByRole("button",{name:"Undo"}).click();
+    await access.click();
     await expect(page.getByRole("status")).toHaveCount(0);
+    await expect(page.getByRole("menuitemradio",{name:/Full access/i})).toBeFocused();
+    if(screenshotDir)await page.screenshot({path:path.join(screenshotDir,"permission-menu-full-access.png")});
+    await page.getByRole("menuitemradio",{name:/Ask permission/i}).click();
     await expect(access).toContainText("Ask permission");
     await page.getByLabel("Message Noval").fill("First model request");
     await page.getByRole("button",{name:"Send"}).click();
     await expect(page.getByText("Next turn",{exact:true})).toBeVisible();
     await expect.poll(()=>provider.models.length,{timeout:15_000}).toBe(1);
     await selector.click();
-    await expect(page.getByRole("menu",{name:"Session model"})).toBeVisible();
-    if(screenshotDir)await page.screenshot({path:path.join(screenshotDir,"model-menu.png")});
+    const modelMenu=page.getByRole("menu",{name:"Session model"}),selectedModel=page.getByRole("menuitemradio",{name:"primary-model"});
+    await expect(modelMenu).toBeVisible();
+    await expect(selectedModel).toBeFocused();
+    const modelMenuWidth=await modelMenu.evaluate(element=>Math.round(element.getBoundingClientRect().width));
+    expect(modelMenuWidth).toBeGreaterThanOrEqual(216);
+    expect(modelMenuWidth).toBeLessThanOrEqual(222);
+    if(screenshotDir){
+      await page.screenshot({path:path.join(screenshotDir,"model-menu.png")});
+      await page.evaluate(()=>document.documentElement.dataset.theme="dark");
+      await page.screenshot({path:path.join(screenshotDir,"model-menu-dark.png")});
+      await page.evaluate(()=>document.documentElement.dataset.theme="light");
+    }
     await page.getByRole("menuitemradio",{name:"alternate-model"}).click();
     await expect(selector).toContainText("alternate-model");
     provider.releaseFirst();

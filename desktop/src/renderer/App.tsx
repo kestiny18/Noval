@@ -60,6 +60,7 @@ export function App(){
  async function openSettings(){try{const [,info,preferences]=await Promise.all([refreshModels(),window.noval.appInfo(),window.noval.getPreferences()]);setAppInfo(info);applyAppearance(preferences.appearance);applyLanguage(preferences.language);setShowSettings(true)}catch(e){setError(message(e))}}
  async function updateConnection(value:ConnectionUpsert){try{setModelConfig(await window.noval.upsertConnection(value))}catch(err){setError(message(err));throw err}}
  async function selectModel(id:string){setComposerMenu(null);if(!active){setDraftModelId(id);return}try{const updated=await window.noval.selectSessionModel(active.session_id,id);setActive(updated);setDraftModelId(updated.selected_model_id);setSessions(old=>Object.fromEntries(Object.entries(old).map(([path,items])=>[path,items.map(item=>item.session_id===updated.session_id?updated:item)])))}catch(err){setError(message(err))}}
+ function toggleComposerMenu(next:Exclude<ComposerMenu,null>){const opening=composerMenu!==next;if(opening&&next==="permission")dismissPermissionToast();setComposerMenu(opening?next:null)}
  function navigateComposerMenu(event:React.KeyboardEvent<HTMLDivElement>){if(!["ArrowDown","ArrowUp","Home","End"].includes(event.key))return;const items=Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]'));if(!items.length)return;event.preventDefault();const current=items.indexOf(document.activeElement as HTMLButtonElement);const next=event.key==="Home"?0:event.key==="End"?items.length-1:event.key==="ArrowDown"?(current+1+items.length)%items.length:(current-1+items.length)%items.length;items[next]?.focus()}
  async function saveAppearance(value:AppearancePreferences){try{const saved=await window.noval.saveAppearance(value);applyAppearance(saved)}catch(err){setError(message(err))}}
  async function saveLanguage(value:LanguagePreference){try{const saved=await window.noval.saveLanguage(value);applyLanguage(saved.language)}catch(err){setError(message(err))}}
@@ -161,14 +162,15 @@ export function App(){
          <div className="composer-row">
            <div className="composer-controls">
              <div className="composer-menu-anchor">
-               <button type="button" className={`composer-menu-trigger permission-selector ${permissions.mode}`} aria-label={t("sessionAccess")} aria-haspopup="menu" aria-expanded={composerMenu==="permission"} onClick={()=>{setShowPermissions(false);setComposerMenu(value=>value==="permission"?null:"permission")}}>
+               <button type="button" className={`composer-menu-trigger permission-selector ${permissions.mode}`} aria-label={t("sessionAccess")} aria-haspopup="menu" aria-expanded={composerMenu==="permission"} onClick={()=>{setShowPermissions(false);toggleComposerMenu("permission")}}>
                  <Shield size={15}/><span>{permissions.mode==="full_access"?t("fullAccess"):t("askPermission")}</span><ChevronDown size={13}/>
                </button>
                {composerMenu==="permission"&&<div className="composer-menu permission-menu" role="menu" aria-label={t("sessionAccess")} onKeyDown={navigateComposerMenu}>
-                 <button type="button" role="menuitemradio" aria-checked={permissions.mode==="ask"} onClick={()=>void selectPermissionMode("ask")}>
+                 <div className="composer-menu-header">{t("accessMenuTitle")}</div>
+                 <button type="button" role="menuitemradio" aria-checked={permissions.mode==="ask"} autoFocus={permissions.mode==="ask"} onClick={()=>void selectPermissionMode("ask")}>
                    <Hand size={18}/><span><strong>{t("askPermission")}</strong><small>{t("askPermissionDescription")}</small></span>{permissions.mode==="ask"&&<Check size={17}/>}
                  </button>
-                 <button type="button" className="full-access-option" role="menuitemradio" aria-checked={permissions.mode==="full_access"} onClick={()=>void selectPermissionMode("full_access")}>
+                 <button type="button" className="full-access-option" role="menuitemradio" aria-checked={permissions.mode==="full_access"} autoFocus={permissions.mode==="full_access"} onClick={()=>void selectPermissionMode("full_access")}>
                    <ShieldCheck size={18}/><span><strong>{t("fullAccess")}</strong><small>{t("fullAccessDescription")}</small></span>{permissions.mode==="full_access"&&<Check size={17}/>}
                  </button>
                </div>}
@@ -178,11 +180,11 @@ export function App(){
            </div>
            <div className="composer-actions">
              <div className="composer-menu-anchor model-menu-anchor">
-               <button type="button" className="composer-menu-trigger model-selector" aria-label={t("sessionModel")} aria-haspopup="menu" aria-expanded={composerMenu==="model"} disabled={!modelConfig?.configured.length} onClick={()=>setComposerMenu(value=>value==="model"?null:"model")}>
+               <button type="button" className="composer-menu-trigger model-selector" aria-label={t("sessionModel")} aria-haspopup="menu" aria-expanded={composerMenu==="model"} disabled={!modelConfig?.configured.length} onClick={()=>toggleComposerMenu("model")}>
                  <span>{selectedModel?.label??t("notConfigured")}</span>{busy&&<small>{t("nextTurn")}</small>}<ChevronDown size={13}/>
                </button>
                {composerMenu==="model"&&<div className="composer-menu model-menu" role="menu" aria-label={t("sessionModel")} onKeyDown={navigateComposerMenu}>
-                 {modelConfig?.configured.map(item=><button type="button" key={item.id} role="menuitemradio" aria-checked={item.id===selectedModelId} onClick={()=>void selectModel(item.id)}>
+                 {modelConfig?.configured.map(item=><button type="button" key={item.id} role="menuitemradio" aria-checked={item.id===selectedModelId} autoFocus={item.id===selectedModelId} onClick={()=>void selectModel(item.id)}>
                    <span><strong>{item.label}</strong></span>{item.id===selectedModelId&&<Check size={17}/>}
                  </button>)}
                </div>}
