@@ -1,4 +1,4 @@
-# Noval Desktop preview
+# Noval Desktop
 
 The Desktop is an isolated first-party host. It does not replace or modify the
 Noval Python execution kernel.
@@ -11,7 +11,7 @@ npm run typecheck
 npm run dev
 ```
 
-Build the unsigned Windows x64 preview:
+Build the unsigned Windows x64 installer:
 
 ```powershell
 npm run package:win
