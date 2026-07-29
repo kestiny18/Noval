@@ -109,7 +109,30 @@ test("uses folder state and hover actions for a persisted project",async()=>{
   await writeFile(path.join(userData,"desktop-settings.json"),JSON.stringify({workspace:projectPath,workspaces:[projectPath],language:"en"}),"utf8");
   const root=path.resolve(import.meta.dirname,".."),executablePath=path.join(root,"node_modules","electron","dist",process.platform==="win32"?"electron.exe":"electron");
   const application=await electron.launch({executablePath,args:[".","--lang=en-US",`--user-data-dir=${userData}`],cwd:root,env:{...process.env,NOVAL_PYTHON:process.env.NOVAL_PYTHON??"py",NOVAL_SETTINGS_PATH:settingsPath}});const page=await application.firstWindow();
-  try{const project=page.getByRole("button",{name:"sample-project",exact:true}),screenshotDir=process.env.NOVAL_OVERLAY_SCREENSHOT_DIR;await expect(project).toBeVisible();await expect(project.locator(".lucide-folder-open")).toBeVisible();await expect(page.getByRole("heading",{name:"What should we build in sample-project?"})).toBeVisible();await project.hover();await expect(page.getByRole("button",{name:/New task in sample-project/i})).toBeVisible();await page.getByRole("button",{name:/Project actions for sample-project/i}).click();await expect(page.getByRole("menu",{name:/Actions for sample-project/i})).toBeVisible();if(screenshotDir){await mkdir(screenshotDir,{recursive:true});await page.screenshot({path:path.join(screenshotDir,"project-menu.png")})}await page.getByRole("menuitem",{name:/Remove project/i}).click();const dialog=page.getByRole("dialog",{name:/Remove sample-project/i});await expect(dialog).toBeVisible();await expect(dialog).toContainText("Files and Sessions on disk will not be deleted");if(screenshotDir)await page.screenshot({path:path.join(screenshotDir,"remove-project-dialog.png")});await dialog.getByRole("button",{name:"Cancel"}).click();await expect(dialog).toBeHidden();await expect(project).toBeVisible();await project.hover();await page.getByRole("button",{name:/New task in sample-project/i}).click();await expect(page.getByRole("heading",{name:"What should we build in sample-project?"})).toBeVisible();await expect(page.locator(".tag-chip")).toHaveCount(0);await expect(page.getByText(/Export diagnostics/i)).toHaveCount(0)}
+  try{
+    const project=page.getByRole("button",{name:"sample-project",exact:true}),screenshotDir=process.env.NOVAL_OVERLAY_SCREENSHOT_DIR;
+    await expect(project).toBeVisible();
+    await expect(project.locator(".lucide-folder-open")).toBeVisible();
+    await expect(page.getByRole("heading",{name:"What should we build in sample-project?"})).toBeVisible();
+    await expect(page.getByLabel("Message Noval")).toBeVisible();
+    await expect(page.locator(".topbar")).toHaveCount(0);
+    if(screenshotDir){await mkdir(screenshotDir,{recursive:true});await page.screenshot({path:path.join(screenshotDir,"project-composer-without-session.png")})}
+    await project.hover();
+    await expect(page.getByRole("button",{name:/New task in sample-project/i})).toBeVisible();
+    await page.getByRole("button",{name:/Project actions for sample-project/i}).click();
+    await expect(page.getByRole("menu",{name:/Actions for sample-project/i})).toBeVisible();
+    if(screenshotDir)await page.screenshot({path:path.join(screenshotDir,"project-menu.png")});
+    await page.getByRole("menuitem",{name:/Remove project/i}).click();
+    const dialog=page.getByRole("dialog",{name:/Remove sample-project/i});
+    await expect(dialog).toBeVisible();
+    await expect(dialog).toContainText("Files and Sessions on disk will not be deleted");
+    if(screenshotDir)await page.screenshot({path:path.join(screenshotDir,"remove-project-dialog.png")});
+    await dialog.getByRole("button",{name:"Cancel"}).click();
+    await expect(dialog).toBeHidden();
+    await expect(project).toBeVisible();
+    await expect(page.locator(".tag-chip")).toHaveCount(0);
+    await expect(page.getByText(/Export diagnostics/i)).toHaveCount(0);
+  }
   finally{const process=application.process();const exited=new Promise<void>(resolve=>{if(process.exitCode!==null)resolve();else process.once("exit",()=>resolve())});await page.close();await exited;await rm(userData,{recursive:true,force:true})}
 });
 
@@ -129,7 +152,41 @@ test("discovers projects and Sessions from Noval Core storage",async()=>{
   const settingsPath=path.join(userData,"noval-settings.json");await writeFile(settingsPath,JSON.stringify(runtimeSettings(sessionsRoot,"core-model","core-judge")),"utf8");
   const root=path.resolve(import.meta.dirname,".."),executablePath=path.join(root,"node_modules","electron","dist",process.platform==="win32"?"electron.exe":"electron");
   const application=await electron.launch({executablePath,args:[".","--lang=en-US",`--user-data-dir=${userData}`],cwd:root,env:{...process.env,DEEPSEEK_API_KEY:"e2e-placeholder",NOVAL_PYTHON:process.env.NOVAL_PYTHON??"py",NOVAL_SETTINGS_PATH:settingsPath}});const page=await application.firstWindow();
-  try{await expect(page.getByRole("button",{name:"core-project",exact:true})).toBeVisible();await expect(page.getByRole("button",{name:/incompatible v2/i})).toHaveCount(0);await expect(page.getByRole("button",{name:"Stored conversation"})).toBeVisible();await page.getByRole("button",{name:"Stored conversation"}).click();await expect(page.getByRole("heading",{name:"Rendered Markdown",level:2})).toBeVisible({timeout:30000});await expect(page.locator("strong",{hasText:"formatted text"})).toBeVisible();const activity=page.getByText("Ran 2 commands");await expect(activity).toBeVisible();await expect(page.getByText("Tool completed")).toHaveCount(0);await activity.click();await expect(page.locator(".activity-details pre").first()).toHaveText("done");const viewport=page.locator(".conversation-viewport");expect(await viewport.evaluate(element=>getComputedStyle(element).scrollbarWidth)).toBe("thin");expect(await viewport.evaluate(element=>{element.scrollTop=element.scrollHeight;return element.scrollTop>0})).toBe(true);const geometry=await page.evaluate(()=>{const last=document.querySelector(".activity-row")?.getBoundingClientRect(),composer=document.querySelector(".composer")?.getBoundingClientRect();return {lastBottom:last?.bottom??0,composerTop:composer?.top??0}});expect(geometry.lastBottom).toBeLessThan(geometry.composerTop);await page.getByRole("button",{name:"Settings"}).click();await expect(page.getByRole("heading",{name:"General"})).toBeVisible();await page.getByRole("button",{name:"Models"}).click();await expect(page.getByRole("heading",{name:"Models",exact:true})).toBeVisible();await expect(page.getByText("DeepSeek",{exact:true})).toBeVisible();await expect(page.getByText(/provider|vendor|runtime|electron|python|sidecar/i)).toHaveCount(0);await expect(page.getByLabel("Base URL")).toHaveCount(0)}
+  try{
+    await expect(page.getByRole("button",{name:"core-project",exact:true})).toBeVisible();
+    await expect(page.getByRole("button",{name:/incompatible v2/i})).toHaveCount(0);
+    const sessionButton=page.getByRole("button",{name:"Stored conversation"});
+    await expect(sessionButton).toBeVisible();
+    await sessionButton.click();
+    await expect(page.locator(".topbar")).toHaveText("Stored conversation",{timeout:30000});
+    await expect(sessionButton).toHaveAttribute("aria-current","page");
+    await expect(page.locator(".topbar")).not.toContainText(projectPath);
+    await expect(page.getByRole("button",{name:/Rename task/i})).toHaveCount(0);
+    await expect(page.getByRole("heading",{name:"Rendered Markdown",level:2})).toBeVisible({timeout:30000});
+    await expect(page.locator("strong",{hasText:"formatted text"})).toBeVisible();
+    const userMessage=page.locator(".message-user").filter({hasText:"Stored conversation"});
+    await expect(userMessage.locator(":scope > .message-content")).toHaveCount(1);
+    await expect(userMessage.locator(":scope > .message-meta")).toHaveCount(1);
+    const screenshotDir=process.env.NOVAL_OVERLAY_SCREENSHOT_DIR;
+    if(screenshotDir){await mkdir(screenshotDir,{recursive:true});await userMessage.hover();await page.screenshot({path:path.join(screenshotDir,"restored-session.png")})}
+    const activity=page.getByText("Ran 2 commands");
+    await expect(activity).toBeVisible();
+    await expect(page.getByText("Tool completed")).toHaveCount(0);
+    await activity.click();
+    await expect(page.locator(".activity-details pre").first()).toHaveText("done");
+    const viewport=page.locator(".conversation-viewport");
+    expect(await viewport.evaluate(element=>getComputedStyle(element).scrollbarWidth)).toBe("thin");
+    expect(await viewport.evaluate(element=>{element.scrollTop=element.scrollHeight;return element.scrollTop>0})).toBe(true);
+    const geometry=await page.evaluate(()=>{const last=document.querySelector(".activity-row")?.getBoundingClientRect(),composer=document.querySelector(".composer")?.getBoundingClientRect();return {lastBottom:last?.bottom??0,composerTop:composer?.top??0}});
+    expect(geometry.lastBottom).toBeLessThan(geometry.composerTop);
+    await page.getByRole("button",{name:"Settings"}).click();
+    await expect(page.getByRole("heading",{name:"General"})).toBeVisible();
+    await page.getByRole("button",{name:"Models"}).click();
+    await expect(page.getByRole("heading",{name:"Models",exact:true})).toBeVisible();
+    await expect(page.getByText("DeepSeek",{exact:true})).toBeVisible();
+    await expect(page.getByText(/provider|vendor|runtime|electron|python|sidecar/i)).toHaveCount(0);
+    await expect(page.getByLabel("Base URL")).toHaveCount(0);
+  }
   finally{const process=application.process();const exited=new Promise<void>(resolve=>{if(process.exitCode!==null)resolve();else process.once("exit",()=>resolve())});await page.close();await exited;await rm(userData,{recursive:true,force:true})}
 });
 
@@ -225,9 +282,7 @@ test("configures, switches during a Turn, and restores one durable model selecti
     expect(persistedSettings.models.connections[1].base_url).toBe(provider.baseUrl);
     await page.getByRole("button",{name:/Back to Noval/i}).click();
 
-    const project=page.getByRole("button",{name:"flow-project",exact:true});
-    await project.hover();
-    await page.getByRole("button",{name:/New task in flow-project/i}).click();
+    await expect(page.getByRole("button",{name:"flow-project",exact:true})).toBeVisible();
     const selector=page.getByRole("button",{name:"Session model"});
     await expect(selector).toContainText("primary-model");
     const access=page.getByRole("button",{name:"Session access"});
