@@ -1,5 +1,5 @@
 import {type CSSProperties,FormEvent,useEffect,useMemo,useRef,useState} from "react";
-import {ArrowUp,Check,ChevronDown,Copy,Ellipsis,Folder,FolderOpen,Hand,KeyRound,MessageSquarePlus,Plus,RotateCcw,Settings,Shield,ShieldCheck,Square,Trash2,Undo2,X} from "lucide-react";
+import {ArrowUp,Check,ChevronDown,Copy,Ellipsis,Folder,FolderOpen,Hand,KeyRound,MessageSquarePlus,Pencil,Plus,RotateCcw,Settings,Shield,ShieldCheck,Square,Trash2,Undo2,X} from "lucide-react";
 import type {AppInfo,AppearancePreferences,CompletionReport,ConnectionUpsert,LanguagePreference,ModelConfigurationInfo,PermissionState,ProjectInfo,ProviderProfileInfo,SessionInfo,SidecarEvent,TranscriptEntry} from "../shared/protocol";
 import {MarkdownText} from "./MarkdownText";
 import {buildTimeline,MessageItem,ToolActivity} from "./ToolActivity";
@@ -11,6 +11,7 @@ type PendingPermission={request_id:string;tool_name:string;risk:string;arguments
 type Connection="connected"|"recovering"|"disconnected";
 type ComposerMenu="permission"|"model"|null;
 type PermissionToast={previousMode:PermissionState["mode"]};
+type SessionRenameTarget={projectPath:string;session:SessionInfo};
 const MIN_SIDEBAR_WIDTH=220,MAX_SIDEBAR_WIDTH=480,DEFAULT_SIDEBAR_WIDTH=278;
 
 export function App(){
@@ -20,6 +21,7 @@ export function App(){
  const [draft,setDraft]=useState(""),[stream,setStream]=useState(""),[busy,setBusy]=useState(false),[status,setStatus]=useState("Ready"),[error,setError]=useState<string|null>(null),[pending,setPending]=useState<PendingPermission|null>(null);
  const [connection,setConnection]=useState<Connection>("connected"),[completion,setCompletion]=useState<CompletionReport|null>(null);
  const [showPermissions,setShowPermissions]=useState(false),[projectMenu,setProjectMenu]=useState<string|null>(null),[projectToRemove,setProjectToRemove]=useState<string|null>(null),[removingProject,setRemovingProject]=useState(false),[draftProject,setDraftProject]=useState<string|null>(null);
+ const [sessionMenu,setSessionMenu]=useState<string|null>(null),[sessionToRename,setSessionToRename]=useState<SessionRenameTarget|null>(null),[sessionTitle,setSessionTitle]=useState(""),[renamingSession,setRenamingSession]=useState(false);
  const previousConnection=useRef(connection),eventSequence=useRef(0),viewport=useRef<HTMLDivElement|null>(null),loadingOlder=useRef(false),lastScrollTop=useRef(0),resizeStart=useRef<{x:number;width:number}|null>(null);
  const [showSettings,setShowSettings]=useState(false),[profiles,setProfiles]=useState<ProviderProfileInfo[]>([]),[modelConfig,setModelConfig]=useState<ModelConfigurationInfo|null>(null),[draftModelId,setDraftModelId]=useState("");
  const [appearance,setAppearance]=useState<AppearancePreferences>({theme:"system",density:"comfortable"}),[language,setLanguage]=useState<LanguagePreference>(()=>localeLanguage(navigator.language)),[sidebarWidth,setSidebarWidth]=useState(DEFAULT_SIDEBAR_WIDTH),[appInfo,setAppInfo]=useState<AppInfo|null>(null);
@@ -32,6 +34,7 @@ export function App(){
  useEffect(()=>window.noval.onEvent(handleEvent),[language]);
  useEffect(()=>{const recovered=previousConnection.current!=="connected"&&connection==="connected";previousConnection.current=connection;if(!recovered||!active)return;void restoreActive()},[connection,active?.session_id]);
  useEffect(()=>{if(!projectMenu&&!projectToRemove)return;function keydown(event:KeyboardEvent){if(event.key==="Escape"&&!removingProject){setProjectMenu(null);setProjectToRemove(null)}}function pointerdown(event:PointerEvent){const target=event.target;if(projectMenu&&target instanceof Element&&!target.closest(".project-menu")&&!target.closest(".project-actions-trigger"))setProjectMenu(null)}document.addEventListener("keydown",keydown);document.addEventListener("pointerdown",pointerdown);return()=>{document.removeEventListener("keydown",keydown);document.removeEventListener("pointerdown",pointerdown)}},[projectMenu,projectToRemove,removingProject]);
+ useEffect(()=>{if(!sessionMenu&&!sessionToRename)return;function keydown(event:KeyboardEvent){if(event.key==="Escape"&&!renamingSession){setSessionMenu(null);setSessionToRename(null);setSessionTitle("")}}function pointerdown(event:PointerEvent){const target=event.target;if(sessionMenu&&target instanceof Element&&!target.closest(".session-menu")&&!target.closest(".session-actions-trigger"))setSessionMenu(null)}document.addEventListener("keydown",keydown);document.addEventListener("pointerdown",pointerdown);return()=>{document.removeEventListener("keydown",keydown);document.removeEventListener("pointerdown",pointerdown)}},[sessionMenu,sessionToRename,renamingSession]);
  useEffect(()=>{if(!composerMenu)return;function keydown(event:KeyboardEvent){if(event.key==="Escape")setComposerMenu(null)}function pointerdown(event:PointerEvent){const target=event.target;if(target instanceof Element&&!target.closest(".composer-menu-anchor"))setComposerMenu(null)}document.addEventListener("keydown",keydown);document.addEventListener("pointerdown",pointerdown);return()=>{document.removeEventListener("keydown",keydown);document.removeEventListener("pointerdown",pointerdown)}},[composerMenu]);
  useEffect(()=>()=>{if(permissionToastTimer.current)clearTimeout(permissionToastTimer.current)},[]);
 
@@ -44,6 +47,9 @@ export function App(){
  async function beginSession(path:string){try{await activateProject(path);setExpanded(old=>new Set(old).add(path));setActive(null);setDraftModelId(modelConfig?.default_model_id??"");setDraftProject(path);setPermissions({mode:"ask",approved_tools:[]});setPending(null);setEntries([]);setCompletion(null);setDraft("")}catch(e){setError(message(e))}}
  async function openSession(path:string,item:SessionInfo){try{setError(null);setCompletion(null);setPending(null);await activateProject(path);const result=active?.session_id===item.session_id?{session:active,permissions}:await window.noval.resumeSession(item.session_id),restored={...result.session,title:result.session.title??item.title};setActive(restored);setDraftModelId(restored.selected_model_id);setDraftProject(null);setPermissions(result.permissions);const replay=await window.noval.replayEvents(item.session_id,0);eventSequence.current=replay.next_sequence;await loadLatest(item.session_id)}catch(e){setError(message(e))}}
  async function removeProject(){const path=projectToRemove;if(!path||removingProject)return;setRemovingProject(true);try{const list=await window.noval.removeProject(path);setProjects(list);setSessions(old=>{const next={...old};delete next[path];return next});if(workspace===path){setWorkspace(list.find(item=>item.active)?.path??null);setActive(null);setDraftProject(null);setEntries([])}setProjectToRemove(null)}catch(e){setError(message(e))}finally{setRemovingProject(false)}}
+ function openSessionRename(projectPath:string,session:SessionInfo){setSessionMenu(null);setSessionToRename({projectPath,session});setSessionTitle(session.title??"")}
+ function closeSessionRename(){if(renamingSession)return;setSessionToRename(null);setSessionTitle("")}
+ async function renameSelectedSession(){const target=sessionToRename,title=sessionTitle.trim();if(!target||!title||title===(target.session.title??"").trim()||renamingSession)return;setRenamingSession(true);try{const updated=await window.noval.renameSession(target.session.session_id,title);setSessions(old=>({...old,[target.projectPath]:(old[target.projectPath]??[]).map(item=>item.session_id===updated.session_id?updated:item)}));if(active?.session_id===updated.session_id)setActive(updated);setSessionToRename(null);setSessionTitle("")}catch(e){setError(message(e))}finally{setRenamingSession(false)}}
  async function send(event:FormEvent){event.preventDefault();const projectPath=active?.workdir??draftProject??workspace;if(!projectPath||!draft.trim()||busy||connection!=="connected")return;const text=draft.trim();let current=active;setDraft("");setBusy(true);setCompletion(null);try{if(!current){await activateProject(projectPath);const requestedPermissionMode=permissions.mode;const created=await window.noval.createSession(draftModelId?{selected_model_id:draftModelId}:{});current=created.session;setActive(current);setDraftModelId(current.selected_model_id);setDraftProject(null);const createdPermissions=requestedPermissionMode===created.permissions.mode?created.permissions:await window.noval.setPermissionMode(current.session_id,requestedPermissionMode);setPermissions(createdPermissions)}setEntries(old=>[...old,{sequence:Date.now(),role:"user",text,timestamp:null,tool_calls:[],tool_results:[]}]);scrollToBottom();const result=await window.noval.startTurn(current.session_id,text);setCompletion(result.completion);await loadLatest(current.session_id);setStream("")}catch(e){setError(message(e))}finally{const persisted=await window.noval.projectSessions(projectPath).catch(()=>sessions[projectPath]??[]);setSessions(old=>({...old,[projectPath]:persisted}));if(current){const stored=persisted.find(item=>item.session_id===current!.session_id);if(stored)setActive({...stored,is_open:true});else{setActive(null);setDraftProject(projectPath)}}setBusy(false);setStatus(t("ready"))}}
  async function loadLatest(sessionId:string){const page=await window.noval.transcriptHistory(sessionId);setEntries(page.entries);setHistoryCursor(page.previous_sequence);setHasOlder(page.has_more);scrollToBottom()}
  async function loadOlder(){if(!active||!hasOlder||historyCursor===null||loadingOlder.current)return;const element=viewport.current;if(!element)return;loadingOlder.current=true;const oldHeight=element.scrollHeight,oldTop=element.scrollTop;try{const page=await window.noval.transcriptHistory(active.session_id,historyCursor);setEntries(current=>{const known=new Set(current.map(item=>item.sequence));return [...page.entries.filter(item=>!known.has(item.sequence)),...current]});setHistoryCursor(page.previous_sequence);setHasOlder(page.has_more);window.requestAnimationFrame(()=>{if(viewport.current){viewport.current.scrollTop=viewport.current.scrollHeight-oldHeight+oldTop;lastScrollTop.current=viewport.current.scrollTop}loadingOlder.current=false})}catch(e){loadingOlder.current=false;setError(message(e))}}
@@ -105,7 +111,7 @@ export function App(){
            <div className={`project-row ${project.active?"current":""}`}>
              <button className="project-main" onClick={()=>toggleProject(project)} title={project.path}>{open?<FolderOpen size={17}/>:<Folder size={17}/>}<span>{project.name}</span></button>
              <div className="hover-actions">
-               <button className="project-actions-trigger" aria-label={t("projectActions",{name:project.name})} aria-haspopup="menu" aria-expanded={menuOpen} onClick={()=>setProjectMenu(menuOpen?null:project.path)}><Ellipsis size={15}/></button>
+               <button className="project-actions-trigger" aria-label={t("projectActions",{name:project.name})} aria-haspopup="menu" aria-expanded={menuOpen} onClick={()=>{setSessionMenu(null);setProjectMenu(menuOpen?null:project.path)}}><Ellipsis size={15}/></button>
                <button aria-label={t("newTaskIn",{name:project.name})} onClick={()=>beginSession(project.path)}><MessageSquarePlus size={15}/></button>
              </div>
              {menuOpen&&<div className="menu project-menu" role="menu" aria-label={t("actionsFor",{name:project.name})}>
@@ -114,7 +120,13 @@ export function App(){
              </div>}
            </div>
            {open&&<div className="session-list">
-             {items.slice(0,limit).map(item=>{const selected=active?.session_id===item.session_id;return <button key={item.session_id} className={`session-row ${selected?"active":""}`} aria-current={selected?"page":undefined} onClick={()=>openSession(project.path,item)}><span>{item.title||t("untitledTask")}</span></button>})}
+             {items.slice(0,limit).map(item=>{const selected=active?.session_id===item.session_id,name=item.title||t("untitledTask"),menuOpen=sessionMenu===item.session_id;return <div key={item.session_id} className={`session-item ${selected?"active":""}`}>
+               <button className="session-row" aria-current={selected?"page":undefined} onClick={()=>openSession(project.path,item)}><span>{name}</span></button>
+               <button type="button" className="session-actions-trigger" aria-label={t("sessionActions",{name})} aria-haspopup="menu" aria-expanded={menuOpen} onClick={()=>{setProjectMenu(null);setSessionMenu(menuOpen?null:item.session_id)}}><Ellipsis size={14}/></button>
+               {menuOpen&&<div className="menu project-menu session-menu" role="menu" aria-label={t("actionsFor",{name})}>
+                 <button role="menuitem" onClick={()=>openSessionRename(project.path,item)}><Pencil size={15}/>{t("renameTask")}</button>
+               </div>}
+             </div>})}
              {items.length>limit&&<button className="show-more" onClick={()=>setVisible(old=>({...old,[project.path]:limit+5}))}>{t("showMore",{count:Math.min(5,items.length-limit)})}</button>}
              {items.length===0&&<p className="no-sessions">{t("noTasks")}</p>}
            </div>}
@@ -163,7 +175,7 @@ export function App(){
            <div className="composer-controls">
              <div className="composer-menu-anchor">
                <button type="button" className={`composer-menu-trigger permission-selector ${permissions.mode}`} aria-label={t("sessionAccess")} aria-haspopup="menu" aria-expanded={composerMenu==="permission"} onClick={()=>{setShowPermissions(false);toggleComposerMenu("permission")}}>
-                 <Shield size={15}/><span>{permissions.mode==="full_access"?t("fullAccess"):t("askPermission")}</span><ChevronDown size={13}/>
+                 <Shield size={15}/><span>{permissions.mode==="full_access"?t("fullAccess"):t("askPermission")}</span>
                </button>
                {composerMenu==="permission"&&<div className="composer-menu permission-menu" role="menu" aria-label={t("sessionAccess")} onKeyDown={navigateComposerMenu}>
                  <div className="composer-menu-header">{t("accessMenuTitle")}</div>
@@ -176,7 +188,7 @@ export function App(){
                </div>}
              </div>
              {active&&permissions.approved_tools.length>0&&<button type="button" className="grant-button" onClick={()=>setShowPermissions(value=>!value)}><KeyRound size={14}/>{t("grants",{count:permissions.approved_tools.length})}</button>}
-             <span className="composer-status"><span className={`status-dot ${connection}`}/>{status}</span>
+             {(busy||connection!=="connected")&&<span className="composer-status"><span className={`status-dot ${connection}`}/>{status}</span>}
            </div>
            <div className="composer-actions">
              <div className="composer-menu-anchor model-menu-anchor">
@@ -209,6 +221,18 @@ export function App(){
          <button className="dialog-close" aria-label={t("closeRemoveDialog")} disabled={removingProject} onClick={()=>setProjectToRemove(null)}><X size={18}/></button>
          <h2 id="remove-project-title">{t("removeProjectQuestion",{name:leaf(projectToRemove)})}</h2><p>{t("removeProjectDetail")}</p>
          <div className="dialog-actions"><button autoFocus disabled={removingProject} onClick={()=>setProjectToRemove(null)}>{t("cancel")}</button><button className="danger-action" disabled={removingProject} onClick={removeProject}>{removingProject?t("removing"):t("remove")}</button></div>
+       </section>
+     </div>}
+     {sessionToRename&&<div className="scrim project-remove-scrim" onPointerDown={event=>{if(event.target===event.currentTarget)closeSessionRename()}}>
+       <section className="confirm-dialog session-rename-dialog" role="dialog" aria-modal="true" aria-labelledby="rename-session-title">
+         <button className="dialog-close" aria-label={t("cancelRename")} disabled={renamingSession} onClick={closeSessionRename}><X size={18}/></button>
+         <h2 id="rename-session-title">{t("renameTask")}</h2>
+         <p>{t("renameTaskDescription")}</p>
+         <form onSubmit={event=>{event.preventDefault();void renameSelectedSession()}}>
+           <label htmlFor="session-title-input">{t("taskTitle")}</label>
+           <input id="session-title-input" autoFocus value={sessionTitle} onChange={event=>setSessionTitle(event.target.value)} disabled={renamingSession}/>
+           <div className="dialog-actions"><button type="button" disabled={renamingSession} onClick={closeSessionRename}>{t("cancel")}</button><button className="primary-action" disabled={!sessionTitle.trim()||sessionTitle.trim()===(sessionToRename.session.title??"").trim()||renamingSession}>{t("saveTitle")}</button></div>
+         </form>
        </section>
      </div>}
    </main>
