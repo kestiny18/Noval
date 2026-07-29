@@ -25,11 +25,18 @@
 
 ### Task 3: Complete the Renderer loop
 
-1. Add inline Session rename.
+1. Show only the selected Session title in the conversation header. Do not show
+   its workspace path or an inline rename control, and render no conversation
+   header while no Session is selected.
 2. Add permission grant inspection, revoke, and reset controls.
 3. Show evidence-aware completion separately from the assistant answer.
-4. Reconstruct transcript and replay live events after reconnection.
-5. Add focused interaction tests and visually inspect the result.
+4. Keep the selected Session visibly highlighted and reconstruct its transcript
+   whenever it is activated or restored.
+5. When a workspace is selected without a Session, show the composer directly;
+   the first submitted message lazily creates the Session.
+6. Place user-message time and copy actions outside the message bubble, using
+   the same metadata treatment as assistant messages.
+7. Add focused interaction tests and visually inspect the result.
 
 ### Task 4: Validate and deliver
 
