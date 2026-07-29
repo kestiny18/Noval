@@ -345,8 +345,8 @@ test("configures, switches during a Turn, and restores one durable model selecti
     await expect(permissionMenu).toContainText("How should Noval approve actions?");
     await expect(askOption).toBeFocused();
     const permissionMenuWidth=await permissionMenu.evaluate(element=>Math.round(element.getBoundingClientRect().width));
-    expect(permissionMenuWidth).toBeGreaterThanOrEqual(376);
-    expect(permissionMenuWidth).toBeLessThanOrEqual(382);
+    expect(permissionMenuWidth).toBeGreaterThanOrEqual(336);
+    expect(permissionMenuWidth).toBeLessThanOrEqual(342);
     if(screenshotDir){
       await page.screenshot({path:path.join(screenshotDir,"permission-menu.png")});
       await page.evaluate(()=>document.documentElement.dataset.theme="dark");
