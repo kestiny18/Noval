@@ -45,7 +45,8 @@ def test_jsonl_store_aggregates_daily_usage_and_models(tmp_path):
     assert set(summary.by_purpose) == {"agent"}
     assert len(list((tmp_path / "2026-06-30").glob("*.jsonl"))) == 2
     event = json.loads(next((tmp_path / "2026-06-30").glob("*.jsonl")).read_text())
-    assert event["schema_version"] == 1
+    assert event["schema_version"] == 2
+    assert event["event_type"] == "model_usage"
     assert event["purpose"] == "agent"
     assert "workdir" not in event
     assert "session" not in event
@@ -72,6 +73,82 @@ def test_store_uses_actual_event_day_and_skips_corrupt_lines(tmp_path, caplog):
     assert june.total.requests == 1
     assert july.total.requests == 1
     assert "skipping corrupt" in caplog.text
+
+
+def test_store_reads_legacy_usage_events(tmp_path):
+    day_dir = tmp_path / "2026-06-30"
+    day_dir.mkdir()
+    (day_dir / "legacy.jsonl").write_text(
+        json.dumps({
+            "schema_version": 1,
+            "timestamp": NOW.isoformat(),
+            "model": "legacy-model",
+            "purpose": "agent",
+            "prompt_tokens": 8,
+            "completion_tokens": 2,
+            "total_tokens": 10,
+        }) + "\n",
+        encoding="utf-8",
+    )
+
+    summary = JsonlUsageStore(tmp_path, now=lambda: NOW).summarize()
+
+    assert summary.total.total_tokens == 10
+    assert summary.by_model["legacy-model"].total_tokens == 10
+
+
+def test_analytics_returns_all_time_summaries_and_364_daily_model_buckets(tmp_path):
+    current = [datetime(2025, 1, 1, 12, 0, tzinfo=timezone.utc)]
+    store = JsonlUsageStore(tmp_path, "session", now=lambda: current[0])
+    store.record("model-a", usage(5, 2))
+    store.record_turn("model-a", 8_000)
+    current[0] = datetime(2026, 6, 29, 12, 0, tzinfo=timezone.utc)
+    store.record("model-a", usage(100, 20))
+    store.record("model-b", usage(50, 10))
+    store.record_turn("model-b", 2_500)
+    current[0] = NOW
+    store.record("model-a", usage(10, 2))
+    store.record_turn("model-a", 5_000)
+
+    analytics = store.analytics()
+
+    assert analytics.window_start == "2025-07-02"
+    assert analytics.window_end == "2026-06-30"
+    assert len(analytics.days) == 364
+    assert analytics.days[0].day == analytics.window_start
+    assert analytics.days[-1].day == analytics.window_end
+    assert analytics.total_tokens == 199
+    assert analytics.peak_daily_tokens == 180
+    assert analytics.longest_turn_duration_ms == 8_000
+    assert [item.model for item in analytics.models] == ["model-a", "model-b"]
+    assert analytics.models[0].total_tokens == 139
+    assert analytics.models[0].peak_daily_tokens == 120
+    assert analytics.models[0].longest_turn_duration_ms == 8_000
+    june_29 = next(item for item in analytics.days if item.day == "2026-06-29")
+    assert june_29.total_tokens == 180
+    assert [(item.model, item.total_tokens) for item in june_29.by_model] == [
+        ("model-a", 120),
+        ("model-b", 60),
+    ]
+
+
+def test_turn_event_contains_only_safe_analytics_fields(tmp_path):
+    path = JsonlUsageStore(tmp_path, "private-session", now=lambda: NOW).record_turn(
+        "deepseek-v4-pro",
+        1_234.6,
+    )
+
+    event = json.loads(path.read_text(encoding="utf-8"))
+
+    assert event == {
+        "schema_version": 2,
+        "event_type": "turn",
+        "timestamp": "2026-06-30T12:00:00+00:00",
+        "model": "deepseek-v4-pro",
+        "duration_ms": 1235,
+    }
+    assert "session" not in event
+    assert "workdir" not in event
 
 
 def test_metered_client_records_actual_response_model(tmp_path):

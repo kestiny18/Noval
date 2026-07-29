@@ -54,6 +54,10 @@ from noval.api import (
     TranscriptPage,
     TranscriptToolCall,
     TranscriptToolResult,
+    UsageAnalytics,
+    UsageDailyPoint,
+    UsageModelSummary,
+    UsageModelTokens,
     VerificationResult,
 )
 from noval.client import (
@@ -900,6 +904,70 @@ def test_turn_result_round_trip_preserves_canonical_message_usage_and_error():
 
     assert TurnResult.from_dict(encoded) == result
     assert "partial answer" in json.dumps(encoded)
+
+
+def test_usage_analytics_round_trip_preserves_daily_and_model_summaries():
+    analytics = UsageAnalytics(
+        generated_at="2026-07-30T08:00:00+08:00",
+        window_start="2025-08-01",
+        window_end="2026-07-30",
+        total_tokens=100,
+        peak_daily_tokens=60,
+        longest_turn_duration_ms=12_000,
+        models=(
+            UsageModelSummary(
+                model="deepseek-v4-pro",
+                total_tokens=100,
+                peak_daily_tokens=60,
+                longest_turn_duration_ms=12_000,
+            ),
+        ),
+        days=(
+            UsageDailyPoint(
+                day="2026-07-30",
+                total_tokens=60,
+                by_model=(
+                    UsageModelTokens(
+                        model="deepseek-v4-pro",
+                        total_tokens=60,
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    restored = UsageAnalytics.from_dict(analytics.to_dict())
+
+    assert restored == analytics
+    assert restored.to_dict()["schema_version"] == 2
+
+
+def test_runtime_usage_analytics_records_terminal_turn_duration(tmp_path):
+    class SlowUsageClient:
+        def complete(self, messages, tools):
+            time.sleep(0.02)
+            return mock_text("done", usage=TokenUsage(10, 2, 12))
+
+    runtime = NovalRuntime(
+        application_config(tmp_path, persist_usage=True),
+        client_factory=lambda spec: (
+            SlowUsageClient() if spec.purpose == "agent" else MockClient([])
+        ),
+    )
+    session = runtime.create_session(SessionOptions(
+        workdir=str(tmp_path),
+        persistence=SessionPersistence.EPHEMERAL,
+    ))
+
+    result = session.run_turn(TurnRequest("measure this task"))
+    analytics = runtime.usage_analytics()
+
+    assert result.status == TurnStatus.COMPLETED
+    assert analytics.total_tokens == 12
+    assert analytics.longest_turn_duration_ms >= 10
+    assert analytics.models[0].model == "mock"
+    assert analytics.models[0].longest_turn_duration_ms >= 10
+    runtime.close()
 
 
 def test_response_readers_tolerate_additive_fields():

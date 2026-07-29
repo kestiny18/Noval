@@ -51,6 +51,7 @@ from .api import (
     TranscriptPage,
     TranscriptToolCall,
     TranscriptToolResult,
+    UsageAnalytics,
     VerificationResult,
 )
 from .client import (
@@ -771,6 +772,8 @@ class AgentSession:
         turn_id = "turn-" + uuid4().hex
         execution = self._runtime._admit_turn(self, turn_id)
         started = time.perf_counter()
+        result: Optional[TurnResult] = None
+        usage_model = execution.agent.provider_model
         log_scope = runtime_log_context(
             session_id=self._base_info.session_id,
             turn_id=turn_id,
@@ -793,6 +796,8 @@ class AgentSession:
             )
             agent_turn_started = True
             outcome = self._agent.run_turn(request.text, request.goal)
+            if outcome.message.provenance is not None:
+                usage_model = outcome.message.provenance.model
             result = self._result_from_outcome(
                 request, turn_id, outcome, started
             )
@@ -859,6 +864,11 @@ class AgentSession:
             self._emit_terminal_failure(result)
             return result
         finally:
+            if result is not None:
+                self._record_turn_usage(
+                    usage_model,
+                    result.metrics.duration_ms,
+                )
             if log_scope_entered:
                 log_scope.__exit__(None, None, None)
             with self._state_lock:
@@ -874,6 +884,20 @@ class AgentSession:
                     last_active=_utc_now(),
                 )
             execution.release_transports()
+
+    def _record_turn_usage(self, model: str, duration_ms: float) -> None:
+        if not self._session_config.persist_usage:
+            return
+        try:
+            JsonlUsageStore(
+                self._session_config.usage_dir(),
+                self._base_info.session_id,
+            ).record_turn(model, duration_ms)
+        except Exception:
+            log.warning(
+                "failed to persist Turn duration; skipping this record",
+                exc_info=True,
+            )
 
     def cancel_active_turn(self) -> bool:
         with self._state_lock:
@@ -1192,6 +1216,10 @@ class NovalRuntime:
             event_sink=event_sink,
             permission_handler=permission_handler,
         )
+
+    def usage_analytics(self, days: int = 364) -> UsageAnalytics:
+        """Return safe derived usage statistics without exposing storage details."""
+        return JsonlUsageStore(self._config.usage_dir()).analytics(days)
 
     def resume_session(
         self,
