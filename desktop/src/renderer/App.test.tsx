@@ -1,4 +1,4 @@
-import {act,cleanup,fireEvent,render,screen,waitFor} from "@testing-library/react";import {afterEach,beforeEach,expect,it,vi} from "vitest";import {App} from "./App";
+import {act,cleanup,fireEvent,render,screen,waitFor} from "@testing-library/react";import {afterEach,beforeEach,expect,it,vi} from "vitest";import {App} from "./App";import {formatWorkDuration} from "./i18n";
 const project={path:"C:/workspace",name:"workspace",active:true};
 const session={schema_version:2 as const,session_id:"session-1",workdir:project.path,persistence:"persistent" as const,selected_model_id:"configured-agent",selected_judge_model_id:"configured-judge",active_model_id:null,active_judge_model_id:null,is_open:false,title:"First task",message_count:0,last_active:null};
 const profiles=[{schema_version:2 as const,id:"deepseek",label:"DeepSeek",kind:"builtin" as const,models:[{id:"deepseek-v4-pro",label:"DeepSeek V4 Pro"}],default_model:"deepseek-v4-pro",adapter:null,requires_base_url:false},{schema_version:2 as const,id:"custom",label:"Custom OpenAI-compatible",kind:"custom" as const,models:[],default_model:null,adapter:"openai-compatible",requires_base_url:true}];
@@ -7,6 +7,7 @@ const usageDays=Array.from({length:364},(_,index)=>{const date=new Date(Date.UTC
 const usageAnalytics={schema_version:2 as const,generated_at:"2026-07-30T00:00:00Z",window_start:usageDays[0].day,window_end:usageDays[363].day,total_tokens:360,peak_daily_tokens:240,longest_turn_duration_ms:3_720_000,models:[{model:"deepseek-v4-pro",total_tokens:360,peak_daily_tokens:240,longest_turn_duration_ms:3_720_000}],days:usageDays};
 beforeEach(()=>{window.noval={chooseWorkspace:vi.fn().mockResolvedValue(null),getWorkspace:vi.fn().mockResolvedValue(null),listProjects:vi.fn().mockResolvedValue([]),projectSessions:vi.fn().mockResolvedValue([]),activateProject:vi.fn().mockResolvedValue(project.path),removeProject:vi.fn().mockResolvedValue([]),revealProject:vi.fn(),listSessions:vi.fn().mockResolvedValue([]),createSession:vi.fn(),resumeSession:vi.fn(),renameSession:vi.fn(),selectSessionModel:vi.fn(),transcript:vi.fn().mockResolvedValue({entries:[],next_sequence:0,has_more:false}),transcriptHistory:vi.fn().mockResolvedValue({entries:[],previous_sequence:null,has_more:false}),copyText:vi.fn(),replayEvents:vi.fn().mockResolvedValue({events:[],next_sequence:0,gap_detected:false,has_more:false}),startTurn:vi.fn(),cancelTurn:vi.fn(),setPermissionMode:vi.fn().mockResolvedValue({mode:"ask",approved_tools:[]}),revokeTool:vi.fn(),resetPermissions:vi.fn(),resolvePermission:vi.fn(),onEvent:vi.fn().mockReturnValue(()=>{}),appInfo:vi.fn().mockResolvedValue({desktopVersion:"26.722.106",coreVersion:"0.12.0",protocolVersion:2}),getPreferences:vi.fn().mockResolvedValue({appearance:{theme:"system",density:"comfortable"},language:"en",sidebarWidth:278}),getAppearance:vi.fn().mockResolvedValue({theme:"system",density:"comfortable"}),saveAppearance:vi.fn().mockImplementation(async value=>value),saveLanguage:vi.fn().mockImplementation(async language=>({appearance:{theme:"system",density:"comfortable"},language,sidebarWidth:278})),saveSidebarWidth:vi.fn().mockImplementation(async sidebarWidth=>({appearance:{theme:"system",density:"comfortable"},language:"en",sidebarWidth})),listProviderProfiles:vi.fn().mockResolvedValue(profiles),getModelConfiguration:vi.fn().mockResolvedValue(modelConfiguration),getUsageAnalytics:vi.fn().mockResolvedValue(usageAnalytics),upsertConnection:vi.fn().mockResolvedValue(modelConfiguration)} as any});
 afterEach(()=>{cleanup();vi.useRealTimers();vi.restoreAllMocks()});
+it("formats work duration with every elapsed unit",()=>{expect(formatWorkDuration("en",59)).toBe("59s");expect(formatWorkDuration("en",116)).toBe("1m 56s");expect(formatWorkDuration("zh-CN",3908)).toBe("1小时5分钟8秒")});
 it("keeps the single-page shell visible before a project is added",async()=>{render(<App/>);expect(await screen.findByRole("button",{name:/add project/i})).toBeVisible();expect(screen.getByText(/Add a project to start using Noval/i)).toBeVisible();expect(screen.queryByText(/Choose workspace/i)).not.toBeInTheDocument()});
 it("shows a bare composer without a header when a project has no selected Session",async()=>{vi.mocked(window.noval.listProjects).mockResolvedValue([project]);render(<App/>);expect(await screen.findByRole("heading",{name:"What should we build in workspace?"})).toBeVisible();expect(screen.getByRole("textbox",{name:"Message Noval"})).toBeVisible();expect(document.querySelector(".topbar")).not.toBeInTheDocument();expect(screen.queryByText(/Choose a task/i)).not.toBeInTheDocument();expect(screen.queryByText("Noval",{selector:".tag-chip"})).not.toBeInTheDocument()});
 it("restores and keyboard-resizes the project sidebar",async()=>{vi.mocked(window.noval.getPreferences).mockResolvedValue({appearance:{theme:"system",density:"comfortable"},language:"en",sidebarWidth:310});render(<App/>);const separator=await screen.findByRole("separator",{name:"Resize project sidebar"});await waitFor(()=>expect(separator).toHaveAttribute("aria-valuenow","310"));expect(separator.closest(".shell")).toHaveStyle({"--sidebar-width":"310px"});fireEvent.keyDown(separator,{key:"ArrowRight"});await waitFor(()=>expect(window.noval.saveSidebarWidth).toHaveBeenCalledWith(326));expect(separator).toHaveAttribute("aria-valuenow","326");fireEvent.keyDown(separator,{key:"End"});await waitFor(()=>expect(window.noval.saveSidebarWidth).toHaveBeenLastCalledWith(480));expect(separator).toHaveAttribute("aria-valuenow","480")});
@@ -73,9 +74,58 @@ it("shows elapsed work time and renders nested visible text deltas",async()=>{
  expect(document.querySelector(".turn-progress")).toHaveTextContent("Worked for 0s");
  act(()=>vi.advanceTimersByTime(10_000));
  expect(document.querySelector(".turn-progress")).toHaveTextContent("Worked for 10s");
- act(()=>listener?.({protocol_version:2,kind:"event",event_id:"delta-1",event:"model.output.delta",payload:{schema_version:2,event_id:"delta-1",session_id:"session-1",turn_id:"turn-1",sequence:2,timestamp:"2026-07-30T00:00:10Z",type:"model.output.delta",payload:{text:"Visible streaming reply"}}}));
- expect(screen.getByText("Visible streaming reply")).toBeVisible();
+ act(()=>listener?.({protocol_version:2,kind:"event",event_id:"started-1",event:"model.started",payload:{schema_version:2,event_id:"started-1",session_id:"session-1",turn_id:"turn-1",sequence:2,timestamp:"2026-07-30T00:00:10Z",type:"model.started",payload:{request_id:"request-1"}}}));
+ act(()=>listener?.({protocol_version:2,kind:"event",event_id:"delta-1",event:"model.output.delta",payload:{schema_version:2,event_id:"delta-1",session_id:"session-1",turn_id:"turn-1",sequence:3,timestamp:"2026-07-30T00:00:10Z",type:"model.output.delta",payload:{request_id:"request-1",text:"Visible before tool. "}}}));
+ act(()=>listener?.({protocol_version:2,kind:"event",event_id:"started-2",event:"model.started",payload:{schema_version:2,event_id:"started-2",session_id:"session-1",turn_id:"turn-1",sequence:4,timestamp:"2026-07-30T00:00:10Z",type:"model.started",payload:{request_id:"request-2"}}}));
+ expect(screen.getByText("Visible before tool.")).toBeVisible();
+ act(()=>listener?.({protocol_version:2,kind:"event",event_id:"delta-2",event:"model.output.delta",payload:{schema_version:2,event_id:"delta-2",session_id:"session-1",turn_id:"turn-1",sequence:5,timestamp:"2026-07-30T00:00:10Z",type:"model.output.delta",payload:{request_id:"request-2",text:"Visible final reply"}}}));
+ expect(document.querySelector(".message-assistant")).toHaveTextContent("Visible before tool. Visible final reply");
  expect(document.querySelector(".turn-progress")).toHaveTextContent("Responding");
+});
+it("rolls back only the aborted provider request from the visible stream",async()=>{
+ let listener:((event:any)=>void)|undefined;
+ vi.mocked(window.noval.listProjects).mockResolvedValue([project]);
+ vi.mocked(window.noval.projectSessions).mockResolvedValue([session]);
+ vi.mocked(window.noval.resumeSession).mockResolvedValue({session:{...session,is_open:true},permissions:{mode:"ask",approved_tools:[]}});
+ vi.mocked(window.noval.startTurn).mockReturnValue(new Promise(()=>{}));
+ vi.mocked(window.noval.onEvent).mockImplementation(callback=>{listener=callback;return()=>{}});
+ render(<App/>);
+ fireEvent.click(await screen.findByRole("button",{name:"First task"}));
+ fireEvent.change(screen.getByRole("textbox",{name:"Message Noval"}),{target:{value:"Stream safely"}});
+ fireEvent.click(screen.getByRole("button",{name:"Send"}));
+ const emit=(event:string,eventId:string,payload:Record<string,unknown>)=>act(()=>listener?.({protocol_version:2,kind:"event",event_id:eventId,event,payload:{schema_version:2,event_id:eventId,session_id:"session-1",turn_id:"turn-1",sequence:2,timestamp:"2026-07-30T00:00:10Z",type:event,payload}}));
+ emit("model.started","started-1",{request_id:"request-1"});emit("model.output.delta","delta-1",{request_id:"request-1",text:"Canonical segment. "});emit("model.started","started-2",{request_id:"request-2"});emit("model.output.delta","delta-2",{request_id:"request-2",text:"Aborted segment"});expect(document.querySelector(".message-assistant")).toHaveTextContent("Canonical segment. Aborted segment");emit("model.output.aborted","aborted-2",{request_id:"request-2"});expect(screen.getByText("Canonical segment.")).toBeVisible();expect(screen.queryByText(/Aborted segment/)).not.toBeInTheDocument();
+});
+it("shows automatic retry progress without offering a manual retry button",async()=>{
+ let listener:((event:any)=>void)|undefined;
+ vi.mocked(window.noval.listProjects).mockResolvedValue([project]);
+ vi.mocked(window.noval.projectSessions).mockResolvedValue([session]);
+ vi.mocked(window.noval.resumeSession).mockResolvedValue({session:{...session,is_open:true},permissions:{mode:"ask",approved_tools:[]}});
+ vi.mocked(window.noval.startTurn).mockReturnValue(new Promise(()=>{}));
+ vi.mocked(window.noval.onEvent).mockImplementation(callback=>{listener=callback;return()=>{}});
+ render(<App/>);
+ fireEvent.click(await screen.findByRole("button",{name:"First task"}));
+ fireEvent.change(screen.getByRole("textbox",{name:"Message Noval"}),{target:{value:"Retry safely"}});
+ fireEvent.click(screen.getByRole("button",{name:"Send"}));
+ act(()=>listener?.({protocol_version:2,kind:"event",event_id:"retry-1",event:"model.retrying",payload:{schema_version:2,event_id:"retry-1",session_id:"session-1",turn_id:"turn-1",sequence:2,timestamp:"2026-07-30T00:00:10Z",type:"model.retrying",payload:{attempt:1,max_retries:5,request_id:"request-2",previous_request_id:"request-1"}}}));
+ expect(document.querySelector(".turn-progress")).toHaveTextContent("Retrying 1/5");
+ expect(screen.queryByRole("button",{name:"Retry"})).not.toBeInTheDocument();
+});
+it("keeps an exhausted provider failure in the conversation and links auth failures to model settings",async()=>{
+ vi.mocked(window.noval.listProjects).mockResolvedValue([project]);
+ vi.mocked(window.noval.projectSessions).mockResolvedValue([session]);
+ vi.mocked(window.noval.resumeSession).mockResolvedValue({session:{...session,is_open:true},permissions:{mode:"ask",approved_tools:[]}});
+ vi.mocked(window.noval.startTurn).mockResolvedValue({status:"failed",completion:null,error:{code:"provider_authentication",safe_message:"DeepSeek request failed (authentication, status 401)",retryable:false,details:{provider:"DeepSeek",status_code:401}}});
+ render(<App/>);
+ fireEvent.click(await screen.findByRole("button",{name:"First task"}));
+ await waitFor(()=>expect(window.noval.transcriptHistory).toHaveBeenCalledWith("session-1"));
+ fireEvent.change(screen.getByRole("textbox",{name:"Message Noval"}),{target:{value:"Use the model"}});
+ fireEvent.click(screen.getByRole("button",{name:"Send"}));
+ const failure=await screen.findByRole("alert",{name:"Model authentication failed"});
+ expect(failure).toHaveTextContent("DeepSeek request failed");
+ expect(screen.queryByRole("button",{name:"Retry"})).not.toBeInTheDocument();
+ fireEvent.click(screen.getByRole("button",{name:"Open model settings"}));
+ expect(await screen.findByRole("heading",{name:"Models"})).toBeVisible();
 });
 it("keeps only the elapsed work time after the assistant reply completes",async()=>{
  let resolveTurn:((value:any)=>void)|undefined,now=Date.parse("2026-07-30T00:00:00Z");
@@ -91,8 +141,10 @@ it("keeps only the elapsed work time after the assistant reply completes",async(
  fireEvent.change(screen.getByRole("textbox",{name:"Message Noval"}),{target:{value:"Finish the answer"}});
  fireEvent.click(screen.getByRole("button",{name:"Send"}));
  expect(document.querySelector(".turn-progress")).toHaveTextContent("Thinking");
- now+=10_000;
+ now+=116_000;
  await act(async()=>{resolveTurn?.({status:"completed",completion:null});await Promise.resolve()});
- await waitFor(()=>expect(document.querySelector(".turn-elapsed")).toHaveTextContent("Worked for 10s"));
+ await waitFor(()=>expect(document.querySelector(".turn-elapsed")).toHaveTextContent("Worked for 1m 56s"));
+ expect(document.querySelector(".turn-elapsed")?.nextElementSibling).toHaveClass("message-assistant");
+ expect(document.querySelector(".turn-elapsed")?.nextElementSibling).toHaveTextContent("Finished");
  expect(document.querySelector(".turn-progress")).not.toBeInTheDocument();
 });

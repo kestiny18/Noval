@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import ipaddress
 import json
+import re
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -20,6 +21,7 @@ from .messages import (
     ToolCallBlock,
     assistant_message,
 )
+from .redaction import redact_sensitive_text
 
 OPENAI_ADAPTER = "openai-compatible"
 ANTHROPIC_ADAPTER = "anthropic-messages"
@@ -94,12 +96,16 @@ class ProviderError(RuntimeError):
         *,
         retryable: bool,
         identity: ProviderIdentity,
+        status_code: Optional[int] = None,
+        provider_code: Optional[str] = None,
     ):
         super().__init__(safe_message)
         self.kind = kind
         self.safe_message = safe_message
         self.retryable = retryable
         self.identity = identity
+        self.status_code = status_code
+        self.provider_code = provider_code
 
 
 @dataclass
@@ -212,12 +218,60 @@ def _normalized_error(error: Exception, identity: ProviderIdentity) -> ProviderE
         kind, retryable = ProviderErrorKind.INVALID_REQUEST, False
     else:
         kind, retryable = ProviderErrorKind.UNKNOWN, False
+    provider_code, provider_message = _safe_structured_provider_error(error)
+    qualifiers = [kind.value]
+    if isinstance(status, int):
+        qualifiers.append(f"status {status}")
+    if provider_code is not None:
+        qualifiers.append(f"code {provider_code}")
+    safe_message = f"{identity.provider} request failed ({', '.join(qualifiers)})"
+    if provider_message is not None:
+        safe_message += f": {provider_message}"
     return ProviderError(
         kind,
-        f"{identity.provider} request failed ({kind.value})",
+        safe_message,
         retryable=retryable,
         identity=identity,
+        status_code=status if isinstance(status, int) else None,
+        provider_code=provider_code,
     )
+
+
+_SAFE_PROVIDER_CODE = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
+_SAFE_PROVIDER_CODE_HINT = re.compile(
+    r"(?i)(?:auth|balance|billing|credit|fund|invalid|limit|model|payment|"
+    r"quota|rate|request|server|timeout|unavailable)"
+)
+_SAFE_BILLING_MESSAGE = re.compile(
+    r"(?i)\b(?:balance|billing|credit|funds?|insufficient|payment|quota)\b"
+)
+
+
+def _safe_structured_provider_error(
+    error: Exception,
+) -> Tuple[Optional[str], Optional[str]]:
+    """Extract a bounded billing hint without exposing a raw Provider response."""
+    body = _value(error, "body")
+    if not isinstance(body, dict):
+        return None, None
+    detail = body.get("error", body)
+    if not isinstance(detail, dict):
+        return None, None
+    raw_code = detail.get("code") or detail.get("type")
+    provider_code = None
+    if isinstance(raw_code, str) and _SAFE_PROVIDER_CODE.fullmatch(raw_code):
+        if (
+            _SAFE_PROVIDER_CODE_HINT.search(raw_code)
+            or raw_code.isdigit() and len(raw_code) <= 8
+        ):
+            provider_code = raw_code
+    raw_message = detail.get("message")
+    if not isinstance(raw_message, str) or not _SAFE_BILLING_MESSAGE.search(
+        raw_message
+    ):
+        return provider_code, None
+    normalized = " ".join(redact_sensitive_text(raw_message).split())
+    return provider_code, normalized[:240] if normalized else None
 
 
 def _openai_tools(tools: Sequence[ToolDefinition]) -> List[Dict[str, Any]]:

@@ -14,8 +14,8 @@ from noval.agent import (
     load_project_memory, run_cli, TurnMetrics,
 )
 from noval.client import (
-    LLMResponse, LLMStreamEvent, MockClient, ProviderIdentity, TokenUsage,
-    mock_text, mock_tool_call,
+    LLMResponse, LLMStreamEvent, MockClient, ProviderError, ProviderErrorKind,
+    ProviderIdentity, TokenUsage, mock_text, mock_tool_call,
 )
 from noval.config import Config
 from noval.permissions import PermissionController, PermissionMode
@@ -184,6 +184,55 @@ def test_failed_stream_marks_partial_output_aborted_without_persisting_it():
         "model.output.aborted",
     ]
     assert all("partial private draft" not in message.text for message in agent.messages)
+
+
+def test_retryable_provider_failure_emits_progress_and_replaces_partial_attempt(
+    monkeypatch,
+):
+    events = []
+
+    class RetryingStreamingClient:
+        calls = 0
+
+        def complete(self, messages, tools):
+            raise AssertionError("streaming capability should be selected")
+
+        def stream_complete(self, messages, tools, on_event):
+            self.calls += 1
+            if self.calls == 1:
+                on_event(LLMStreamEvent("partial attempt"))
+                raise ProviderError(
+                    ProviderErrorKind.CONNECTION,
+                    "provider request failed (connection)",
+                    retryable=True,
+                    identity=ProviderIdentity("test", "model", "test"),
+                )
+            return mock_text("Recovered")
+
+    monkeypatch.setattr("noval.agent._retry_delay_seconds", lambda _attempt: 0)
+    client = RetryingStreamingClient()
+    agent = Agent(
+        client,
+        cfg(),
+        observer=lambda event, payload: events.append((event, payload)),
+    )
+    outcome = agent.run_turn("hi")
+
+    assert outcome.text == "Recovered"
+    assert client.calls == 2
+    assert [event for event, _ in events] == [
+        "model.started",
+        "model.output.delta",
+        "model.output.aborted",
+        "model.retrying",
+        "model.completed",
+    ]
+    retry = next(payload for event, payload in events if event == "model.retrying")
+    assert retry["attempt"] == 1
+    assert retry["max_retries"] == 5
+    assert retry["error_kind"] == "connection"
+    assert retry["request_id"] != retry["previous_request_id"]
+    assert all("partial attempt" not in message.text for message in agent.messages)
 
 
 def test_cancellation_after_last_delta_marks_output_aborted():

@@ -613,6 +613,30 @@ def test_provider_errors_are_safe_normalized_and_retryable():
     assert "secret provider body" not in caught.value.safe_message
 
 
+def test_provider_error_extracts_safe_billing_code_without_raw_body():
+    class PaymentRequiredError(Exception):
+        status_code = 402
+        body = {
+            "error": {
+                "code": "insufficient_balance",
+                "message": "Insufficient account balance.",
+                "debug": "FAKE_RAW_PROVIDER_DEBUG_BODY",
+            }
+        }
+
+    client, _ = openai_client([PaymentRequiredError("raw exception body")])
+
+    with pytest.raises(ProviderError) as caught:
+        client.complete([user_message("question")], [])
+
+    assert caught.value.kind is ProviderErrorKind.INVALID_REQUEST
+    assert caught.value.status_code == 402
+    assert caught.value.provider_code == "insufficient_balance"
+    assert "Insufficient account balance" in caught.value.safe_message
+    assert "FAKE_RAW_PROVIDER_DEBUG_BODY" not in caught.value.safe_message
+    assert "raw exception body" not in caught.value.safe_message
+
+
 def test_foreign_replay_state_is_ignored_by_other_adapter():
     client, create = openai_client([openai_response(content="ok")])
     foreign = assistant_message(

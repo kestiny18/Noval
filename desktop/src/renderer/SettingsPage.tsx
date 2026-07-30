@@ -11,7 +11,7 @@ import {API_SCHEMA_VERSION} from "../shared/protocol";
 import {translate} from "./i18n";
 import {UsageAnalyticsPanel} from "./UsageAnalyticsPanel";
 
-type Section="general"|"appearance"|"models";
+export type SettingsSection="general"|"appearance"|"models";
 type Props={
   profiles:ProviderProfileInfo[];
   models:ModelConfigurationInfo|null;
@@ -31,10 +31,11 @@ type Props={
   usageLoading:boolean;
   usageError:string|null;
   reloadUsage:()=>void;
+  initialSection:SettingsSection;
 };
 
 export function SettingsPage(props:Props){
-  const [section,setSection]=useState<Section>("general");
+  const [section,setSection]=useState<SettingsSection>(props.initialSection);
   const t=(key:Parameters<typeof translate>[1],values?:Record<string,string|number>)=>translate(props.language,key,values);
   return <div className="settings-shell" data-testid="settings-shell">
     <aside className="settings-sidebar">

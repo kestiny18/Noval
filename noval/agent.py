@@ -12,6 +12,7 @@ import logging
 import os
 import platform
 import sys
+import time
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
@@ -29,6 +30,7 @@ from .client import (
     LLMClient,
     LLMResponse,
     LLMStreamEvent,
+    ProviderError,
     TokenUsage,
     ToolDefinition,
 )
@@ -59,6 +61,10 @@ from .tools import Context, Risk, Tool, ToolResult, all_tools
 from .usage import JsonlUsageStore, UsageBreakdown, UsageSummary
 
 log = logging.getLogger("noval.agent")
+
+
+def _retry_delay_seconds(attempt: int) -> float:
+    return min(0.5 * (2 ** max(0, attempt - 1)), 8.0)
 
 # The default operating contract is code, not a user preference. Keep it short,
 # domain-neutral, and stable enough to evaluate across Providers. Project and
@@ -700,60 +706,89 @@ class Agent:
             message_count=len(request_messages),
             tool_count=len(tools),
         )
-        streamed_output = False
+        provider_tools = _provider_tools(tools)
+        max_retries = self.config.request_max_retries
+        for retry_index in range(max_retries + 1):
+            streamed_output = False
 
-        def observe_stream(event: LLMStreamEvent) -> None:
-            nonlocal streamed_output
-            self._raise_if_cancelled()
-            if event.type != "text.delta" or not event.text:
-                return
-            streamed_output = True
-            self._emit(
-                "model.output.delta",
-                request_id=request_id,
-                text=event.text,
-            )
-        try:
-            provider_tools = _provider_tools(tools)
-            stream_with_request = getattr(
-                self.client, "stream_complete_with_request", None
-            )
-            stream_complete = getattr(self.client, "stream_complete", None)
-            complete_with_request = getattr(
-                self.client, "complete_with_request", None
-            )
-            if callable(stream_with_request):
-                response = stream_with_request(
-                    request_messages,
-                    provider_tools,
-                    observe_stream,
-                    request_id=request_id,
-                )
-            elif callable(stream_complete):
-                response = stream_complete(
-                    request_messages,
-                    provider_tools,
-                    observe_stream,
-                )
-                response.meta = dict(response.meta)
-                response.meta.setdefault("request_id", request_id)
-            elif callable(complete_with_request):
-                response = complete_with_request(
-                    request_messages, provider_tools, request_id=request_id
-                )
-            else:
-                response = self.client.complete(request_messages, provider_tools)
-                response.meta = dict(response.meta)
-                response.meta.setdefault("request_id", request_id)
-            self._raise_if_cancelled()
-        except Exception:
-            if streamed_output:
+            def observe_stream(event: LLMStreamEvent) -> None:
+                nonlocal streamed_output
+                self._raise_if_cancelled()
+                if event.type != "text.delta" or not event.text:
+                    return
+                streamed_output = True
                 self._emit(
-                    "model.output.aborted",
+                    "model.output.delta",
                     request_id=request_id,
+                    text=event.text,
                 )
-            self._raise_if_cancelled()
-            raise
+
+            try:
+                stream_with_request = getattr(
+                    self.client, "stream_complete_with_request", None
+                )
+                stream_complete = getattr(self.client, "stream_complete", None)
+                complete_with_request = getattr(
+                    self.client, "complete_with_request", None
+                )
+                if callable(stream_with_request):
+                    response = stream_with_request(
+                        request_messages,
+                        provider_tools,
+                        observe_stream,
+                        request_id=request_id,
+                    )
+                elif callable(stream_complete):
+                    response = stream_complete(
+                        request_messages,
+                        provider_tools,
+                        observe_stream,
+                    )
+                    response.meta = dict(response.meta)
+                    response.meta.setdefault("request_id", request_id)
+                elif callable(complete_with_request):
+                    response = complete_with_request(
+                        request_messages, provider_tools, request_id=request_id
+                    )
+                else:
+                    response = self.client.complete(
+                        request_messages, provider_tools
+                    )
+                    response.meta = dict(response.meta)
+                    response.meta.setdefault("request_id", request_id)
+                self._raise_if_cancelled()
+                break
+            except ProviderError as error:
+                if streamed_output:
+                    self._emit(
+                        "model.output.aborted",
+                        request_id=request_id,
+                    )
+                self._raise_if_cancelled()
+                if not error.retryable or retry_index >= max_retries:
+                    raise
+                previous_request_id = request_id
+                request_id = "request-" + uuid4().hex
+                attempt = retry_index + 1
+                delay_seconds = _retry_delay_seconds(attempt)
+                self._emit(
+                    "model.retrying",
+                    request_id=request_id,
+                    previous_request_id=previous_request_id,
+                    attempt=attempt,
+                    max_retries=max_retries,
+                    delay_ms=round(delay_seconds * 1000),
+                    error_kind=error.kind.value,
+                )
+                self._wait_before_retry(delay_seconds)
+            except Exception:
+                if streamed_output:
+                    self._emit(
+                        "model.output.aborted",
+                        request_id=request_id,
+                    )
+                self._raise_if_cancelled()
+                raise
         self._emit(
             "model.completed",
             request_id=response.meta.get("request_id", request_id),
@@ -773,6 +808,15 @@ class Agent:
         checker = getattr(self.process_runtime, "raise_if_cancelled", None)
         if checker is not None:
             checker()
+
+    def _wait_before_retry(self, delay_seconds: float) -> None:
+        deadline = time.monotonic() + max(0.0, delay_seconds)
+        while True:
+            self._raise_if_cancelled()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            time.sleep(min(remaining, 0.1))
 
     def _refresh_skills_for_turn(self) -> Optional[str]:
         """Refresh skills at the turn boundary and expose changes ephemerally."""

@@ -132,6 +132,9 @@ def test_runtime_exposes_safe_configuration_and_project_inventory(tmp_path):
         configuration["models"]["connections"][0]["credential_available"],
         bool,
     )
+    assert configuration["max_steps"] == 1000
+    assert server._runtime is not None
+    assert server._runtime._config.request_max_retries == 5
     assert "api_key" not in configuration
     assert isinstance(projects["projects"], list)
     server.close()

@@ -269,9 +269,10 @@ test("persists appearance, language, and a resized project sidebar",async()=>{
     await expect(page.locator(".usage-metric",{hasText:"Cumulative Tokens"})).toContainText("360K");
     await expect(page.locator(".usage-metric",{hasText:"Peak daily Tokens"})).toContainText("240K");
     await expect(page.locator(".usage-metric",{hasText:"Longest task duration"})).toContainText("1h 2m");
-    const usageGeometry=await page.evaluate(()=>{const scrollElement=document.querySelector(".usage-calendar-scroll")!,scroll=scrollElement.getBoundingClientRect(),style=getComputedStyle(scrollElement),grid=document.querySelector(".usage-grid")!.getBoundingClientRect(),last=document.querySelectorAll(".usage-cell")[363]!.getBoundingClientRect();return {available:scroll.width-parseFloat(style.paddingLeft)-parseFloat(style.paddingRight),gridWidth:grid.width,lastGap:Math.abs(grid.right-last.right)}});
+    const usageGeometry=await page.evaluate(()=>{const scrollElement=document.querySelector(".usage-calendar-scroll")! as HTMLElement,scroll=scrollElement.getBoundingClientRect(),style=getComputedStyle(scrollElement),grid=document.querySelector(".usage-grid")!.getBoundingClientRect(),last=document.querySelectorAll(".usage-cell")[363]!.getBoundingClientRect();return {available:scroll.width-parseFloat(style.paddingLeft)-parseFloat(style.paddingRight),gridWidth:grid.width,lastGap:Math.abs(grid.right-last.right),horizontalOverflow:scrollElement.scrollWidth-scrollElement.clientWidth}});
     expect(usageGeometry.gridWidth).toBeGreaterThanOrEqual(usageGeometry.available-1);
     expect(usageGeometry.lastGap).toBeLessThanOrEqual(1);
+    expect(usageGeometry.horizontalOverflow).toBeLessThanOrEqual(1);
     const firstUsageCell=page.getByRole("gridcell").first();await firstUsageCell.hover();
     const tooltipGeometry=await firstUsageCell.evaluate(element=>{const cell=element.getBoundingClientRect(),tooltip=element.querySelector(".usage-tooltip")!.getBoundingClientRect();return {cellBottom:cell.bottom,tooltipTop:tooltip.top}});
     expect(tooltipGeometry.tooltipTop).toBeGreaterThan(tooltipGeometry.cellBottom);
