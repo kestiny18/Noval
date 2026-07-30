@@ -62,6 +62,7 @@ class EventType(str, Enum):
     TURN_STARTED = "turn.started"
     TURN_CANCEL_REQUESTED = "turn.cancel_requested"
     MODEL_STARTED = "model.started"
+    MODEL_RETRYING = "model.retrying"
     MODEL_OUTPUT_DELTA = "model.output.delta"
     MODEL_OUTPUT_ABORTED = "model.output.aborted"
     MODEL_COMPLETED = "model.completed"

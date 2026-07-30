@@ -68,7 +68,8 @@ export interface TranscriptEntry { sequence: number; role: "user" | "assistant" 
 export interface TranscriptHistoryPage {entries:TranscriptEntry[];previous_sequence:number|null;has_more:boolean}
 export interface CompletionCriterion { criterion_id:string;status:"passed"|"failed"|"missing"|"stale"|"unknown";source:string|null;observed_at:string|null }
 export interface CompletionReport { goal_id:string;status:"completed"|"incomplete"|"uncertain";evaluated_at:string;criteria:CompletionCriterion[];semantic?:{status:string;summary?:string}|null }
-export interface TurnResult { status:string;completion:CompletionReport|null;error?:{code?:string;safe_message?:string}|null }
+export interface TurnError {code:string;safe_message:string;retryable:boolean;details:Record<string,unknown>}
+export interface TurnResult { status:string;completion:CompletionReport|null;error?:TurnError|null }
 export interface RuntimeEvent { sequence:number;type:string;payload:Record<string,unknown>;session_id:string;turn_id:string|null;timestamp:string }
 export interface EventPage { events:RuntimeEvent[];next_sequence:number;gap_detected:boolean;has_more:boolean }
 export type RuntimeConnectionState = "connected"|"recovering"|"disconnected";

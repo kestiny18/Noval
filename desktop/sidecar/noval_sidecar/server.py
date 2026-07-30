@@ -5,6 +5,7 @@ import json
 import platform
 import sys
 import threading
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, BinaryIO, Callable
 from uuid import uuid4
@@ -18,13 +19,17 @@ from noval import (
     PermissionDecision,
     PermissionMode,
     PermissionRequest,
-    RuntimeOptions,
     SessionOptions,
     TurnRequest,
 )
+from noval.config import Config
 
 from . import PROTOCOL_VERSION
 from .protocol import ProtocolError, Request, error_response, event, parse_request, response
+
+
+DESKTOP_MAX_STEPS = 1000
+DESKTOP_REQUEST_MAX_RETRIES = 5
 
 
 class SidecarServer:
@@ -125,8 +130,14 @@ class SidecarServer:
         settings_path = params.get("settings_path")
         if settings_path is not None and not isinstance(settings_path, str):
             raise ValueError("settings_path must be a string or null")
-        self._runtime = NovalRuntime.from_settings(
-            RuntimeOptions(settings_path=settings_path), event_sink=self._runtime_event, configure_logging=True
+        selected_path = Path(settings_path) if settings_path else None
+        desktop_config = replace(
+            Config.load(selected_path),
+            max_steps=DESKTOP_MAX_STEPS,
+            request_max_retries=DESKTOP_REQUEST_MAX_RETRIES,
+        )
+        self._runtime = NovalRuntime(
+            desktop_config, event_sink=self._runtime_event, configure_logging=True
         )
         return {"started": True}
 

@@ -60,7 +60,7 @@ class Config:
     usage_dir_setting: str = ""
     context_budget_tokens: int = 256000
     request_timeout_seconds: float = 120.0
-    request_max_retries: int = 2
+    request_max_retries: int = 5
     judge_model: str = "deepseek-v4-flash"
     provider: str = "openai-compatible"
     anthropic_base_url: str = ""

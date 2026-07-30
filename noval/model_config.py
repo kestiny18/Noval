@@ -259,7 +259,7 @@ def packaged_settings() -> Dict[str, Any]:
     return {
         "schema_version": SETTINGS_SCHEMA_VERSION,
         "models": _configuration_to_settings(configuration),
-        "max_steps": 40,
+        "max_steps": 50,
         "max_tool_output_chars": 8000,
         "persist_sessions": True,
         "sessions_dir": "",
@@ -270,7 +270,7 @@ def packaged_settings() -> Dict[str, Any]:
         "usage_dir": "",
         "context_budget_tokens": 256000,
         "request_timeout_seconds": 120,
-        "request_max_retries": 2,
+        "request_max_retries": 5,
         "anthropic_max_tokens": 8192,
     }
 

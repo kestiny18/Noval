@@ -30,19 +30,17 @@ export function UsageAnalyticsPanel({analytics,loading,error,language,retry}:Pro
           <Metric value={formatTokens(summary.peak,language)} label={t("peakDailyTokens")}/>
           <Metric value={formatDuration(summary.duration,language)} label={t("longestTaskDuration")}/>
         </div>
-        <div className="usage-calendar-head"><strong>{t("recent52Weeks")}</strong>{!values.some(Boolean)&&<span>{t("noTokenActivity")}</span>}</div>
         <div className="usage-calendar-scroll">
           <div className="usage-grid" role="grid" aria-label={t("tokenActivity")}>
             {analytics?.days.map((day,index)=>{
-              const value=values[index]??0,column=Math.floor(index/7),level=intensity(value,max);
+              const value=values[index]??0,column=Math.floor(index/7),row=index%7,level=intensity(value,max);
               const label=dayLabel(day.day,value,selectedModel,language,t("allModels"));
-              return <button type="button" role="gridcell" className={`usage-cell usage-level-${level} ${column<4?"tooltip-left":column>47?"tooltip-right":""}`} aria-label={label} title={label} key={day.day}>
+              return <button type="button" role="gridcell" className={`usage-cell usage-level-${level} ${row<3?"tooltip-below":""} ${column<4?"tooltip-left":column>47?"tooltip-right":""}`} aria-label={label} key={day.day}>
                 <span className="usage-tooltip" aria-hidden="true">{label}</span>
               </button>;
             })}
           </div>
         </div>
-        <div className="usage-legend" aria-hidden="true"><span>{t("less")}</span>{[0,1,2,3,4].map(level=><i className={`usage-level-${level}`} key={level}/>)}<span>{t("more")}</span></div>
       </div>}
   </section>;
 }

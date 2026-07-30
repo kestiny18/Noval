@@ -3,7 +3,7 @@ import type {LanguagePreference} from "../shared/protocol";
 const en={
   projects:"Projects",addProject:"Add project",settings:"Settings",resizeSidebar:"Resize project sidebar",
   runtimeConnected:"Connected",runtimeRecovering:"Reconnecting",runtimeUnavailable:"Unavailable",
-  ready:"Ready",generating:"Generating",validating:"Validating",waitingApproval:"Waiting for approval",
+  ready:"Ready",thinking:"Thinking",responding:"Responding",retryingModel:"Retrying {attempt}/{maxRetries}",workedFor:"Worked for {duration}",generating:"Generating",validating:"Validating",waitingApproval:"Waiting for approval",
   running:"Running",turnFailed:"Turn failed",recoveredTranscript:"Recovered from transcript",
   newTask:"New task",untitledTask:"Untitled task",noTasks:"No tasks yet",
   addProjectHint:"Add a project to begin. Your folders stay local.",addProjectSidebar:"Add a project from the sidebar",
@@ -25,6 +25,7 @@ const en={
   undo:"Undo",dismissToast:"Dismiss notification",
   sessionModel:"Session model",nextTurn:"Next turn",stop:"Stop",send:"Send",
   attention:"Something needs attention",dismiss:"Dismiss",permissionRequired:"PERMISSION REQUIRED",
+  modelAuthenticationFailed:"Model authentication failed",modelAuthenticationHelp:"Check the API key and selected model in Settings.",modelBillingFailed:"Model account balance is insufficient",modelBillingHelp:"Add credit or review the account quota with the model provider.",modelRequestFailed:"Model request failed",modelRetriesExhausted:"The model service did not recover after 5 automatic retries.",modelRequestHelp:"Review the model configuration and send a new message.",openModelSettings:"Open model settings",
   allowTool:"Allow {tool}?",actionApproval:"This {risk} action needs your approval.",
   deny:"Deny",allowSession:"Allow for Session",allowOnce:"Allow once",
   closeRemoveDialog:"Close remove project dialog",removeProjectQuestion:"Remove {name}?",
@@ -88,7 +89,7 @@ const en={
 const zh:Record<keyof typeof en,string>={
   projects:"项目",addProject:"添加项目",settings:"设置",resizeSidebar:"调整项目侧栏宽度",
   runtimeConnected:"已连接",runtimeRecovering:"正在重新连接",runtimeUnavailable:"连接不可用",
-  ready:"就绪",generating:"正在生成",validating:"正在验证",waitingApproval:"等待授权",
+  ready:"就绪",thinking:"思考中",responding:"正在回复",retryingModel:"正在重试 {attempt}/{maxRetries}",workedFor:"已工作 {duration}",generating:"正在生成",validating:"正在验证",waitingApproval:"等待授权",
   running:"运行中",turnFailed:"本轮失败",recoveredTranscript:"已从会话记录恢复",
   newTask:"新任务",untitledTask:"未命名任务",noTasks:"暂无任务",
   addProjectHint:"添加一个项目开始使用。你的文件夹始终保留在本地。",addProjectSidebar:"从侧栏添加一个项目",
@@ -110,6 +111,7 @@ const zh:Record<keyof typeof en,string>={
   undo:"撤销",dismissToast:"关闭通知",
   sessionModel:"会话模型",nextTurn:"下一轮",stop:"停止",send:"发送",
   attention:"有一项需要处理",dismiss:"关闭",permissionRequired:"需要授权",
+  modelAuthenticationFailed:"模型认证失败",modelAuthenticationHelp:"请在设置中检查 API Key 和当前模型。",modelBillingFailed:"模型账户余额不足",modelBillingHelp:"请向模型服务商充值或检查账户额度。",modelRequestFailed:"模型请求失败",modelRetriesExhausted:"模型服务在自动重试 5 次后仍未恢复。",modelRequestHelp:"请检查模型配置后发送一条新消息。",openModelSettings:"打开模型设置",
   allowTool:"允许 {tool}？",actionApproval:"此 {risk} 操作需要你的授权。",
   deny:"拒绝",allowSession:"本会话允许",allowOnce:"仅允许一次",
   closeRemoveDialog:"关闭移除项目对话框",removeProjectQuestion:"移除 {name}？",
@@ -179,4 +181,16 @@ export function translate(language:LanguagePreference,key:TranslationKey,values:
 
 export function localeLanguage(locale:string):LanguagePreference{
   return locale.trim().toLowerCase().startsWith("zh")?"zh-CN":"en";
+}
+
+export function formatWorkDuration(language:LanguagePreference,value:number):string{
+  const totalSeconds=Math.max(0,Math.floor(value)),hours=Math.floor(totalSeconds/3600),minutes=Math.floor(totalSeconds%3600/60),seconds=totalSeconds%60;
+  if(language==="zh-CN"){
+    if(hours>0)return `${hours}小时${minutes}分钟${seconds}秒`;
+    if(minutes>0)return `${minutes}分钟${seconds}秒`;
+    return `${seconds}秒`;
+  }
+  if(hours>0)return `${hours}h ${minutes}m ${seconds}s`;
+  if(minutes>0)return `${minutes}m ${seconds}s`;
+  return `${seconds}s`;
 }

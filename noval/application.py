@@ -830,6 +830,15 @@ class AgentSession:
             self._emit_terminal_failure(result)
             return result
         except ProviderError as error:
+            provider_details: Dict[str, object] = {
+                "provider": error.identity.provider,
+                "model": error.identity.model,
+                "adapter": error.identity.adapter,
+            }
+            if error.status_code is not None:
+                provider_details["status_code"] = error.status_code
+            if error.provider_code is not None:
+                provider_details["provider_code"] = error.provider_code
             result = self._failure_result(
                 request,
                 turn_id,
@@ -837,11 +846,7 @@ class AgentSession:
                 code=f"provider_{error.kind.value}",
                 safe_message=error.safe_message,
                 retryable=error.retryable,
-                details={
-                    "provider": error.identity.provider,
-                    "model": error.identity.model,
-                    "adapter": error.identity.adapter,
-                },
+                details=provider_details,
                 include_agent_state=agent_turn_started,
             )
             self._emit_terminal_failure(result)
@@ -1610,6 +1615,9 @@ class NovalRuntime:
                 )
             provider = connection.adapter
             base_url = connection.base_url
+        effective_max_retries = (
+            0 if purpose == "agent" else config.request_max_retries
+        )
         transport_key: _TransportKey = (
             purpose,
             provider,
@@ -1619,7 +1627,7 @@ class NovalRuntime:
             base_url,
             config.anthropic_base_url,
             config.request_timeout_seconds,
-            config.request_max_retries,
+            effective_max_retries,
             config.anthropic_max_tokens,
         )
         with self._lock:
@@ -1642,7 +1650,7 @@ class NovalRuntime:
                     base_url=base_url,
                     anthropic_base_url=config.anthropic_base_url,
                     timeout=config.request_timeout_seconds,
-                    max_retries=config.request_max_retries,
+                    max_retries=effective_max_retries,
                     anthropic_max_tokens=config.anthropic_max_tokens,
                     replay_scope=replay_scope,
                     transport=entry.transport if entry is not None else None,

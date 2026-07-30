@@ -26,7 +26,7 @@ def test_persistence_config_defaults(tmp_path):
     assert cfg.model == "deepseek-v4-pro"
     assert cfg.judge_model == "deepseek-v4-flash"
     assert cfg.request_timeout_seconds == 120.0
-    assert cfg.request_max_retries == 2
+    assert cfg.request_max_retries == 5
     assert cfg.provider == "openai-compatible"
     assert cfg.base_url == "https://api.deepseek.com"
     assert cfg.api_key_env == "DEEPSEEK_API_KEY"
