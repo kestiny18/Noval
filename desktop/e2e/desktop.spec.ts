@@ -60,8 +60,10 @@ async function startMockOpenAIProvider(){
         if(payload.stream){
           response.writeHead(200,{"content-type":"text/event-stream","cache-control":"no-cache"});
           response.write(`data: ${JSON.stringify({id:"chatcmpl-e2e",object:"chat.completion.chunk",created:1,model,choices:[{index:0,delta:{role:"assistant",content:`Reply from ${model}`},finish_reason:null}]})}\n\n`);
-          response.write(`data: ${JSON.stringify({id:"chatcmpl-e2e",object:"chat.completion.chunk",created:1,model,choices:[{index:0,delta:{},finish_reason:"stop"}]})}\n\n`);
-          response.end("data: [DONE]\n\n");
+          setTimeout(()=>{
+            response.write(`data: ${JSON.stringify({id:"chatcmpl-e2e",object:"chat.completion.chunk",created:1,model,choices:[{index:0,delta:{},finish_reason:"stop"}]})}\n\n`);
+            response.end("data: [DONE]\n\n");
+          },250);
           return;
         }
         response.writeHead(200,{"content-type":"application/json"});
@@ -197,6 +199,9 @@ test("discovers projects and Sessions from Noval Core storage",async()=>{
     const userMessage=page.locator(".message-user").filter({hasText:"Stored conversation"});
     await expect(userMessage.locator(":scope > .message-content")).toHaveCount(1);
     await expect(userMessage.locator(":scope > .message-meta")).toHaveCount(1);
+    const messageGeometry=await page.evaluate(()=>{const conversation=document.querySelector(".conversation")!.getBoundingClientRect(),message=document.querySelector(".message-user")!.getBoundingClientRect();return {conversationWidth:conversation.width,messageWidth:message.width,rightGap:Math.abs(conversation.right-message.right)}});
+    expect(messageGeometry.messageWidth).toBeLessThan(messageGeometry.conversationWidth*.6);
+    expect(messageGeometry.rightGap).toBeLessThanOrEqual(1);
     const screenshotDir=process.env.NOVAL_OVERLAY_SCREENSHOT_DIR;
     if(screenshotDir){await mkdir(screenshotDir,{recursive:true});await userMessage.hover();await page.screenshot({path:path.join(screenshotDir,"restored-session.png")})}
     const activity=page.getByText("Ran 2 commands");
@@ -207,8 +212,9 @@ test("discovers projects and Sessions from Noval Core storage",async()=>{
     const viewport=page.locator(".conversation-viewport");
     expect(await viewport.evaluate(element=>getComputedStyle(element).scrollbarWidth)).toBe("thin");
     expect(await viewport.evaluate(element=>{element.scrollTop=element.scrollHeight;return element.scrollTop>0})).toBe(true);
-    const geometry=await page.evaluate(()=>{const last=document.querySelector(".activity-row")?.getBoundingClientRect(),composer=document.querySelector(".composer")?.getBoundingClientRect();return {lastBottom:last?.bottom??0,composerTop:composer?.top??0}});
+    const geometry=await page.evaluate(()=>{const last=document.querySelector(".activity-row")?.getBoundingClientRect(),viewport=document.querySelector(".conversation-viewport")?.getBoundingClientRect(),composer=document.querySelector(".composer")?.getBoundingClientRect();return {lastBottom:last?.bottom??0,viewportBottom:viewport?.bottom??0,composerTop:composer?.top??0}});
     expect(geometry.lastBottom).toBeLessThan(geometry.composerTop);
+    expect(geometry.viewportBottom).toBeLessThanOrEqual(geometry.composerTop);
     await sessionButton.hover();
     await page.getByRole("button",{name:"Task actions for Stored conversation"}).click();
     await expect(page.getByRole("menu",{name:"Actions for Stored conversation"})).toBeVisible();
@@ -258,9 +264,17 @@ test("persists appearance, language, and a resized project sidebar",async()=>{
     await expect(page.getByRole("heading",{name:"Models",exact:true})).toBeVisible();
     await expect(page.getByText("DeepSeek",{exact:true})).toBeVisible();
     await expect(page.getByRole("gridcell")).toHaveCount(364);
+    await expect(page.getByText("Recent 52 weeks",{exact:true})).toHaveCount(0);
+    await expect(page.locator(".usage-legend")).toHaveCount(0);
     await expect(page.locator(".usage-metric",{hasText:"Cumulative Tokens"})).toContainText("360K");
     await expect(page.locator(".usage-metric",{hasText:"Peak daily Tokens"})).toContainText("240K");
     await expect(page.locator(".usage-metric",{hasText:"Longest task duration"})).toContainText("1h 2m");
+    const usageGeometry=await page.evaluate(()=>{const scrollElement=document.querySelector(".usage-calendar-scroll")!,scroll=scrollElement.getBoundingClientRect(),style=getComputedStyle(scrollElement),grid=document.querySelector(".usage-grid")!.getBoundingClientRect(),last=document.querySelectorAll(".usage-cell")[363]!.getBoundingClientRect();return {available:scroll.width-parseFloat(style.paddingLeft)-parseFloat(style.paddingRight),gridWidth:grid.width,lastGap:Math.abs(grid.right-last.right)}});
+    expect(usageGeometry.gridWidth).toBeGreaterThanOrEqual(usageGeometry.available-1);
+    expect(usageGeometry.lastGap).toBeLessThanOrEqual(1);
+    const firstUsageCell=page.getByRole("gridcell").first();await firstUsageCell.hover();
+    const tooltipGeometry=await firstUsageCell.evaluate(element=>{const cell=element.getBoundingClientRect(),tooltip=element.querySelector(".usage-tooltip")!.getBoundingClientRect();return {cellBottom:cell.bottom,tooltipTop:tooltip.top}});
+    expect(tooltipGeometry.tooltipTop).toBeGreaterThan(tooltipGeometry.cellBottom);
     await page.getByLabel("Usage model").selectOption("deepseek-v4-flash");
     await expect(page.locator(".usage-metric",{hasText:"Cumulative Tokens"})).toContainText("120K");
     if(screenshotDir)await page.screenshot({path:path.join(screenshotDir,"settings-token-activity.png")});
@@ -365,6 +379,9 @@ test("configures, switches during a Turn, and restores one durable model selecti
     await expect(access).toContainText("Request approval");
     await page.getByLabel("Message Noval").fill("First model request");
     await page.getByRole("button",{name:"Send"}).click();
+    await expect(page.locator(".message-user").filter({hasText:"First model request"})).toBeVisible();
+    await expect(page.locator(".turn-progress")).toContainText("Thinking");
+    await expect(page.locator(".turn-progress")).toContainText("Worked for");
     await expect(page.getByText("Next turn",{exact:true})).toBeVisible();
     await expect.poll(()=>provider.models.length,{timeout:15_000}).toBe(1);
     await selector.click();
@@ -383,11 +400,19 @@ test("configures, switches during a Turn, and restores one durable model selecti
     await page.getByRole("menuitemradio",{name:"alternate-model"}).click();
     await expect(selector).toContainText("alternate-model");
     provider.releaseFirst();
+    await expect(page.locator(".turn-progress")).toContainText("Responding");
+    await expect(page.locator(".message-assistant")).toContainText("Reply from primary-model");
+    if(screenshotDir)await page.screenshot({path:path.join(screenshotDir,"streaming-turn.png")});
     await expect(page.getByText("Reply from primary-model")).toBeVisible();
+    await expect(page.getByRole("button",{name:"Send"})).toBeVisible();
+    await expect(page.locator(".turn-progress")).toHaveCount(0);
+    await expect(page.locator(".turn-elapsed")).toContainText("Worked for");
+    if(screenshotDir)await page.screenshot({path:path.join(screenshotDir,"completed-turn.png")});
 
     await page.getByLabel("Message Noval").fill("Second model request");
     await page.getByRole("button",{name:"Send"}).click();
     await expect(page.getByText("Reply from alternate-model")).toBeVisible();
+    await expect(page.getByRole("button",{name:"Send"})).toBeVisible();
     expect(provider.models).toEqual(["primary-model","alternate-model"]);
 
     const firstProcess=application.process();

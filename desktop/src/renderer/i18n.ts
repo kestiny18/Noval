@@ -3,7 +3,7 @@ import type {LanguagePreference} from "../shared/protocol";
 const en={
   projects:"Projects",addProject:"Add project",settings:"Settings",resizeSidebar:"Resize project sidebar",
   runtimeConnected:"Connected",runtimeRecovering:"Reconnecting",runtimeUnavailable:"Unavailable",
-  ready:"Ready",generating:"Generating",validating:"Validating",waitingApproval:"Waiting for approval",
+  ready:"Ready",thinking:"Thinking",responding:"Responding",workedFor:"Worked for {seconds}s",generating:"Generating",validating:"Validating",waitingApproval:"Waiting for approval",
   running:"Running",turnFailed:"Turn failed",recoveredTranscript:"Recovered from transcript",
   newTask:"New task",untitledTask:"Untitled task",noTasks:"No tasks yet",
   addProjectHint:"Add a project to begin. Your folders stay local.",addProjectSidebar:"Add a project from the sidebar",
@@ -88,7 +88,7 @@ const en={
 const zh:Record<keyof typeof en,string>={
   projects:"项目",addProject:"添加项目",settings:"设置",resizeSidebar:"调整项目侧栏宽度",
   runtimeConnected:"已连接",runtimeRecovering:"正在重新连接",runtimeUnavailable:"连接不可用",
-  ready:"就绪",generating:"正在生成",validating:"正在验证",waitingApproval:"等待授权",
+  ready:"就绪",thinking:"思考中",responding:"正在回复",workedFor:"已工作 {seconds} 秒",generating:"正在生成",validating:"正在验证",waitingApproval:"等待授权",
   running:"运行中",turnFailed:"本轮失败",recoveredTranscript:"已从会话记录恢复",
   newTask:"新任务",untitledTask:"未命名任务",noTasks:"暂无任务",
   addProjectHint:"添加一个项目开始使用。你的文件夹始终保留在本地。",addProjectSidebar:"从侧栏添加一个项目",
